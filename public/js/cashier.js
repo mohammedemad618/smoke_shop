@@ -3,6 +3,7 @@ import {
   toast,
   formatMoney,
   formatQty,
+  formatWeight,
   formatDateTime,
   escapeHtml,
   roundMoney,
@@ -93,9 +94,10 @@ async function loadToday() {
 
 function parseScan(raw) {
   const text = raw.trim();
-  // "3*code" adds 3; "0.5*code" adds half a kilo of a weighed product
-  const match = /^(\d{1,4}(?:\.\d{1,3})?)\s*[*xX×]\s*(.+)$/.exec(text);
-  return match ? { qty: Number(match[1]), term: match[2].trim() } : { qty: 1, term: text };
+  // "3*code" adds 3; "0.5*code" half a kilo; "250غ*code" or "250g*code" 250 grams
+  const match = /^(\d{1,5}(?:\.\d{1,3})?)\s*(g|غ|غم|غرام)?\s*[*xX×]\s*(.+)$/i.exec(text);
+  if (!match) return { qty: 1, term: text };
+  return { qty: match[2] ? Number(match[1]) / 1000 : Number(match[1]), term: match[3].trim() };
 }
 
 function matchProducts(term) {
@@ -171,7 +173,29 @@ function stockProblem(product, base) {
 // of pieces, or per bag of kg). qty and price are in the line's own unit.
 const lineKey = (productId, mode) => `${productId}:${mode}`;
 const isWeighed = (line) => line.unit === 'kg' && line.mode === 'retail';
-const qtyStep = (line) => (isWeighed(line) ? 0.25 : 1);
+// Weighed lines are typed in grams or kilograms; qty itself is always kg
+const inGrams = (line) => isWeighed(line) && line.weightUnit !== 'kg';
+const qtyStep = (line) => (inGrams(line) ? 0.01 : isWeighed(line) ? 0.25 : 1);
+
+// The gram/kilo choice is remembered per product on this device (charcoal by the kilo,
+// tobacco by the gram)
+const WEIGHT_UNITS_KEY = 'pos.weightUnits';
+function preferredWeightUnit(productId) {
+  try {
+    return JSON.parse(localStorage.getItem(WEIGHT_UNITS_KEY) ?? '{}')[productId] ?? 'g';
+  } catch {
+    return 'g';
+  }
+}
+function rememberWeightUnit(productId, unit) {
+  try {
+    const units = JSON.parse(localStorage.getItem(WEIGHT_UNITS_KEY) ?? '{}');
+    units[productId] = unit;
+    localStorage.setItem(WEIGHT_UNITS_KEY, JSON.stringify(units));
+  } catch {
+    // Storage blocked: the choice just is not remembered
+  }
+}
 
 function lineFields(product, mode) {
   const wholesale = mode === 'wholesale';
@@ -198,7 +222,7 @@ function addToCart(product, qty = 1, mode = 'retail') {
   const problem = stockProblem(product, baseInCart(product._id, key) + next * fields.packSize);
   if (problem) return problem;
   if (line) line.qty = next;
-  else state.cart.push({ key, productId: product._id, mode, qty: next, ...fields });
+  else state.cart.push({ key, productId: product._id, mode, qty: next, weightUnit: preferredWeightUnit(product._id), ...fields });
   state.lastAdded = key;
   // A weighed product goes in as 1 kg; its quantity gets selected so the weight can be typed
   if (!line && isWeighed({ ...fields, mode })) state.focusQty = key;
@@ -236,7 +260,7 @@ function setMode(line, mode) {
     other.qty = qty;
     state.cart = state.cart.filter((l) => l !== line);
   } else {
-    Object.assign(line, { key, mode, qty, ...fields });
+    Object.assign(line, { key, mode, qty, weightUnit: line.weightUnit ?? preferredWeightUnit(product._id), ...fields });
   }
   state.lastAdded = key;
   renderCart();
@@ -263,7 +287,14 @@ function focusAfterAdd() {
 function lineHtml(l) {
   const name = escapeHtml(l.name);
   const weighed = isWeighed(l);
-  const pack = l.mode === 'wholesale' ? packName(l.unit, l.packSize) : weighed ? 'بالكيلو' : '';
+  const grams = inGrams(l);
+  const pack = l.mode === 'wholesale' ? packName(l.unit, l.packSize) : weighed ? 'بالوزن' : '';
+  const weightSwitch = weighed
+    ? `<div class="mode-switch" role="group" aria-label="وحدة الوزن">
+        <button type="button" data-weight-unit="g" aria-pressed="${grams}">غ</button>
+        <button type="button" data-weight-unit="kg" aria-pressed="${!grams}">كغم</button>
+      </div>`
+    : '';
   const modeSwitch = state.byId.get(l.productId)?.hasWholesale
     ? `<div class="mode-switch" role="group" aria-label="نوع البيع">
         <button type="button" data-line-mode="retail" aria-pressed="${l.mode === 'retail'}">مفرد</button>
@@ -278,10 +309,11 @@ function lineHtml(l) {
     <div class="line-sub">
       <div class="qty" role="group" aria-label="كمية ${name}">
         <button type="button" class="qty-btn" data-inc aria-label="زيادة الكمية">+</button>
-        <input class="qty-input num" type="number" min="${weighed ? 0.001 : 1}" max="${MAX_QTY}" step="${weighed ? 'any' : 1}" value="${l.qty}" data-qty aria-label="${weighed ? 'الوزن بالكيلوغرام' : 'الكمية'}">
+        <input class="qty-input num" type="number" min="${weighed && !grams ? 0.001 : 1}" max="${grams ? MAX_QTY * 1000 : MAX_QTY}" step="${weighed && !grams ? 'any' : 1}" value="${grams ? Math.round(l.qty * 1000) : l.qty}" data-qty aria-label="${grams ? 'الوزن بالغرام' : weighed ? 'الوزن بالكيلوغرام' : 'الكمية'}">
         <button type="button" class="qty-btn" data-dec aria-label="إنقاص الكمية"${l.qty <= qtyStep(l) ? ' disabled' : ''}>−</button>
       </div>
-      <span class="line-unit">× <span class="num">${formatMoney(l.price)}</span></span>
+      ${weightSwitch}
+      <span class="line-unit">× <span class="num">${formatMoney(l.price)}</span>${weighed ? ' للكيلو' : ''}</span>
       ${modeSwitch}
       <button type="button" class="line-remove" data-remove aria-label="حذف ${name} من الفاتورة" title="حذف من الفاتورة">×</button>
     </div>
@@ -446,6 +478,15 @@ const lineFor = (el) => state.cart.find((l) => l.key === el.closest('.line')?.da
 els.cartLines.addEventListener('click', (e) => {
   const line = lineFor(e.target);
   if (!line) return;
+  const weightButton = e.target.closest('[data-weight-unit]');
+  if (weightButton) {
+    line.weightUnit = weightButton.dataset.weightUnit;
+    rememberWeightUnit(line.productId, line.weightUnit);
+    state.focusQty = line.key; // ready to type the weight in the new unit
+    renderCart();
+    focusAfterAdd();
+    return;
+  }
   const modeButton = e.target.closest('[data-line-mode]');
   if (e.target.closest('[data-inc]')) setQty(line, line.qty + qtyStep(line));
   else if (e.target.closest('[data-dec]')) setQty(line, line.qty - qtyStep(line));
@@ -457,8 +498,11 @@ els.cartLines.addEventListener('click', (e) => {
 
 els.cartLines.addEventListener('change', (e) => {
   if (!e.target.matches('[data-qty]')) return;
-  const qty = Number(e.target.value);
-  setQty(lineFor(e.target), Number.isFinite(qty) && qty > 0 ? qty : 1);
+  const line = lineFor(e.target);
+  const value = Number(e.target.value);
+  const qty = inGrams(line) ? value / 1000 : value;
+  // An empty or invalid entry keeps the previous quantity
+  setQty(line, Number.isFinite(qty) && qty > 0 ? qty : line.qty);
   focusScan();
 });
 
@@ -532,7 +576,7 @@ function showReceipt(sale) {
         .map(
           (i) => `<tr>
           <td>${escapeHtml(i.name)}<small>${receiptPrice(i)}</small></td>
-          <td class="end"><span class="num">${formatQty(i.quantity)}</span>${i.unit === 'kg' && i.mode !== 'wholesale' ? ' كغم' : ''}</td>
+          <td class="end num">${i.unit === 'kg' && i.mode !== 'wholesale' ? formatWeight(i.quantity) : formatQty(i.quantity)}</td>
           <td class="end num">${formatMoney(i.lineTotal)}</td>
         </tr>`,
         )
