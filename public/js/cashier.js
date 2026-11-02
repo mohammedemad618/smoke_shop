@@ -1,4 +1,17 @@
-import { api, toast, formatMoney, formatDateTime, escapeHtml, roundMoney, arCount, INVOICES, dayQuery } from './common.js';
+import {
+  api,
+  toast,
+  formatMoney,
+  formatQty,
+  formatDateTime,
+  escapeHtml,
+  roundMoney,
+  roundQty,
+  arCount,
+  packName,
+  INVOICES,
+  dayQuery,
+} from './common.js';
 import { scanBarcodes } from './scanner.js';
 
 const MAX_QTY = 10000;
@@ -59,10 +72,10 @@ async function loadCatalog() {
   if (state.activeCategory && !state.categories.some((c) => c._id === state.activeCategory)) {
     state.activeCategory = '';
   }
-  // Pick up price or name changes made on the products page
+  // Pick up price, name or box-size changes made on the products page
   for (const line of state.cart) {
     const product = state.byId.get(line.productId);
-    if (product) Object.assign(line, { name: product.name, price: product.salePrice });
+    if (product) Object.assign(line, lineFields(product, line.mode));
   }
   renderChips();
   renderTiles();
@@ -80,7 +93,8 @@ async function loadToday() {
 
 function parseScan(raw) {
   const text = raw.trim();
-  const match = /^(\d{1,4})\s*[*xX×]\s*(.+)$/.exec(text);
+  // "3*code" adds 3; "0.5*code" adds half a kilo of a weighed product
+  const match = /^(\d{1,4}(?:\.\d{1,3})?)\s*[*xX×]\s*(.+)$/.exec(text);
   return match ? { qty: Number(match[1]), term: match[2].trim() } : { qty: 1, term: text };
 }
 
@@ -126,50 +140,105 @@ function renderTiles() {
         <span class="tile-name">${escapeHtml(p.name)}</span>
         <span class="tile-code num">${escapeHtml(p.barcode)}</span>
         ${stockLine(p)}
-        <span class="tag num">${formatMoney(p.salePrice)}</span>
+        ${p.hasWholesale ? `<span class="tile-wholesale">جملة <span class="num">${formatMoney(p.wholesalePrice)}</span></span>` : ''}
+        <span class="tag num">${formatMoney(p.salePrice)}${p.unit === 'kg' ? ' / كغم' : ''}</span>
       </button>`,
     )
     .join('');
 }
 
+const stockAmount = (p, amount) => `${formatQty(amount)}${p.unit === 'kg' ? ' كغم' : ''}`;
+
 function stockLine(p) {
   if (!p.trackStock) return '';
   const low = p.lowStockAlert ?? 5;
   if (p.stock <= 0) return '<span class="tile-stock is-out">نفدت الكمية</span>';
-  return `<span class="tile-stock${p.stock <= low ? ' is-low' : ''}">متوفر <span class="num">${p.stock}</span></span>`;
+  return `<span class="tile-stock${p.stock <= low ? ' is-low' : ''}">متوفر <span class="num">${stockAmount(p, p.stock)}</span></span>`;
 }
 
-// Products set to block selling when out of stock cannot go past what is on the shelf
-function stockProblem(product, qty) {
-  if (!product.trackStock || !product.blockWhenOut || qty <= product.stock) return null;
+// Products set to block selling when out of stock cannot go past what is on the shelf.
+// `base` is the total wanted in pieces or kg, wholesale boxes included.
+function stockProblem(product, base) {
+  if (!product.trackStock || !product.blockWhenOut || roundQty(base) <= product.stock) return null;
   return product.stock > 0
-    ? `المتوفر من «${product.name}» ${product.stock} فقط`
+    ? `المتوفر من «${product.name}» ${stockAmount(product, product.stock)} فقط`
     : `نفدت كمية «${product.name}» من المخزن`;
 }
 
 /* Cart */
 
+// A cart line sells one product either retail (per piece or kg) or wholesale (per box
+// of pieces, or per bag of kg). qty and price are in the line's own unit.
+const lineKey = (productId, mode) => `${productId}:${mode}`;
+const isWeighed = (line) => line.unit === 'kg' && line.mode === 'retail';
+const qtyStep = (line) => (isWeighed(line) ? 0.25 : 1);
+
+function lineFields(product, mode) {
+  const wholesale = mode === 'wholesale';
+  return {
+    name: product.name,
+    unit: product.unit ?? 'piece',
+    packSize: wholesale ? product.wholesaleQty : 1,
+    price: wholesale ? product.wholesalePrice : product.salePrice,
+  };
+}
+
+// Pieces or kg of a product already in the cart, leaving one line out
+const baseInCart = (productId, exceptKey) =>
+  state.cart.reduce((sum, l) => (l.productId === productId && l.key !== exceptKey ? sum + l.qty * l.packSize : sum), 0);
+
 const cartTotal = () => roundMoney(state.cart.reduce((sum, l) => sum + l.price * l.qty, 0));
 
 // Returns an error message instead of adding when the stock does not allow it
-function addToCart(product, qty = 1) {
-  const line = state.cart.find((l) => l.productId === product._id);
-  const next = Math.min((line?.qty ?? 0) + qty, MAX_QTY);
-  const problem = stockProblem(product, next);
+function addToCart(product, qty = 1, mode = 'retail') {
+  const key = lineKey(product._id, mode);
+  const line = state.cart.find((l) => l.key === key);
+  const fields = lineFields(product, mode);
+  const next = Math.min(roundQty((line?.qty ?? 0) + qty), MAX_QTY);
+  const problem = stockProblem(product, baseInCart(product._id, key) + next * fields.packSize);
   if (problem) return problem;
   if (line) line.qty = next;
-  else state.cart.push({ productId: product._id, name: product.name, price: product.salePrice, qty: next });
-  state.lastAdded = product._id;
+  else state.cart.push({ key, productId: product._id, mode, qty: next, ...fields });
+  state.lastAdded = key;
+  // A weighed product goes in as 1 kg; its quantity gets selected so the weight can be typed
+  if (!line && isWeighed({ ...fields, mode })) state.focusQty = key;
   renderCart();
   return null;
 }
 
 function setQty(line, qty) {
-  const next = Math.min(Math.max(1, qty), MAX_QTY);
+  const weighed = isWeighed(line);
+  const next = Math.min(Math.max(weighed ? 0.001 : 1, weighed ? roundQty(qty) : Math.round(qty)), MAX_QTY);
   const product = state.byId.get(line.productId);
-  const problem = product && stockProblem(product, next);
+  const problem = product && stockProblem(product, baseInCart(line.productId, line.key) + next * line.packSize);
   if (problem) toast(problem, 'error');
   else line.qty = next;
+  renderCart();
+}
+
+// Switches a line between retail and wholesale, keeping its quantity and merging into
+// an existing line of that kind
+function setMode(line, mode) {
+  const product = state.byId.get(line.productId);
+  if (!product || line.mode === mode) return;
+  const key = lineKey(product._id, mode);
+  const other = state.cart.find((l) => l.key === key);
+  const fields = lineFields(product, mode);
+  const whole = mode === 'wholesale' || fields.unit === 'piece';
+  const qty = Math.min(roundQty((other?.qty ?? 0) + (whole ? Math.max(1, Math.round(line.qty)) : line.qty)), MAX_QTY);
+  const rest = baseInCart(product._id, key) - line.qty * line.packSize;
+  const problem = stockProblem(product, rest + qty * fields.packSize);
+  if (problem) {
+    toast(problem, 'error');
+    return;
+  }
+  if (other) {
+    other.qty = qty;
+    state.cart = state.cart.filter((l) => l !== line);
+  } else {
+    Object.assign(line, { key, mode, qty, ...fields });
+  }
+  state.lastAdded = key;
   renderCart();
 }
 
@@ -178,20 +247,42 @@ function removeLine(line) {
   renderCart();
 }
 
+// After adding: a weighed product waits for its weight, anything else goes back to scanning
+function focusAfterAdd() {
+  const key = state.focusQty;
+  state.focusQty = null;
+  const input = key && els.cartLines.querySelector(`[data-key="${key}"] [data-qty]`);
+  if (input && finePointer) {
+    input.focus();
+    input.select();
+  } else {
+    focusScan();
+  }
+}
+
 function lineHtml(l) {
   const name = escapeHtml(l.name);
-  return `<li class="line${l.productId === state.lastAdded ? ' is-new' : ''}" data-id="${l.productId}">
+  const weighed = isWeighed(l);
+  const pack = l.mode === 'wholesale' ? packName(l.unit, l.packSize) : weighed ? 'بالكيلو' : '';
+  const modeSwitch = state.byId.get(l.productId)?.hasWholesale
+    ? `<div class="mode-switch" role="group" aria-label="نوع البيع">
+        <button type="button" data-line-mode="retail" aria-pressed="${l.mode === 'retail'}">مفرد</button>
+        <button type="button" data-line-mode="wholesale" aria-pressed="${l.mode === 'wholesale'}">جملة</button>
+      </div>`
+    : '';
+  return `<li class="line${l.key === state.lastAdded ? ' is-new' : ''}" data-key="${l.key}">
     <div class="line-main">
-      <span class="line-name">${name}</span>
+      <span class="line-name">${name}${pack ? ` <small class="line-pack">${pack}</small>` : ''}</span>
       <span class="line-total num">${formatMoney(l.price * l.qty)}</span>
     </div>
     <div class="line-sub">
       <div class="qty" role="group" aria-label="كمية ${name}">
         <button type="button" class="qty-btn" data-inc aria-label="زيادة الكمية">+</button>
-        <input class="qty-input num" type="number" min="1" max="${MAX_QTY}" step="1" value="${l.qty}" data-qty aria-label="الكمية">
-        <button type="button" class="qty-btn" data-dec aria-label="إنقاص الكمية"${l.qty <= 1 ? ' disabled' : ''}>−</button>
+        <input class="qty-input num" type="number" min="${weighed ? 0.001 : 1}" max="${MAX_QTY}" step="${weighed ? 'any' : 1}" value="${l.qty}" data-qty aria-label="${weighed ? 'الوزن بالكيلوغرام' : 'الكمية'}">
+        <button type="button" class="qty-btn" data-dec aria-label="إنقاص الكمية"${l.qty <= qtyStep(l) ? ' disabled' : ''}>−</button>
       </div>
       <span class="line-unit">× <span class="num">${formatMoney(l.price)}</span></span>
+      ${modeSwitch}
       <button type="button" class="line-remove" data-remove aria-label="حذف ${name} من الفاتورة" title="حذف من الفاتورة">×</button>
     </div>
   </li>`;
@@ -202,10 +293,13 @@ function renderCart() {
   els.cartLines.hidden = !hasItems;
   els.cartEmpty.hidden = hasItems;
   els.cartLines.innerHTML = state.cart.map(lineHtml).join('');
-  els.itemCount.textContent = formatMoney(state.cart.reduce((sum, l) => sum + l.qty, 0));
+  // Pieces only (a box counts its pieces); weights are not pieces
+  els.itemCount.textContent = formatQty(
+    state.cart.reduce((sum, l) => (l.unit === 'kg' ? sum : sum + l.qty * l.packSize), 0),
+  );
   els.grandTotal.textContent = formatMoney(cartTotal());
   if (state.lastAdded) {
-    els.cartLines.querySelector(`[data-id="${state.lastAdded}"]`)?.scrollIntoView({ block: 'nearest' });
+    els.cartLines.querySelector(`[data-key="${state.lastAdded}"]`)?.scrollIntoView({ block: 'nearest' });
     state.lastAdded = null;
   }
   updatePayment();
@@ -269,6 +363,10 @@ async function handleScan() {
     scanError(`لا يوجد منتج بالباركود أو الاسم «${term}»`);
     return;
   }
+  if ((product.unit ?? 'piece') === 'piece' && !Number.isInteger(qty)) {
+    scanError(`«${product.name}» يُباع بالقطعة، فاكتب عددًا صحيحًا`);
+    return;
+  }
 
   const problem = addToCart(product, qty);
   if (problem) {
@@ -279,6 +377,7 @@ async function handleScan() {
   els.scan.classList.remove('is-error');
   state.query = '';
   renderTiles();
+  focusAfterAdd();
 }
 
 els.scan.addEventListener('input', () => {
@@ -337,27 +436,29 @@ els.tiles.addEventListener('click', (e) => {
     els.scan.value = '';
     renderTiles();
   }
-  focusScan();
+  focusAfterAdd();
 });
 
 /* Cart interactions */
 
-const lineFor = (el) => state.cart.find((l) => l.productId === el.closest('.line')?.dataset.id);
+const lineFor = (el) => state.cart.find((l) => l.key === el.closest('.line')?.dataset.key);
 
 els.cartLines.addEventListener('click', (e) => {
   const line = lineFor(e.target);
   if (!line) return;
-  if (e.target.closest('[data-inc]')) setQty(line, line.qty + 1);
-  else if (e.target.closest('[data-dec]')) setQty(line, line.qty - 1);
+  const modeButton = e.target.closest('[data-line-mode]');
+  if (e.target.closest('[data-inc]')) setQty(line, line.qty + qtyStep(line));
+  else if (e.target.closest('[data-dec]')) setQty(line, line.qty - qtyStep(line));
   else if (e.target.closest('[data-remove]')) removeLine(line);
+  else if (modeButton) setMode(line, modeButton.dataset.lineMode);
   else return;
   focusScan();
 });
 
 els.cartLines.addEventListener('change', (e) => {
   if (!e.target.matches('[data-qty]')) return;
-  const qty = Math.floor(Number(e.target.value));
-  setQty(lineFor(e.target), Number.isFinite(qty) ? qty : 1);
+  const qty = Number(e.target.value);
+  setQty(lineFor(e.target), Number.isFinite(qty) && qty > 0 ? qty : 1);
   focusScan();
 });
 
@@ -391,7 +492,7 @@ async function checkout() {
     const sale = await api('/sales', {
       method: 'POST',
       body: {
-        items: state.cart.map((l) => ({ productId: l.productId, quantity: l.qty })),
+        items: state.cart.map((l) => ({ productId: l.productId, quantity: l.qty, mode: l.mode })),
         paid: raw === '' ? undefined : Number(raw),
       },
     });
@@ -410,6 +511,13 @@ async function checkout() {
   }
 }
 
+// "9,000 للعلبة (10 قطع)", "1,000 للكيلو", "250 للقطعة"
+function receiptPrice(item) {
+  const price = `<span class="num">${formatMoney(item.unitPrice)}</span>`;
+  if (item.mode === 'wholesale') return `${price} لل${packName(item.unit, item.packSize)}`;
+  return `${price} ${item.unit === 'kg' ? 'للكيلو' : 'للقطعة'}`;
+}
+
 function showReceipt(sale) {
   state.lastSale = sale;
   els.saleReceipt.innerHTML = `<div class="slip">
@@ -423,8 +531,8 @@ function showReceipt(sale) {
       <tbody>${sale.items
         .map(
           (i) => `<tr>
-          <td>${escapeHtml(i.name)}<small><span class="num">${formatMoney(i.unitPrice)}</span> للقطعة</small></td>
-          <td class="end num">${i.quantity}</td>
+          <td>${escapeHtml(i.name)}<small>${receiptPrice(i)}</small></td>
+          <td class="end"><span class="num">${formatQty(i.quantity)}</span>${i.unit === 'kg' && i.mode !== 'wholesale' ? ' كغم' : ''}</td>
           <td class="end num">${formatMoney(i.lineTotal)}</td>
         </tr>`,
         )

@@ -8,6 +8,22 @@ export const formatDateTime = (d) => dateTimeFormat.format(new Date(d));
 export const formatTime = (d) => timeFormat.format(new Date(d));
 export const roundMoney = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
 
+// Quantities: pieces are whole, weights are kept to the gram
+const qtyFormat = new Intl.NumberFormat('en-US', { maximumFractionDigits: 3 });
+export const formatQty = (n) => qtyFormat.format(Number(n) || 0);
+export const roundQty = (n) => Math.round((n + Number.EPSILON) * 1000) / 1000;
+
+// "علبة (10 قطع)" for a box of pieces, "كيس (10 كغم)" for a wholesale weight
+export function packName(unit, size) {
+  return unit === 'kg' ? `كيس (${formatQty(size)} كغم)` : `علبة (${arCount(size, PIECES)})`;
+}
+
+// A quantity in its unit, e.g. "0.5 كغم", "3 × علبة (10 قطع)", "4"
+export function qtyLabel({ unit, mode, packSize, quantity }) {
+  if (mode === 'wholesale') return `${formatQty(quantity)} × ${packName(unit, packSize)}`;
+  return unit === 'kg' ? `${formatQty(quantity)} كغم` : formatQty(quantity);
+}
+
 // Midnight to midnight of `date` in this browser's time zone, as the sales API's
 // from/to query. The server may run in another time zone (UTC on the VPS).
 export function dayQuery(date) {

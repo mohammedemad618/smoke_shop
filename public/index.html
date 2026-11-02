@@ -67,29 +67,53 @@
         <label for="fCategory">القسم</label>
         <select class="input" id="fCategory" name="category"></select>
       </div>
+      <div class="field">
+        <span class="field-label" id="unitLabel">طريقة البيع</span>
+        <div class="segmented" role="group" aria-labelledby="unitLabel">
+          <button type="button" data-unit="piece" aria-pressed="true">بالقطعة</button>
+          <button type="button" data-unit="kg" aria-pressed="false">بالوزن (كغم)</button>
+        </div>
+      </div>
       <div class="field-row">
         <div class="field">
-          <label for="fPurchase">سعر الشراء</label>
+          <label for="fPurchase">سعر الشراء <span class="per" data-per></span></label>
           <input class="input num" id="fPurchase" name="purchasePrice" type="number" min="0" step="any" inputmode="decimal">
         </div>
         <div class="field">
-          <label for="fSale">سعر البيع</label>
+          <label for="fSale">سعر البيع <span class="per" data-per></span></label>
           <input class="input num" id="fSale" name="salePrice" type="number" min="0" step="any" inputmode="decimal">
         </div>
       </div>
       <p class="margin-note" id="marginNote" aria-live="polite"></p>
-      <fieldset class="stock-box">
+      <fieldset class="option-box">
+        <legend>البيع بالجملة</legend>
+        <label class="check"><input type="checkbox" id="fHasWholesale"> يوجد سعر جملة</label>
+        <div id="wholesaleOptions" hidden>
+          <div class="field-row">
+            <div class="field">
+              <label for="fWholesaleQty" id="wholesaleQtyLabel"></label>
+              <input class="input num" id="fWholesaleQty" type="number" min="0" step="1" inputmode="decimal">
+            </div>
+            <div class="field">
+              <label for="fWholesalePrice" id="wholesalePriceLabel"></label>
+              <input class="input num" id="fWholesalePrice" type="number" min="0" step="any" inputmode="decimal">
+            </div>
+          </div>
+          <p class="margin-note" id="wholesaleNote" aria-live="polite"></p>
+        </div>
+      </fieldset>
+      <fieldset class="option-box">
         <legend>المخزن</legend>
         <label class="check"><input type="checkbox" id="fTrackStock"> تتبّع الكمية في المخزن</label>
         <div id="stockOptions">
           <div class="field-row">
             <div class="field">
-              <label for="fStock">الكمية في المخزن</label>
-              <input class="input num" id="fStock" type="number" step="1" inputmode="numeric" placeholder="0">
+              <label for="fStock">الكمية في المخزن <span class="per" data-stock-unit></span></label>
+              <input class="input num" id="fStock" type="number" step="1" inputmode="decimal" placeholder="0">
             </div>
             <div class="field">
               <label for="fLowStock">نبّهني عندما تصل الكمية إلى</label>
-              <input class="input num" id="fLowStock" type="number" min="0" step="1" inputmode="numeric">
+              <input class="input num" id="fLowStock" type="number" min="0" step="1" inputmode="decimal">
             </div>
           </div>
           <label class="check"><input type="checkbox" id="fBlockWhenOut"> منع البيع عند نفاد الكمية</label>

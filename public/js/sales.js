@@ -1,4 +1,4 @@
-import { api, toast, formatMoney, formatTime, escapeHtml, arCount, PIECES } from './common.js';
+import { api, toast, formatMoney, formatQty, formatTime, escapeHtml, arCount, qtyLabel, PIECES } from './common.js';
 
 const TIME_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -157,7 +157,14 @@ function emptyState(text) {
 }
 
 // What an invoice still counts for after its returns
-const keptPieces = (sale) => sale.items.reduce((sum, i) => sum + i.quantity - (i.returnedQuantity ?? 0), 0);
+// Pieces only: a box counts its pieces, weights are not pieces
+const keptPieces = (sale) =>
+  sale.items.reduce(
+    (sum, i) => (i.unit === 'kg' ? sum : sum + (i.quantity - (i.returnedQuantity ?? 0)) * (i.packSize ?? 1)),
+    0,
+  );
+// Pieces and packs are returned whole; a retail weight can be a fraction
+const wholeOnly = (item) => item.mode === 'wholesale' || item.unit !== 'kg';
 const netTotal = (sale) => sale.total - (sale.returnedTotal ?? 0);
 const netProfit = (sale) => sale.profit - ((sale.returnedTotal ?? 0) - (sale.returnedCost ?? 0));
 
@@ -170,13 +177,13 @@ function statusBadge(sale) {
 function itemsDetail(sale) {
   const items = sale.items
     .map((i) => {
-      const back = i.returnedQuantity ? ` <span class="returned-inline">أُرجع <span class="num">${i.returnedQuantity}</span></span>` : '';
-      return `<li><span>${escapeHtml(i.name)} <span class="num">× ${i.quantity}</span>${back}</span><span class="num">${formatMoney(i.lineTotal)}</span></li>`;
+      const back = i.returnedQuantity ? ` <span class="returned-inline">أُرجع ${formatQty(i.returnedQuantity)}</span>` : '';
+      return `<li><span>${escapeHtml(i.name)} <span class="num">${qtyLabel(i)}</span>${back}</span><span class="num">${formatMoney(i.lineTotal)}</span></li>`;
     })
     .join('');
   const log = (sale.returns ?? [])
     .map(
-      (r) => `<li class="returns-log"><span>إرجاع ${r.items.map((i) => `${escapeHtml(i.name)} × <span class="num">${i.quantity}</span>`).join('، ')} الساعة ${formatTime(r.at)}</span><span class="num">−${formatMoney(r.amount)}</span></li>`,
+      (r) => `<li class="returns-log"><span>إرجاع ${r.items.map((i) => `${escapeHtml(i.name)} <span class="num">${qtyLabel(i)}</span>`).join('، ')} الساعة ${formatTime(r.at)}</span><span class="num">−${formatMoney(r.amount)}</span></li>`,
     )
     .join('');
   return `<ul>${items}${log}</ul>`;
@@ -305,7 +312,7 @@ function renderProducts() {
     <thead><tr>
       <th scope="col" class="rank"><span class="sr-only">الترتيب</span></th>
       <th scope="col">المنتج</th>
-      <th scope="col">القطع</th>
+      <th scope="col">الكمية</th>
       <th scope="col" class="end">المبيعات</th>
       <th scope="col" class="end">التكلفة</th>
       <th scope="col" class="end">الربح</th>
@@ -316,7 +323,7 @@ function renderProducts() {
         (p, i) => `<tr>
         <td class="rank num">${i + 1}</td>
         <td><div class="pname">${escapeHtml(p.name)}</div><div class="pcat num">${escapeHtml(p.barcode)}</div></td>
-        <td class="num">${formatMoney(p.quantity)}</td>
+        <td class="num">${formatQty(p.quantity)}${p.unit === 'kg' ? ' كغم' : ''}</td>
         <td class="end num">${formatMoney(p.total)}</td>
         <td class="end num">${formatMoney(p.cost)}</td>
         <td class="end num${profitClass(p.profit)}">${formatMoney(p.profit)}</td>
@@ -419,15 +426,19 @@ els.rangeForm.addEventListener('click', (e) => {
 
 function returnQuantities() {
   return [...els.returnLines.querySelectorAll('input')].map((input) => ({
+    line: Number(input.dataset.index),
     item: returning.items[Number(input.dataset.index)],
     max: Number(input.max),
     quantity: input.value.trim() === '' ? 0 : Number(input.value),
   }));
 }
 
+const validReturn = (r) =>
+  Number.isFinite(r.quantity) && r.quantity >= 0 && r.quantity <= r.max && (!wholeOnly(r.item) || Number.isInteger(r.quantity));
+
 function updateReturnAmount() {
   const amount = returnQuantities().reduce(
-    (sum, r) => sum + (Number.isInteger(r.quantity) && r.quantity > 0 ? Math.min(r.quantity, r.max) * r.item.unitPrice : 0),
+    (sum, r) => sum + (validReturn(r) ? r.quantity * r.item.unitPrice : 0),
     0,
   );
   els.returnAmount.textContent = formatMoney(amount);
@@ -439,11 +450,12 @@ function openReturn(sale) {
   els.returnError.hidden = true;
   els.returnLines.innerHTML = sale.items
     .map((item, index) => {
-      const left = item.quantity - (item.returnedQuantity ?? 0);
+      const left = Math.round((item.quantity - (item.returnedQuantity ?? 0)) * 1000) / 1000;
+      const per = item.mode === 'wholesale' ? 'للجملة' : item.unit === 'kg' ? 'للكيلو' : 'للقطعة';
       return `<tr${left ? '' : ' class="is-quiet"'}>
-        <td><div class="pname">${escapeHtml(item.name)}</div><div class="pcat"><span class="num">${formatMoney(item.unitPrice)}</span> للقطعة</div></td>
-        <td><span class="num">${item.quantity}</span>${item.returnedQuantity ? ` <small class="returned-inline">أُرجع <span class="num">${item.returnedQuantity}</span></small>` : ''}</td>
-        <td><input class="input num return-qty" type="number" min="0" max="${left}" step="1" value="0" data-index="${index}"${left ? '' : ' disabled'} aria-label="الكمية المرتجعة من ${escapeHtml(item.name)}"></td>
+        <td><div class="pname">${escapeHtml(item.name)}</div><div class="pcat"><span class="num">${formatMoney(item.unitPrice)}</span> ${per}</div></td>
+        <td><span class="num">${qtyLabel(item)}</span>${item.returnedQuantity ? ` <small class="returned-inline">أُرجع ${formatQty(item.returnedQuantity)}</small>` : ''}</td>
+        <td><input class="input num return-qty" type="number" min="0" max="${left}" step="${wholeOnly(item) ? 1 : 'any'}" value="0" data-index="${index}"${left ? '' : ' disabled'} aria-label="الكمية المرتجعة من ${escapeHtml(item.name)}"></td>
       </tr>`;
     })
     .join('');
@@ -466,12 +478,13 @@ els.returnForm.addEventListener('submit', async (e) => {
     els.returnError.hidden = false;
   };
   const rows = returnQuantities();
-  const bad = rows.find((r) => !Number.isInteger(r.quantity) || r.quantity < 0 || r.quantity > r.max);
+  const bad = rows.find((r) => !validReturn(r));
   if (bad) {
-    showError(`كمية «${bad.item.name}» يجب أن تكون عددًا صحيحًا من 0 إلى ${bad.max}`);
+    const kind = wholeOnly(bad.item) ? 'عددًا صحيحًا' : 'وزنًا';
+    showError(`كمية «${bad.item.name}» يجب أن تكون ${kind} من 0 إلى ${formatQty(bad.max)}`);
     return;
   }
-  const items = rows.filter((r) => r.quantity > 0).map((r) => ({ productId: r.item.product, quantity: r.quantity }));
+  const items = rows.filter((r) => r.quantity > 0).map((r) => ({ line: r.line, quantity: r.quantity }));
   if (!items.length) {
     showError('اكتب عدد القطع المرتجعة، أو اضغط «إرجاع الكل»');
     return;

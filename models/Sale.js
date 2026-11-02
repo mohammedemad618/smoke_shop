@@ -7,7 +7,12 @@ const saleItemSchema = new Schema(
     product: { type: Schema.Types.ObjectId, ref: 'Product' },
     name: { type: String, required: true },
     barcode: { type: String, required: true },
-    quantity: { type: Number, required: true, min: 1 },
+    // How this line was sold: retail by the piece or kg, or wholesale packs of `packSize`
+    // pieces/kg. quantity, unitPrice and unitCost are all per sold unit (piece, kg or pack).
+    unit: { type: String, enum: ['piece', 'kg'], default: 'piece' },
+    mode: { type: String, enum: ['retail', 'wholesale'], default: 'retail' },
+    packSize: { type: Number, default: 1 },
+    quantity: { type: Number, required: true, min: 0.001 },
     unitPrice: { type: Number, required: true },
     unitCost: { type: Number, required: true },
     lineTotal: { type: Number, required: true },
@@ -25,6 +30,9 @@ const returnSchema = new Schema(
         _id: false,
         product: { type: Schema.Types.ObjectId, ref: 'Product' },
         name: String,
+        unit: String,
+        mode: String,
+        packSize: Number,
         quantity: Number,
         amount: Number,
       },

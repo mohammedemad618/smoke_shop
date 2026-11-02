@@ -1,4 +1,4 @@
-import { api, toast, formatMoney, escapeHtml, arCount, PRODUCTS } from './common.js';
+import { api, toast, formatMoney, formatQty, escapeHtml, arCount, packName, PRODUCTS } from './common.js';
 import { randomStoreBarcode } from './barcode.js';
 import { scanBarcode } from './scanner.js';
 
@@ -41,13 +41,27 @@ const fields = {
   category: $('fCategory'),
   purchasePrice: $('fPurchase'),
   salePrice: $('fSale'),
+  hasWholesale: $('fHasWholesale'),
+  wholesaleQty: $('fWholesaleQty'),
+  wholesalePrice: $('fWholesalePrice'),
   trackStock: $('fTrackStock'),
   stock: $('fStock'),
   lowStockAlert: $('fLowStock'),
   blockWhenOut: $('fBlockWhenOut'),
 };
 const stockOptions = $('stockOptions');
+const unitForm = {
+  buttons: document.querySelectorAll('[data-unit]'),
+  perLabels: document.querySelectorAll('[data-per]'),
+  stockUnit: document.querySelector('[data-stock-unit]'),
+  wholesaleOptions: $('wholesaleOptions'),
+  wholesaleQtyLabel: $('wholesaleQtyLabel'),
+  wholesalePriceLabel: $('wholesalePriceLabel'),
+  wholesaleNote: $('wholesaleNote'),
+};
 const DEFAULT_LOW_STOCK = 5;
+const PER_UNIT = { piece: 'للقطعة', kg: 'للكيلو' };
+let formUnit = 'piece';
 
 /* Data */
 
@@ -145,9 +159,17 @@ function emptyState(title, text, withButton = false) {
 function stockCell(p) {
   if (!p.trackStock) return '<span class="stock is-untracked" title="الكمية غير متتبعة">—</span>';
   const low = p.lowStockAlert ?? DEFAULT_LOW_STOCK;
-  if (p.stock <= 0) return `<span class="stock is-out num">${p.stock}</span><small class="stock-note">نفدت</small>`;
-  if (p.stock <= low) return `<span class="stock is-low num">${p.stock}</span><small class="stock-note">منخفضة</small>`;
-  return `<span class="stock num">${p.stock}</span>`;
+  const amount = `${formatQty(p.stock)}${p.unit === 'kg' ? ' كغم' : ''}`;
+  if (p.stock <= 0) return `<span class="stock is-out num">${amount}</span><small class="stock-note">نفدت</small>`;
+  if (p.stock <= low) return `<span class="stock is-low num">${amount}</span><small class="stock-note">منخفضة</small>`;
+  return `<span class="stock num">${amount}</span>`;
+}
+
+function salePriceCell(p) {
+  const unit = p.unit ?? 'piece';
+  const retail = `<span class="tag num">${formatMoney(p.salePrice)}</span>${unit === 'kg' ? '<small class="per-unit">للكيلو</small>' : ''}`;
+  if (!p.hasWholesale) return retail;
+  return `${retail}<small class="wholesale-price">جملة <span class="num">${formatMoney(p.wholesalePrice)}</span> / ${packName(unit, p.wholesaleQty)}</small>`;
 }
 
 function profitCell(p) {
@@ -192,7 +214,7 @@ function renderProducts() {
         <td><span class="num barcode">${escapeHtml(p.barcode)}</span></td>
         <td>${stockCell(p)}</td>
         <td class="end num">${formatMoney(p.purchasePrice)}</td>
-        <td class="end"><span class="tag num">${formatMoney(p.salePrice)}</span></td>
+        <td class="end">${salePriceCell(p)}</td>
         <td class="end">${profitCell(p)}</td>
         <td class="row-actions">
           <button class="btn btn-sm" type="button" data-edit="${p._id}">تعديل</button>
@@ -301,8 +323,15 @@ function readForm() {
     category: fields.category.value,
     purchasePrice: number(fields.purchasePrice),
     salePrice: number(fields.salePrice),
+    unit: formUnit,
+    hasWholesale: fields.hasWholesale.checked,
     trackStock: fields.trackStock.checked,
   };
+  // Without wholesale, the old box size and price are kept for when it is turned back on
+  if (data.hasWholesale) {
+    data.wholesaleQty = number(fields.wholesaleQty);
+    data.wholesalePrice = number(fields.wholesalePrice);
+  }
   // Untracked products keep whatever stock settings they had
   if (data.trackStock) {
     data.stock = number(fields.stock, 0);
@@ -310,6 +339,52 @@ function readForm() {
     data.blockWhenOut = fields.blockWhenOut.checked;
   }
   return data;
+}
+
+function setUnit(unit) {
+  formUnit = unit;
+  const byPiece = unit === 'piece';
+  unitForm.buttons.forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.unit === unit)));
+  unitForm.perLabels.forEach((el) => (el.textContent = PER_UNIT[unit]));
+  unitForm.stockUnit.textContent = byPiece ? '(قطعة)' : '(كغم)';
+  unitForm.wholesaleQtyLabel.textContent = byPiece ? 'عدد القطع في العلبة' : 'وزن الجملة (كغم)';
+  unitForm.wholesalePriceLabel.textContent = byPiece ? 'سعر بيع العلبة' : 'سعر بيع هذا الوزن';
+  // Pieces are counted whole; kilograms take grams
+  const step = byPiece ? '1' : 'any';
+  fields.wholesaleQty.step = step;
+  fields.stock.step = step;
+  fields.lowStockAlert.step = step;
+  updateMarginNote();
+  updateWholesaleNote();
+}
+
+function setWholesaleFields(product) {
+  fields.hasWholesale.checked = Boolean(product?.hasWholesale);
+  fields.wholesaleQty.value = product?.wholesaleQty ?? '';
+  fields.wholesalePrice.value = product?.wholesalePrice ?? '';
+  unitForm.wholesaleOptions.hidden = !fields.hasWholesale.checked;
+}
+
+// e.g. "أي 900 للقطعة بدل 1,000، وربح العلبة 2,000"
+function updateWholesaleNote() {
+  const note = unitForm.wholesaleNote;
+  const size = parseFloat(fields.wholesaleQty.value);
+  const price = parseFloat(fields.wholesalePrice.value);
+  const sell = parseFloat(fields.salePrice.value);
+  const buy = parseFloat(fields.purchasePrice.value);
+  note.className = 'margin-note';
+  if (!(size > 0) || !Number.isFinite(price)) {
+    note.textContent = '';
+    return;
+  }
+  const per = PER_UNIT[formUnit];
+  const parts = [`أي ${formatMoney(price / size)} ${per}${Number.isFinite(sell) ? ` بدل ${formatMoney(sell)}` : ''}`];
+  if (Number.isFinite(buy)) {
+    const profit = price - buy * size;
+    parts.push(profit < 0 ? `وخسارة ${formatMoney(-profit)} في كل جملة` : `وربح الجملة ${formatMoney(profit)}`);
+    note.classList.add(profit < 0 ? 'is-loss' : 'is-gain');
+  }
+  note.textContent = parts.join('، ');
 }
 
 function setStockFields(product) {
@@ -330,10 +405,23 @@ function validate(data) {
   if (!Number.isFinite(data.salePrice) || data.salePrice < 0) {
     return { field: 'salePrice', message: 'أدخل سعر بيع صحيحًا' };
   }
+  const byPiece = data.unit === 'piece';
+  if (data.hasWholesale) {
+    if (byPiece && !(Number.isInteger(data.wholesaleQty) && data.wholesaleQty >= 2)) {
+      return { field: 'wholesaleQty', message: 'عدد القطع في العلبة يجب أن يكون 2 أو أكثر' };
+    }
+    if (!byPiece && !(data.wholesaleQty > 0)) return { field: 'wholesaleQty', message: 'أدخل وزن الجملة بالكيلوغرام' };
+    if (!Number.isFinite(data.wholesalePrice) || data.wholesalePrice < 0) {
+      return { field: 'wholesalePrice', message: 'أدخل سعر بيع الجملة' };
+    }
+  }
   if (data.trackStock) {
-    if (!Number.isInteger(data.stock)) return { field: 'stock', message: 'كمية المخزن يجب أن تكون عددًا صحيحًا' };
-    if (!Number.isInteger(data.lowStockAlert) || data.lowStockAlert < 0) {
-      return { field: 'lowStockAlert', message: 'حد التنبيه يجب أن يكون عددًا صحيحًا من 0 فأكثر' };
+    const valid = (n) => Number.isFinite(n) && (!byPiece || Number.isInteger(n));
+    if (!valid(data.stock)) {
+      return { field: 'stock', message: byPiece ? 'كمية المخزن يجب أن تكون عددًا صحيحًا من القطع' : 'أدخل كمية المخزن بالكيلوغرام' };
+    }
+    if (!valid(data.lowStockAlert) || data.lowStockAlert < 0) {
+      return { field: 'lowStockAlert', message: 'أدخل حد تنبيه صحيحًا من 0 فأكثر' };
     }
   }
   return null;
@@ -362,12 +450,13 @@ function updateMarginNote() {
     return;
   }
   const diff = sell - buy;
+  const per = formUnit === 'kg' ? 'الكيلو' : 'القطعة';
   if (diff < 0) {
-    els.marginNote.textContent = `سعر البيع أقل من سعر الشراء، ستخسر ${formatMoney(-diff)} في كل قطعة.`;
+    els.marginNote.textContent = `سعر البيع أقل من سعر الشراء، ستخسر ${formatMoney(-diff)} في ${per}.`;
     els.marginNote.classList.add('is-loss');
   } else {
     const pct = buy > 0 ? ` (${Math.round((diff / buy) * 100)}% من سعر الشراء)` : '';
-    els.marginNote.textContent = `الربح في القطعة ${formatMoney(diff)}${pct}`;
+    els.marginNote.textContent = `الربح في ${per} ${formatMoney(diff)}${pct}`;
     els.marginNote.classList.add('is-gain');
   }
 }
@@ -388,7 +477,9 @@ function openProductDialog(product = null) {
   } else {
     fields.category.value = state.activeCategory;
   }
+  setWholesaleFields(product);
   setStockFields(product);
+  setUnit(product?.unit ?? 'piece');
   updateMarginNote();
   els.dialog.showModal();
   (product ? fields.name : fields.barcode).focus();
@@ -420,6 +511,14 @@ fields.barcode.addEventListener('keydown', (e) => {
   }
 });
 
+unitForm.buttons.forEach((b) => b.addEventListener('click', () => setUnit(b.dataset.unit)));
+fields.hasWholesale.addEventListener('change', () => {
+  unitForm.wholesaleOptions.hidden = !fields.hasWholesale.checked;
+  if (fields.hasWholesale.checked) fields.wholesaleQty.focus();
+});
+[fields.wholesaleQty, fields.wholesalePrice, fields.salePrice, fields.purchasePrice].forEach((input) =>
+  input.addEventListener('input', updateWholesaleNote),
+);
 fields.trackStock.addEventListener('change', () => {
   stockOptions.hidden = !fields.trackStock.checked;
   if (fields.trackStock.checked) fields.stock.focus();
@@ -452,7 +551,9 @@ els.form.addEventListener('submit', async (e) => {
     if (addAnother) {
       els.form.reset();
       fields.category.value = data.category;
+      setWholesaleFields(null);
       setStockFields(null);
+      setUnit(data.unit);
       updateMarginNote();
       fields.barcode.focus();
     } else {

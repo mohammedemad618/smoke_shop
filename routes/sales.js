@@ -4,7 +4,7 @@ import Product from '../models/Product.js';
 import Sale from '../models/Sale.js';
 import { nextSequence } from '../models/Counter.js';
 import { httpError } from '../lib/errors.js';
-import { money } from '../lib/util.js';
+import { money, roundQty } from '../lib/util.js';
 
 const router = Router();
 const MAX_QUANTITY = 10000;
@@ -17,6 +17,8 @@ const GROUP_FORMATS = { day: '%Y-%m-%d', month: '%Y-%m' };
 const RETURNED_TOTAL = { $ifNull: ['$returnedTotal', 0] };
 const RETURNED_COST = { $ifNull: ['$returnedCost', 0] };
 const ITEM_KEPT_QTY = { $subtract: ['$items.quantity', { $ifNull: ['$items.returnedQuantity', 0] }] };
+// In pieces or kg: a wholesale box of 10 sold twice is 20 pieces
+const ITEM_KEPT_BASE = { $multiply: [ITEM_KEPT_QTY, { $ifNull: ['$items.packSize', 1] }] };
 
 // The browser sends its own midnight-to-midnight range as ?from=&to= (ISO), so a day
 // follows the shop's clock even when the server runs in UTC. Without them, fall back
@@ -119,13 +121,25 @@ router.get('/report', async (req, res) => {
       $group: {
         _id: { $dateToString: { format: GROUP_FORMATS[groupBy], date: '$createdAt', timezone } },
         count: { $sum: { $cond: [{ $eq: ['$returnStatus', 'full'] }, 0, 1] } },
+        // Pieces only: weights are not pieces
         pieces: {
           $sum: {
             $sum: {
               $map: {
                 input: '$items',
                 as: 'i',
-                in: { $subtract: ['$$i.quantity', { $ifNull: ['$$i.returnedQuantity', 0] }] },
+                in: {
+                  $cond: [
+                    { $eq: ['$$i.unit', 'kg'] },
+                    0,
+                    {
+                      $multiply: [
+                        { $subtract: ['$$i.quantity', { $ifNull: ['$$i.returnedQuantity', 0] }] },
+                        { $ifNull: ['$$i.packSize', 1] },
+                      ],
+                    },
+                  ],
+                },
               },
             },
           },
@@ -162,8 +176,9 @@ router.get('/products', async (req, res) => {
         _id: '$items.product',
         name: { $last: '$items.name' },
         barcode: { $last: '$items.barcode' },
+        unit: { $last: { $ifNull: ['$items.unit', 'piece'] } },
         invoices: { $sum: { $cond: [{ $gt: [ITEM_KEPT_QTY, 0] }, 1, 0] } },
-        quantity: { $sum: ITEM_KEPT_QTY },
+        quantity: { $sum: ITEM_KEPT_BASE },
         total: { $sum: { $multiply: ['$items.unitPrice', ITEM_KEPT_QTY] } },
         cost: { $sum: { $multiply: ['$items.unitCost', ITEM_KEPT_QTY] } },
       },
@@ -172,9 +187,10 @@ router.get('/products', async (req, res) => {
     { $match: { quantity: { $gt: 0 } } },
   ]);
   res.json(
-    rows.map(({ _id, total, cost, ...rest }) => ({
+    rows.map(({ _id, total, cost, quantity, ...rest }) => ({
       product: _id,
       ...rest,
+      quantity: roundQty(quantity),
       total: money(total),
       cost: money(cost),
       profit: money(total - cost),
@@ -188,38 +204,60 @@ router.post('/', async (req, res) => {
   const lines = Array.isArray(req.body.items) ? req.body.items : [];
   if (lines.length === 0) throw httpError(400, 'أضف منتجًا واحدًا على الأقل إلى الفاتورة');
 
-  // Merge repeated lines of the same product, keeping cart order
-  const quantities = new Map();
+  // Merge repeated lines of the same product and sale type, keeping cart order
+  const merged = new Map();
   for (const line of lines) {
     const id = String(line?.productId ?? '');
+    const mode = line?.mode === 'wholesale' ? 'wholesale' : 'retail';
     const quantity = Number(line?.quantity);
     if (!mongoose.isObjectIdOrHexString(id)) throw httpError(400, 'الفاتورة تحتوي على منتج غير صالح');
-    if (!Number.isInteger(quantity) || quantity < 1) throw httpError(400, 'الكمية يجب أن تكون عددًا صحيحًا موجبًا');
-    quantities.set(id, (quantities.get(id) ?? 0) + quantity);
+    if (!(quantity > 0)) throw httpError(400, 'الكمية يجب أن تكون أكبر من صفر');
+    const key = `${id}:${mode}`;
+    merged.set(key, { id, mode, quantity: roundQty((merged.get(key)?.quantity ?? 0) + quantity) });
   }
-  if ([...quantities.values()].some((q) => q > MAX_QUANTITY)) {
+  if ([...merged.values()].some((l) => l.quantity > MAX_QUANTITY)) {
     throw httpError(400, `أقصى كمية للصنف الواحد ${MAX_QUANTITY}`);
   }
 
   // Prices always come from the database, never from the client
-  const products = await Product.find({ _id: { $in: [...quantities.keys()] } }).lean();
-  if (products.length !== quantities.size) {
+  const ids = [...new Set([...merged.values()].map((l) => l.id))];
+  const products = await Product.find({ _id: { $in: ids } }).lean();
+  if (products.length !== ids.length) {
     throw httpError(400, 'بعض منتجات الفاتورة لم تعد موجودة. حدّث الصفحة وأعد المحاولة');
   }
   const byId = new Map(products.map((p) => [String(p._id), p]));
 
-  const items = [...quantities].map(([id, quantity]) => {
+  const items = [...merged.values()].map(({ id, mode, quantity }) => {
     const p = byId.get(id);
+    const unit = p.unit ?? 'piece';
+    const wholesale = mode === 'wholesale';
+    if (wholesale && !p.hasWholesale) throw httpError(400, `«${p.name}» ليس له سعر جملة`);
+    // Pieces, boxes and wholesale bags are whole; only a retail weight can be a fraction
+    if ((wholesale || unit === 'piece') && !Number.isInteger(quantity)) {
+      throw httpError(400, `كمية «${p.name}» يجب أن تكون عددًا صحيحًا`);
+    }
+    const packSize = wholesale ? p.wholesaleQty : 1;
+    const unitPrice = wholesale ? p.wholesalePrice : p.salePrice;
     return {
       product: p._id,
       name: p.name,
       barcode: p.barcode,
+      unit,
+      mode,
+      packSize,
       quantity,
-      unitPrice: p.salePrice,
-      unitCost: p.purchasePrice,
-      lineTotal: money(p.salePrice * quantity),
+      unitPrice,
+      unitCost: money(p.purchasePrice * packSize),
+      lineTotal: money(unitPrice * quantity),
     };
   });
+
+  // What leaves the shelf, per product, in pieces or kg
+  const baseQuantities = new Map();
+  for (const item of items) {
+    const id = String(item.product);
+    baseQuantities.set(id, roundQty((baseQuantities.get(id) ?? 0) + item.quantity * item.packSize));
+  }
 
   const total = money(items.reduce((sum, i) => sum + i.lineTotal, 0));
   const cost = money(items.reduce((sum, i) => sum + i.unitCost * i.quantity, 0));
@@ -227,7 +265,7 @@ router.post('/', async (req, res) => {
   const paid = paidInput === undefined || paidInput === null || paidInput === '' ? total : money(paidInput);
   if (!Number.isFinite(paid) || paid < total) throw httpError(400, 'المبلغ المدفوع أقل من إجمالي الفاتورة');
 
-  const taken = await takeFromStock(products, quantities);
+  const taken = await takeFromStock(products, baseQuantities);
   try {
     const sale = await Sale.create({
       number: await nextSequence('sale'),
@@ -247,23 +285,27 @@ router.post('/', async (req, res) => {
 
 /* Returns */
 
-// Body { items: [{ productId, quantity }] } returns those quantities. Without items,
-// everything not yet returned comes back: the whole sale is cancelled.
+// Body { items: [{ line, quantity }] } returns quantities of invoice lines (by index, in
+// each line's sold unit). Without items, everything not yet returned comes back: the
+// whole sale is cancelled.
 router.post('/:id/returns', async (req, res) => {
   const sale = await Sale.findById(req.params.id);
   if (!sale) throw httpError(404, 'الفاتورة غير موجودة');
 
   const requested = Array.isArray(req.body.items) ? req.body.items : null;
   const lines = [];
-  for (const item of sale.items) {
-    const left = item.quantity - (item.returnedQuantity ?? 0);
+  sale.items.forEach((item, index) => {
+    const left = roundQty(item.quantity - (item.returnedQuantity ?? 0));
     const asked = requested
-      ? Number(requested.find((r) => String(r?.productId) === String(item.product))?.quantity ?? 0)
+      ? roundQty(Number(requested.find((r) => Number(r?.line) === index)?.quantity ?? 0))
       : left;
-    if (!Number.isInteger(asked) || asked < 0) throw httpError(400, 'الكمية المرتجعة يجب أن تكون عددًا صحيحًا');
+    const whole = item.mode === 'wholesale' || item.unit !== 'kg';
+    if (!Number.isFinite(asked) || asked < 0 || (whole && !Number.isInteger(asked))) {
+      throw httpError(400, `كمية «${item.name}» المرتجعة غير صالحة`);
+    }
     if (asked > left) throw httpError(400, `أقصى ما يمكن إرجاعه من «${item.name}» ${left}`);
     if (asked > 0) lines.push({ item, quantity: asked });
-  }
+  });
   if (!lines.length) {
     throw httpError(400, sale.returnStatus === 'full' ? 'هذه الفاتورة مرتجعة بالكامل' : 'حدّد كمية واحدة على الأقل للإرجاع');
   }
@@ -273,6 +315,9 @@ router.post('/:id/returns', async (req, res) => {
     items: lines.map(({ item, quantity }) => ({
       product: item.product,
       name: item.name,
+      unit: item.unit,
+      mode: item.mode,
+      packSize: item.packSize,
       quantity,
       amount: money(item.unitPrice * quantity),
     })),
@@ -280,14 +325,15 @@ router.post('/:id/returns', async (req, res) => {
   };
   entry.amount = money(entry.items.reduce((sum, i) => sum + i.amount, 0));
 
-  for (const { item, quantity } of lines) item.returnedQuantity = (item.returnedQuantity ?? 0) + quantity;
+  for (const { item, quantity } of lines) item.returnedQuantity = roundQty((item.returnedQuantity ?? 0) + quantity);
   sale.returns.push(entry);
   sale.returnedTotal = money((sale.returnedTotal ?? 0) + entry.amount);
   sale.returnedCost = money((sale.returnedCost ?? 0) + entry.cost);
   sale.returnStatus = sale.items.every((i) => i.returnedQuantity >= i.quantity) ? 'full' : 'partial';
   await sale.save();
 
-  await putBackInStock(lines.map(({ item, quantity }) => [item.product, quantity]));
+  // Back on the shelf in pieces or kg: a returned box puts all its pieces back
+  await putBackInStock(lines.map(({ item, quantity }) => [item.product, roundQty(quantity * (item.packSize ?? 1))]));
   res.status(201).json({ sale, refunded: entry.amount });
 });
 
