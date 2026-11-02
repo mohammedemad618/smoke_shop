@@ -8,21 +8,25 @@ import { money } from '../lib/util.js';
 
 const router = Router();
 const MAX_QUANTITY = 10000;
+const MAX_RANGE_MS = 31 * 24 * 60 * 60 * 1000;
 
-// Day boundaries in the server's local time (the shop's clock)
-function dayRange(value) {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value ?? ''));
-  const now = new Date();
-  const start = match
-    ? new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]))
-    : new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const end = new Date(start);
-  end.setDate(end.getDate() + 1);
+// The browser sends its own midnight-to-midnight range as ?from=&to= (ISO), so a day
+// follows the shop's clock even when the server runs in UTC. Without them, fall back
+// to today on the server's clock.
+function requestedRange({ from, to }) {
+  const start = new Date(String(from ?? ''));
+  const end = new Date(String(to ?? ''));
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    return { start: today, end: new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1) };
+  }
+  if (end <= start || end - start > MAX_RANGE_MS) throw httpError(400, 'نطاق التاريخ غير صالح');
   return { start, end };
 }
 
 router.get('/', async (req, res) => {
-  const { start, end } = dayRange(req.query.date);
+  const { start, end } = requestedRange(req.query);
   const sales = await Sale.find({ createdAt: { $gte: start, $lt: end } }).sort({ createdAt: -1 }).lean();
   const summary = sales.reduce(
     (acc, sale) => ({

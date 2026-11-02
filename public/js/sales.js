@@ -1,4 +1,4 @@
-import { api, toast, formatMoney, formatTime, escapeHtml, arCount, PIECES } from './common.js';
+import { api, toast, formatMoney, formatTime, escapeHtml, arCount, PIECES, dayQuery } from './common.js';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -27,8 +27,9 @@ function shiftDay(delta) {
 }
 
 async function load() {
+  const [y, m, d] = els.date.value.split('-').map(Number);
   try {
-    render(await api(`/sales?date=${els.date.value}`));
+    render(await api(`/sales?${dayQuery(new Date(y, m - 1, d))}`));
   } catch (err) {
     toast(err.message, 'error');
   }

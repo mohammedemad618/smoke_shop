@@ -8,6 +8,14 @@ export const formatDateTime = (d) => dateTimeFormat.format(new Date(d));
 export const formatTime = (d) => timeFormat.format(new Date(d));
 export const roundMoney = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
 
+// Midnight to midnight of `date` in this browser's time zone, as the sales API's
+// from/to query. The server may run in another time zone (UTC on the VPS).
+export function dayQuery(date) {
+  const from = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const to = new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1);
+  return new URLSearchParams({ from: from.toISOString(), to: to.toISOString() }).toString();
+}
+
 const ENTITIES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
 export const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ENTITIES[c]);
 

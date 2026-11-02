@@ -1,4 +1,4 @@
-import { api, toast, formatMoney, formatDateTime, escapeHtml, roundMoney, arCount, INVOICES } from './common.js';
+import { api, toast, formatMoney, formatDateTime, escapeHtml, roundMoney, arCount, INVOICES, dayQuery } from './common.js';
 import { scanBarcodes } from './scanner.js';
 
 const MAX_QTY = 10000;
@@ -70,7 +70,7 @@ async function loadCatalog() {
 
 async function loadToday() {
   try {
-    const { summary } = await api('/sales');
+    const { summary } = await api(`/sales?${dayQuery(new Date())}`);
     els.today.innerHTML = `مبيعات اليوم <strong class="num">${formatMoney(summary.total)}</strong> (${arCount(summary.count, INVOICES)})`;
   } catch {
     els.today.textContent = '';
