@@ -381,6 +381,12 @@ h1, h2, h3 { line-height: 1.25; }
 .z-value.is-profit { color: var(--go); }
 .z-value.is-loss { color: var(--stop); }
 .z-note { font-size: 12.5px; color: var(--muted); }
+.section-head { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 10px; }
+.section-head h2 { margin: 0; font-size: 18px; font-weight: 600; }
+.report-section { margin-top: 32px; }
+.segmented-sm button { padding: 4px 12px; font-size: 14px; }
+.products-report .rank { width: 1%; padding-inline-end: 0; color: var(--muted); }
+.show-all { margin-top: 8px; }
 .breakdown tr.is-quiet td { color: var(--muted); }
 .breakdown tfoot td { padding: 11px 14px; border-top: 1px solid var(--line); background: var(--paper-2); font-weight: 600; }
 .breakdown tfoot td:first-child { border-end-start-radius: var(--r-m); }

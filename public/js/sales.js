@@ -5,6 +5,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 // Periods longer than this are broken down by month instead of by day
 const MAX_DAILY_ROWS = 62;
 const MAX_RANGE_DAYS = 3 * 366;
+const TOP_PRODUCTS = 10;
 
 const LOCALE = 'ar-u-nu-latn';
 const fullDay = new Intl.DateTimeFormat(LOCALE, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
@@ -30,10 +31,14 @@ const els = {
   title: $('periodTitle'),
   summary: $('summary'),
   area: $('salesArea'),
+  productsSection: $('productsSection'),
+  productsArea: $('productsArea'),
+  sorts: document.querySelectorAll('[data-sort]'),
 };
 
 let mode = 'day';
 let request = 0;
+const productView = { rows: [], sort: 'profit', showAll: false };
 
 /* Dates (all in the browser's time zone) */
 
@@ -79,16 +84,22 @@ async function load() {
   els.title.textContent = period.title;
   syncLimits();
   try {
+    const productsRequest = api(`/sales/products?${rangeQuery(period)}`);
     if (mode === 'day') {
-      const data = await api(`/sales?${rangeQuery(period)}`);
+      const [data, products] = await Promise.all([api(`/sales?${rangeQuery(period)}`), productsRequest]);
       if (current !== request) return;
       renderSummary(data.summary);
       renderInvoices(data.sales);
+      showProducts(products);
     } else {
-      const data = await api(`/sales/report?${rangeQuery(period, { groupBy: period.groupBy, tz: TIME_ZONE })}`);
+      const [data, products] = await Promise.all([
+        api(`/sales/report?${rangeQuery(period, { groupBy: period.groupBy, tz: TIME_ZONE })}`),
+        productsRequest,
+      ]);
       if (current !== request) return;
       renderSummary(data.summary);
       renderBreakdown(period, data);
+      showProducts(products);
     }
   } catch (err) {
     toast(err.message, 'error');
@@ -136,7 +147,8 @@ function renderInvoices(sales) {
     emptyState('لا توجد مبيعات في هذا اليوم');
     return;
   }
-  els.area.innerHTML = `<table class="ptable">
+  els.area.innerHTML = `<div class="section-head"><h2>الفواتير</h2></div>
+  <table class="ptable">
     <thead><tr>
       <th scope="col">رقم الفاتورة</th>
       <th scope="col">الوقت</th>
@@ -206,7 +218,8 @@ function renderBreakdown(period, { groupBy, summary, periods }) {
     </tr>`;
   });
 
-  els.area.innerHTML = `<table class="ptable breakdown">
+  els.area.innerHTML = `<div class="section-head"><h2>${byMonth ? 'حسب الأشهر' : 'حسب الأيام'}</h2></div>
+  <table class="ptable breakdown">
     <thead><tr>
       <th scope="col">${byMonth ? 'الشهر' : 'اليوم'}</th>
       <th scope="col">الفواتير</th>
@@ -226,6 +239,70 @@ function renderBreakdown(period, { groupBy, summary, periods }) {
     </tr></tfoot>
   </table>`;
 }
+
+function showProducts(rows) {
+  productView.rows = rows;
+  productView.showAll = false;
+  renderProducts();
+}
+
+function renderProducts() {
+  const { rows, sort, showAll } = productView;
+  els.productsSection.hidden = rows.length === 0;
+  if (!rows.length) return;
+
+  // Ties fall back to profit, then name, so the order is stable
+  const sorted = [...rows].sort(
+    (a, b) => b[sort] - a[sort] || b.profit - a.profit || a.name.localeCompare(b.name, 'ar'),
+  );
+  const visible = showAll ? sorted : sorted.slice(0, TOP_PRODUCTS);
+
+  els.productsArea.innerHTML = `<table class="ptable products-report">
+    <thead><tr>
+      <th scope="col" class="rank"><span class="sr-only">الترتيب</span></th>
+      <th scope="col">المنتج</th>
+      <th scope="col">القطع</th>
+      <th scope="col" class="end">المبيعات</th>
+      <th scope="col" class="end">التكلفة</th>
+      <th scope="col" class="end">الربح</th>
+      <th scope="col" class="end">نسبة الربح</th>
+    </tr></thead>
+    <tbody>${visible
+      .map(
+        (p, i) => `<tr>
+        <td class="rank num">${i + 1}</td>
+        <td><div class="pname">${escapeHtml(p.name)}</div><div class="pcat num">${escapeHtml(p.barcode)}</div></td>
+        <td class="num">${formatMoney(p.quantity)}</td>
+        <td class="end num">${formatMoney(p.total)}</td>
+        <td class="end num">${formatMoney(p.cost)}</td>
+        <td class="end num${profitClass(p.profit)}">${formatMoney(p.profit)}</td>
+        <td class="end num${profitClass(p.profit)}">${marginOf(p) || '–'}</td>
+      </tr>`,
+      )
+      .join('')}</tbody>
+  </table>
+  ${
+    sorted.length > TOP_PRODUCTS
+      ? `<button class="btn btn-sm btn-ghost show-all" type="button" data-show-all>${
+          showAll ? `عرض أول ${TOP_PRODUCTS} فقط` : `عرض كل المنتجات (${formatMoney(sorted.length)})`
+        }</button>`
+      : ''
+  }`;
+}
+
+els.sorts.forEach((b) =>
+  b.addEventListener('click', () => {
+    productView.sort = b.dataset.sort;
+    els.sorts.forEach((s) => s.setAttribute('aria-pressed', String(s === b)));
+    renderProducts();
+  }),
+);
+
+els.productsArea.addEventListener('click', (e) => {
+  if (!e.target.closest('[data-show-all]')) return;
+  productView.showAll = !productView.showAll;
+  renderProducts();
+});
 
 /* Interactions */
 

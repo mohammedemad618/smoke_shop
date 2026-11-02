@@ -57,6 +57,18 @@
     <h2 class="period-title" id="periodTitle"></h2>
     <div class="zreport" id="summary"></div>
     <div id="salesArea"></div>
+
+    <section class="report-section" id="productsSection" aria-labelledby="productsTitle" hidden>
+      <div class="section-head">
+        <h2 id="productsTitle">المنتجات</h2>
+        <div class="segmented segmented-sm" role="group" aria-label="ترتيب المنتجات">
+          <button type="button" data-sort="profit" aria-pressed="true">الأكثر ربحًا</button>
+          <button type="button" data-sort="total" aria-pressed="false">الأعلى مبيعات</button>
+          <button type="button" data-sort="quantity" aria-pressed="false">الأكثر قطعًا</button>
+        </div>
+      </div>
+      <div id="productsArea"></div>
+    </section>
   </main>
 
   <div class="toasts" id="toasts"></div>

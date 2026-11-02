@@ -86,6 +86,37 @@ router.get('/report', async (req, res) => {
   res.json({ groupBy, summary: summarize(periods), periods });
 });
 
+// Per-product totals for a period, from the prices stored on each invoice at the time of sale
+router.get('/products', async (req, res) => {
+  const { start, end } = requestedRange(req.query, MAX_REPORT_RANGE_MS);
+  const rows = await Sale.aggregate([
+    { $match: { createdAt: { $gte: start, $lt: end } } },
+    // Oldest first, so $last picks the product's most recent name
+    { $sort: { createdAt: 1 } },
+    { $unwind: '$items' },
+    {
+      $group: {
+        _id: '$items.product',
+        name: { $last: '$items.name' },
+        barcode: { $last: '$items.barcode' },
+        invoices: { $sum: 1 },
+        quantity: { $sum: '$items.quantity' },
+        total: { $sum: '$items.lineTotal' },
+        cost: { $sum: { $multiply: ['$items.unitCost', '$items.quantity'] } },
+      },
+    },
+  ]);
+  res.json(
+    rows.map(({ _id, total, cost, ...rest }) => ({
+      product: _id,
+      ...rest,
+      total: money(total),
+      cost: money(cost),
+      profit: money(total - cost),
+    })),
+  );
+});
+
 router.post('/', async (req, res) => {
   const lines = Array.isArray(req.body.items) ? req.body.items : [];
   if (lines.length === 0) throw httpError(400, 'أضف منتجًا واحدًا على الأقل إلى الفاتورة');
