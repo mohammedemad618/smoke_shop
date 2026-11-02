@@ -1,7 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import mongoose from 'mongoose';
-import { PORT, MONGODB_URI } from './lib/config.js';
+import { PORT, HOST, MONGODB_URI } from './lib/config.js';
 import { errorHandler } from './lib/errors.js';
 import categoriesRouter from './routes/categories.js';
 import productsRouter from './routes/products.js';
@@ -36,6 +36,6 @@ try {
   process.exit(1);
 }
 
-app.listen(PORT, () => {
-  console.log(`POS running at http://localhost:${PORT}`);
+app.listen(PORT, HOST, () => {
+  console.log(`POS running at http://${HOST ?? 'localhost'}:${PORT}`);
 });

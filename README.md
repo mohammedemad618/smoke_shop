@@ -34,6 +34,27 @@ PORT=3000
 MONGODB_URI=mongodb://127.0.0.1:27017/salim_pos
 ```
 
+## النشر على الخادم
+
+التطبيق منشور على https://smoke.108-61-190-4.sslip.io (خادم Vultr 108.61.190.4):
+
+- الكود في `/srv/smoke_shop`، ويعمل بـ pm2 باسم `smoke-shop` على `127.0.0.1:3400`.
+- قاعدة البيانات `smoke_shop` على MongoDB المحلية في الخادم.
+- nginx في `/etc/nginx/sites-available/smoke-shop` يمرّر HTTPS إلى التطبيق، ويطلب كلمة مرور من الملف `/etc/nginx/.htpasswd-smoke`.
+- شهادة HTTPS من Let's Encrypt وتتجدد تلقائيًا.
+
+لنشر آخر تحديث من GitHub:
+
+```bash
+ssh root@108.61.190.4 "cd /srv/smoke_shop && git pull && npm ci --omit=dev && pm2 restart smoke-shop"
+```
+
+لإضافة مستخدم أو تغيير كلمة مروره:
+
+```bash
+ssh -t root@108.61.190.4 htpasswd -B /etc/nginx/.htpasswd-smoke admin
+```
+
 ## اختصارات الكاشير
 
 | المفتاح | العمل |
