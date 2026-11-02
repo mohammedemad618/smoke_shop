@@ -8,12 +8,15 @@ import { money } from '../lib/util.js';
 
 const router = Router();
 const MAX_QUANTITY = 10000;
-const MAX_RANGE_MS = 31 * 24 * 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const MAX_LIST_RANGE_MS = 31 * DAY_MS;
+const MAX_REPORT_RANGE_MS = 3 * 366 * DAY_MS;
+const GROUP_FORMATS = { day: '%Y-%m-%d', month: '%Y-%m' };
 
 // The browser sends its own midnight-to-midnight range as ?from=&to= (ISO), so a day
 // follows the shop's clock even when the server runs in UTC. Without them, fall back
 // to today on the server's clock.
-function requestedRange({ from, to }) {
+function requestedRange({ from, to }, maxMs) {
   const start = new Date(String(from ?? ''));
   const end = new Date(String(to ?? ''));
   if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
@@ -21,22 +24,66 @@ function requestedRange({ from, to }) {
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     return { start: today, end: new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1) };
   }
-  if (end <= start || end - start > MAX_RANGE_MS) throw httpError(400, 'نطاق التاريخ غير صالح');
+  if (end <= start || end - start > maxMs) throw httpError(400, 'نطاق التاريخ غير صالح');
   return { start, end };
 }
 
-router.get('/', async (req, res) => {
-  const { start, end } = requestedRange(req.query);
-  const sales = await Sale.find({ createdAt: { $gte: start, $lt: end } }).sort({ createdAt: -1 }).lean();
-  const summary = sales.reduce(
-    (acc, sale) => ({
-      count: acc.count + 1,
-      total: money(acc.total + sale.total),
-      profit: money(acc.profit + sale.profit),
+// IANA name from the browser (e.g. Asia/Baghdad), used to cut periods at local midnight
+function timeZoneParam(value) {
+  const timeZone = String(value ?? 'UTC');
+  try {
+    new Intl.DateTimeFormat('en', { timeZone });
+    return timeZone;
+  } catch {
+    throw httpError(400, 'المنطقة الزمنية غير صالحة');
+  }
+}
+
+const summarize = (rows) =>
+  rows.reduce(
+    (acc, row) => ({
+      count: acc.count + (row.count ?? 1),
+      total: money(acc.total + row.total),
+      cost: money(acc.cost + row.cost),
+      profit: money(acc.profit + row.profit),
     }),
-    { count: 0, total: 0, profit: 0 },
+    { count: 0, total: 0, cost: 0, profit: 0 },
   );
-  res.json({ summary, sales });
+
+// Invoices of one day (or a short range), newest first
+router.get('/', async (req, res) => {
+  const { start, end } = requestedRange(req.query, MAX_LIST_RANGE_MS);
+  const sales = await Sale.find({ createdAt: { $gte: start, $lt: end } }).sort({ createdAt: -1 }).lean();
+  res.json({ summary: summarize(sales), sales });
+});
+
+// Totals for a month or any period, broken down by day or by month
+router.get('/report', async (req, res) => {
+  const { start, end } = requestedRange(req.query, MAX_REPORT_RANGE_MS);
+  const groupBy = req.query.groupBy === 'month' ? 'month' : 'day';
+  const timezone = timeZoneParam(req.query.tz);
+  const rows = await Sale.aggregate([
+    { $match: { createdAt: { $gte: start, $lt: end } } },
+    {
+      $group: {
+        _id: { $dateToString: { format: GROUP_FORMATS[groupBy], date: '$createdAt', timezone } },
+        count: { $sum: 1 },
+        pieces: { $sum: { $sum: '$items.quantity' } },
+        total: { $sum: '$total' },
+        cost: { $sum: '$cost' },
+        profit: { $sum: '$profit' },
+      },
+    },
+    { $sort: { _id: 1 } },
+  ]);
+  const periods = rows.map(({ _id, total, cost, profit, ...rest }) => ({
+    key: _id,
+    ...rest,
+    total: money(total),
+    cost: money(cost),
+    profit: money(profit),
+  }));
+  res.json({ groupBy, summary: summarize(periods), periods });
 });
 
 router.post('/', async (req, res) => {

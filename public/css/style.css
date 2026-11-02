@@ -360,15 +360,33 @@ h1, h2, h3 { line-height: 1.25; }
 .sales { width: 100%; max-width: 980px; margin: 0 auto; padding: 24px 20px 48px; }
 .sales-head { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 16px; }
 .sales-head h1 { margin: 0; font-size: 24px; font-weight: 600; }
-.sales-tools { display: flex; align-items: center; gap: 6px; }
-.sales-tools .input { width: auto; }
-.zreport { display: grid; grid-template-columns: repeat(3, 1fr); margin-bottom: 16px; background: var(--paper); border: 1px solid var(--line); border-radius: var(--r-m); }
+.segmented { display: inline-flex; gap: 2px; padding: 3px; border-radius: var(--r-m); background: var(--counter-2); }
+.segmented button {
+  padding: 6px 18px; border: 0; border-radius: var(--r-s);
+  background: none; color: var(--ink-2); font: inherit; font-weight: 500; cursor: pointer;
+}
+.segmented button:hover { color: var(--ink); }
+.segmented button[aria-pressed="true"] { background: var(--paper); color: var(--ink); box-shadow: 0 1px 2px rgb(28 37 48 / .16); }
+.period-bar { margin-bottom: 18px; }
+.period-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.period-controls .input { width: auto; }
+.period-controls label { display: flex; align-items: center; gap: 6px; font-size: 14px; color: var(--ink-2); }
+.presets { display: flex; flex-wrap: wrap; gap: 2px; margin-inline-start: 6px; }
+.period-title { margin: 0 0 10px; font-size: 17px; font-weight: 500; color: var(--ink-2); }
+.zreport { display: grid; grid-template-columns: repeat(4, 1fr); margin-bottom: 16px; background: var(--paper); border: 1px solid var(--line); border-radius: var(--r-m); }
 .zreport > div { padding: 16px 20px; }
 .zreport > div + div { border-inline-start: 1px dashed var(--line); }
 .z-label { font-size: 13px; color: var(--muted); }
 .z-value { font-size: 26px; font-weight: 600; }
 .z-value.is-profit { color: var(--go); }
 .z-value.is-loss { color: var(--stop); }
+.z-note { font-size: 12.5px; color: var(--muted); }
+.breakdown tr.is-quiet td { color: var(--muted); }
+.breakdown tfoot td { padding: 11px 14px; border-top: 1px solid var(--line); background: var(--paper-2); font-weight: 600; }
+.breakdown tfoot td:first-child { border-end-start-radius: var(--r-m); }
+.breakdown tfoot td:last-child { border-end-end-radius: var(--r-m); }
+.drill { padding: 0; border: 0; background: none; color: var(--ink); font: inherit; font-weight: 500; text-align: start; cursor: pointer; }
+.drill:hover { color: var(--focus); text-decoration: underline; }
 .sale-items td { background: var(--paper-2); }
 .sale-items ul { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; font-size: 14px; }
 .sale-items li { display: flex; justify-content: space-between; gap: 12px; }

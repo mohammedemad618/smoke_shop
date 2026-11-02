@@ -22,13 +22,39 @@
   <main class="sales">
     <div class="sales-head">
       <h1>المبيعات</h1>
-      <div class="sales-tools">
+      <div class="segmented" role="group" aria-label="عرض المبيعات حسب">
+        <button type="button" data-mode="day" aria-pressed="true">يوم</button>
+        <button type="button" data-mode="month" aria-pressed="false">شهر</button>
+        <button type="button" data-mode="range" aria-pressed="false">فترة</button>
+      </div>
+    </div>
+
+    <div class="period-bar">
+      <div class="period-controls" data-panel="day">
         <button class="btn btn-sm" id="prevDay" type="button">اليوم السابق</button>
-        <input class="input" id="dateInput" type="date" aria-label="التاريخ">
+        <input class="input" id="dayInput" type="date" aria-label="اليوم">
         <button class="btn btn-sm" id="nextDay" type="button">اليوم التالي</button>
         <button class="btn btn-sm btn-ghost" id="todayBtn" type="button">اليوم</button>
       </div>
+      <div class="period-controls" data-panel="month" hidden>
+        <button class="btn btn-sm" id="prevMonth" type="button">الشهر السابق</button>
+        <input class="input" id="monthInput" type="month" aria-label="الشهر">
+        <button class="btn btn-sm" id="nextMonth" type="button">الشهر التالي</button>
+        <button class="btn btn-sm btn-ghost" id="thisMonthBtn" type="button">هذا الشهر</button>
+      </div>
+      <form class="period-controls" data-panel="range" id="rangeForm" hidden>
+        <label>من <input class="input" id="fromInput" type="date"></label>
+        <label>إلى <input class="input" id="toInput" type="date"></label>
+        <button class="btn btn-sm btn-primary" type="submit">عرض</button>
+        <span class="presets">
+          <button class="btn btn-sm btn-ghost" type="button" data-preset="7">آخر 7 أيام</button>
+          <button class="btn btn-sm btn-ghost" type="button" data-preset="30">آخر 30 يومًا</button>
+          <button class="btn btn-sm btn-ghost" type="button" data-preset="year">هذه السنة</button>
+        </span>
+      </form>
     </div>
+
+    <h2 class="period-title" id="periodTitle"></h2>
     <div class="zreport" id="summary"></div>
     <div id="salesArea"></div>
   </main>
