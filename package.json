@@ -1,0 +1,18 @@
+{
+  "name": "salim-pos",
+  "version": "1.0.0",
+  "private": true,
+  "description": "نقطة بيع بسيطة: أقسام ومنتجات بباركود وواجهة كاشير، مع MongoDB",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node --env-file-if-exists=.env server.js",
+    "dev": "node --watch --env-file-if-exists=.env server.js",
+    "seed": "node --env-file-if-exists=.env scripts/seed.js"
+  },
+  "dependencies": {
+    "express": "^5.3.0",
+    "mongoose": "^9.11.4",
+    "zxing-wasm": "^3.1.6"
+  }
+}

@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>المبيعات | نقطة البيع</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Readex+Pro:wght@300..700&display=swap">
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/cashier.html"><span class="brand-mark" aria-hidden="true"></span><span class="brand-name">نقطة البيع</span></a>
+    <nav class="nav" aria-label="التنقل الرئيسي">
+      <a href="/cashier.html">الكاشير</a>
+      <a href="/">المنتجات</a>
+      <a href="/sales.html" aria-current="page">المبيعات</a>
+    </nav>
+  </header>
+
+  <main class="sales">
+    <div class="sales-head">
+      <h1>المبيعات</h1>
+      <div class="sales-tools">
+        <button class="btn btn-sm" id="prevDay" type="button">اليوم السابق</button>
+        <input class="input" id="dateInput" type="date" aria-label="التاريخ">
+        <button class="btn btn-sm" id="nextDay" type="button">اليوم التالي</button>
+        <button class="btn btn-sm btn-ghost" id="todayBtn" type="button">اليوم</button>
+      </div>
+    </div>
+    <div class="zreport" id="summary"></div>
+    <div id="salesArea"></div>
+  </main>
+
+  <div class="toasts" id="toasts"></div>
+  <script type="module" src="/js/sales.js"></script>
+</body>
+</html>
