@@ -6,7 +6,17 @@ import { httpError } from '../lib/errors.js';
 import { escapeRegex } from '../lib/util.js';
 
 const router = Router();
-const EDITABLE = ['name', 'barcode', 'purchasePrice', 'salePrice', 'category'];
+const EDITABLE = [
+  'name',
+  'barcode',
+  'purchasePrice',
+  'salePrice',
+  'category',
+  'trackStock',
+  'stock',
+  'lowStockAlert',
+  'blockWhenOut',
+];
 
 const pickEditable = (body) =>
   Object.fromEntries(EDITABLE.filter((key) => body[key] !== undefined).map((key) => [key, body[key]]));

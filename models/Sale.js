@@ -11,6 +11,26 @@ const saleItemSchema = new Schema(
     unitPrice: { type: Number, required: true },
     unitCost: { type: Number, required: true },
     lineTotal: { type: Number, required: true },
+    returnedQuantity: { type: Number, default: 0, min: 0 },
+  },
+  { _id: false },
+);
+
+// One return (refund) against the invoice: what came back and the money paid out
+const returnSchema = new Schema(
+  {
+    at: { type: Date, default: Date.now },
+    items: [
+      {
+        _id: false,
+        product: { type: Schema.Types.ObjectId, ref: 'Product' },
+        name: String,
+        quantity: Number,
+        amount: Number,
+      },
+    ],
+    amount: { type: Number, required: true },
+    cost: { type: Number, required: true },
   },
   { _id: false },
 );
@@ -27,8 +47,14 @@ const saleSchema = new Schema(
     profit: { type: Number, required: true },
     paid: { type: Number, required: true },
     change: { type: Number, required: true },
+    // Totals above are as sold; reports subtract these to get net figures
+    returns: { type: [returnSchema], default: [] },
+    returnedTotal: { type: Number, default: 0 },
+    returnedCost: { type: Number, default: 0 },
+    returnStatus: { type: String, enum: ['partial', 'full'] },
   },
-  { timestamps: true },
+  // Two people returning from the same invoice at once: the second save fails instead of double-counting
+  { timestamps: true, optimisticConcurrency: true },
 );
 
 saleSchema.index({ createdAt: -1 });

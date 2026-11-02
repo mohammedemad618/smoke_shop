@@ -71,6 +71,31 @@
     </section>
   </main>
 
+  <dialog class="dialog return-dialog" id="returnDialog" aria-labelledby="returnTitle">
+    <form id="returnForm" novalidate>
+      <h2 id="returnTitle"></h2>
+      <p class="hint">حدّد عدد القطع التي أعادها الزبون من كل صنف. يُعاد ثمنها إليه وتعود القطع إلى المخزن.</p>
+      <table class="ptable return-table">
+        <thead><tr>
+          <th scope="col">الصنف</th>
+          <th scope="col">المباع</th>
+          <th scope="col">الكمية المرتجعة</th>
+        </tr></thead>
+        <tbody id="returnLines"></tbody>
+      </table>
+      <div class="return-total">
+        <span>المبلغ الذي يُعاد للزبون</span>
+        <strong class="num" id="returnAmount">0</strong>
+      </div>
+      <p class="form-error" id="returnError" role="alert" hidden></p>
+      <div class="dialog-actions">
+        <button class="btn btn-primary" type="submit">تأكيد الإرجاع</button>
+        <button class="btn" type="button" id="returnAllBtn">إرجاع الكل</button>
+        <button class="btn btn-ghost" type="button" id="returnCloseBtn">إغلاق</button>
+      </div>
+    </form>
+  </dialog>
+
   <div class="toasts" id="toasts"></div>
   <script type="module" src="/js/sales.js"></script>
 </body>

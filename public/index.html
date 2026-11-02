@@ -78,6 +78,24 @@
         </div>
       </div>
       <p class="margin-note" id="marginNote" aria-live="polite"></p>
+      <fieldset class="stock-box">
+        <legend>المخزن</legend>
+        <label class="check"><input type="checkbox" id="fTrackStock"> تتبّع الكمية في المخزن</label>
+        <div id="stockOptions">
+          <div class="field-row">
+            <div class="field">
+              <label for="fStock">الكمية في المخزن</label>
+              <input class="input num" id="fStock" type="number" step="1" inputmode="numeric" placeholder="0">
+            </div>
+            <div class="field">
+              <label for="fLowStock">نبّهني عندما تصل الكمية إلى</label>
+              <input class="input num" id="fLowStock" type="number" min="0" step="1" inputmode="numeric">
+            </div>
+          </div>
+          <label class="check"><input type="checkbox" id="fBlockWhenOut"> منع البيع عند نفاد الكمية</label>
+          <p class="hint">إذا تُرك غير محدد يمكن البيع حتى لو نفدت الكمية، وتظهر الكمية بالسالب للتنبيه.</p>
+        </div>
+      </fieldset>
       <p class="form-error" id="productError" role="alert" hidden></p>
       <div class="dialog-actions">
         <button class="btn btn-primary" type="submit" value="close">حفظ</button>

@@ -39,6 +39,7 @@ const els = {
   saleReceipt: $('saleReceipt'),
   newSale: $('newSaleBtn'),
   print: $('printBtn'),
+  cancelSale: $('cancelSaleBtn'),
 };
 
 const focusScan = () => finePointer && els.scan.focus();
@@ -124,30 +125,51 @@ function renderTiles() {
       (p) => `<button type="button" class="tile" data-id="${p._id}">
         <span class="tile-name">${escapeHtml(p.name)}</span>
         <span class="tile-code num">${escapeHtml(p.barcode)}</span>
+        ${stockLine(p)}
         <span class="tag num">${formatMoney(p.salePrice)}</span>
       </button>`,
     )
     .join('');
 }
 
+function stockLine(p) {
+  if (!p.trackStock) return '';
+  const low = p.lowStockAlert ?? 5;
+  if (p.stock <= 0) return '<span class="tile-stock is-out">نفدت الكمية</span>';
+  return `<span class="tile-stock${p.stock <= low ? ' is-low' : ''}">متوفر <span class="num">${p.stock}</span></span>`;
+}
+
+// Products set to block selling when out of stock cannot go past what is on the shelf
+function stockProblem(product, qty) {
+  if (!product.trackStock || !product.blockWhenOut || qty <= product.stock) return null;
+  return product.stock > 0
+    ? `المتوفر من «${product.name}» ${product.stock} فقط`
+    : `نفدت كمية «${product.name}» من المخزن`;
+}
+
 /* Cart */
 
 const cartTotal = () => roundMoney(state.cart.reduce((sum, l) => sum + l.price * l.qty, 0));
 
+// Returns an error message instead of adding when the stock does not allow it
 function addToCart(product, qty = 1) {
-  let line = state.cart.find((l) => l.productId === product._id);
-  if (line) {
-    line.qty = Math.min(line.qty + qty, MAX_QTY);
-  } else {
-    line = { productId: product._id, name: product.name, price: product.salePrice, qty: Math.min(qty, MAX_QTY) };
-    state.cart.push(line);
-  }
+  const line = state.cart.find((l) => l.productId === product._id);
+  const next = Math.min((line?.qty ?? 0) + qty, MAX_QTY);
+  const problem = stockProblem(product, next);
+  if (problem) return problem;
+  if (line) line.qty = next;
+  else state.cart.push({ productId: product._id, name: product.name, price: product.salePrice, qty: next });
   state.lastAdded = product._id;
   renderCart();
+  return null;
 }
 
 function setQty(line, qty) {
-  line.qty = Math.min(Math.max(1, qty), MAX_QTY);
+  const next = Math.min(Math.max(1, qty), MAX_QTY);
+  const product = state.byId.get(line.productId);
+  const problem = product && stockProblem(product, next);
+  if (problem) toast(problem, 'error');
+  else line.qty = next;
   renderCart();
 }
 
@@ -248,7 +270,11 @@ async function handleScan() {
     return;
   }
 
-  addToCart(product, qty);
+  const problem = addToCart(product, qty);
+  if (problem) {
+    scanError(problem);
+    return;
+  }
   els.scan.value = '';
   els.scan.classList.remove('is-error');
   state.query = '';
@@ -276,7 +302,8 @@ els.camera.addEventListener('click', async () => {
   await scanBarcodes(async (code) => {
     const product = await findByBarcode(code);
     if (!product) return { ok: false, message: `لا يوجد منتج بالباركود ${code}` };
-    addToCart(product);
+    const problem = addToCart(product);
+    if (problem) return { ok: false, message: problem };
     return { ok: true, message: `أُضيف «${product.name}». الإجمالي ${formatMoney(cartTotal())}` };
   });
   focusScan();
@@ -296,7 +323,12 @@ els.chips.addEventListener('click', (e) => {
 els.tiles.addEventListener('click', (e) => {
   const tile = e.target.closest('.tile');
   if (!tile) return;
-  addToCart(state.byId.get(tile.dataset.id));
+  const problem = addToCart(state.byId.get(tile.dataset.id));
+  if (problem) {
+    toast(problem, 'error');
+    focusScan();
+    return;
+  }
   tile.classList.remove('is-added');
   void tile.offsetWidth;
   tile.classList.add('is-added');
@@ -368,6 +400,7 @@ async function checkout() {
     renderCart();
     showReceipt(sale);
     loadToday();
+    loadCatalog().catch(() => {}); // stock went down
   } catch (err) {
     toast(err.message, 'error');
     loadCatalog().catch(() => {});
@@ -378,6 +411,7 @@ async function checkout() {
 }
 
 function showReceipt(sale) {
+  state.lastSale = sale;
   els.saleReceipt.innerHTML = `<div class="slip">
     <div class="slip-head">
       <strong>نقطة البيع</strong>
@@ -409,6 +443,20 @@ function showReceipt(sale) {
 
 els.newSale.addEventListener('click', () => els.saleDialog.close());
 els.print.addEventListener('click', () => window.print());
+els.cancelSale.addEventListener('click', async () => {
+  const sale = state.lastSale;
+  if (!sale || !confirm(`إلغاء الفاتورة رقم ${sale.number} وإرجاع ${formatMoney(sale.total)} للزبون؟`)) return;
+  // Close first: toasts cannot show above an open modal
+  els.saleDialog.close();
+  try {
+    const { refunded } = await api(`/sales/${sale._id}/returns`, { method: 'POST', body: {} });
+    toast(`أُلغيت الفاتورة رقم ${sale.number}. أعد للزبون ${formatMoney(refunded)}`);
+    loadToday();
+    loadCatalog().catch(() => {}); // stock came back
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+});
 els.saleDialog.addEventListener('close', focusScan);
 
 /* Keyboard */

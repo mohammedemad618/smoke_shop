@@ -14,6 +14,8 @@
   --go-hover: #17654A;
   --stop: #B53A27;
   --stop-soft: #FBEDEA;
+  --warn: #8F5F00;
+  --warn-soft: #FFF3D1;
   --focus: #2F6FE4;
   --r-s: 4px;
   --r-m: 8px;
@@ -150,6 +152,8 @@ h1, h2, h3 { line-height: 1.25; }
 /* Dialogs */
 .dialog {
   width: min(520px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  overflow: auto;
   padding: 0; border: 0; border-radius: var(--r-m);
   background: var(--paper); color: var(--ink);
   box-shadow: 0 20px 50px rgb(28 37 48 / .3);
@@ -171,6 +175,34 @@ h1, h2, h3 { line-height: 1.25; }
 .form-error { margin: 0 0 12px; padding: 8px 12px; border-radius: var(--r-s); background: var(--stop-soft); color: var(--stop); font-size: 14px; }
 .dialog-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .dialog-actions .btn-ghost { margin-inline-start: auto; }
+
+/* Stock */
+.stock-box { margin: 0 0 14px; padding: 10px 14px 4px; border: 1px solid var(--line); border-radius: var(--r-m); }
+.stock-box legend { padding: 0 6px; font-size: 14px; font-weight: 600; }
+.stock-box .field-row { margin-top: 4px; }
+.check { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; font-size: 14px; cursor: pointer; }
+.check input { width: 16px; height: 16px; margin: 0; accent-color: var(--ink); }
+.stock { font-weight: 600; }
+.stock.is-low { color: var(--warn); }
+.stock.is-out { color: var(--stop); }
+.stock.is-untracked { font-weight: 400; color: var(--muted); }
+.stock-note { display: block; font-size: 12px; color: var(--muted); }
+.tile-stock { font-size: 12px; color: var(--ink-2); }
+.tile-stock.is-low { font-weight: 600; color: var(--warn); }
+.tile-stock.is-out { font-weight: 600; color: var(--stop); }
+
+/* Returns */
+.badge { display: inline-block; margin-inline-start: 8px; padding: 0 8px; border-radius: 999px; font-size: 12px; font-weight: 500; vertical-align: 1px; }
+.badge.is-cancelled { background: var(--stop-soft); color: var(--stop); }
+.badge.is-partial { background: var(--warn-soft); color: var(--warn); }
+.returned { display: block; font-size: 12px; color: var(--stop); }
+.returned-inline { font-size: 12.5px; color: var(--stop); }
+.sale-items li.returns-log { color: var(--stop); font-size: 13px; }
+.return-dialog { width: min(600px, calc(100vw - 32px)); }
+.return-table { margin: 12px 0; }
+.return-table .return-qty { width: 90px; }
+.return-total { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 14px; padding: 10px 14px; border-radius: var(--r-s); background: var(--paper-2); }
+.return-total strong { font-size: 22px; font-weight: 600; }
 
 /* Camera scanner */
 .scanner-dialog { width: min(640px, calc(100vw - 32px)); }

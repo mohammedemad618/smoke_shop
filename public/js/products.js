@@ -41,7 +41,13 @@ const fields = {
   category: $('fCategory'),
   purchasePrice: $('fPurchase'),
   salePrice: $('fSale'),
+  trackStock: $('fTrackStock'),
+  stock: $('fStock'),
+  lowStockAlert: $('fLowStock'),
+  blockWhenOut: $('fBlockWhenOut'),
 };
+const stockOptions = $('stockOptions');
+const DEFAULT_LOW_STOCK = 5;
 
 /* Data */
 
@@ -136,6 +142,14 @@ function emptyState(title, text, withButton = false) {
   </div>`;
 }
 
+function stockCell(p) {
+  if (!p.trackStock) return '<span class="stock is-untracked" title="الكمية غير متتبعة">—</span>';
+  const low = p.lowStockAlert ?? DEFAULT_LOW_STOCK;
+  if (p.stock <= 0) return `<span class="stock is-out num">${p.stock}</span><small class="stock-note">نفدت</small>`;
+  if (p.stock <= low) return `<span class="stock is-low num">${p.stock}</span><small class="stock-note">منخفضة</small>`;
+  return `<span class="stock num">${p.stock}</span>`;
+}
+
 function profitCell(p) {
   const profit = p.salePrice - p.purchasePrice;
   const pct = p.purchasePrice > 0 ? `${Math.round((profit / p.purchasePrice) * 100)}%` : '';
@@ -162,6 +176,7 @@ function renderProducts() {
     <thead><tr>
       <th scope="col">المنتج</th>
       <th scope="col">الباركود</th>
+      <th scope="col">المخزن</th>
       <th scope="col" class="end">سعر الشراء</th>
       <th scope="col" class="end">سعر البيع</th>
       <th scope="col" class="end">الربح</th>
@@ -175,6 +190,7 @@ function renderProducts() {
           ${showCategory ? `<div class="pcat">${escapeHtml(p.category?.name ?? 'بدون قسم')}</div>` : ''}
         </td>
         <td><span class="num barcode">${escapeHtml(p.barcode)}</span></td>
+        <td>${stockCell(p)}</td>
         <td class="end num">${formatMoney(p.purchasePrice)}</td>
         <td class="end"><span class="tag num">${formatMoney(p.salePrice)}</span></td>
         <td class="end">${profitCell(p)}</td>
@@ -278,14 +294,30 @@ els.search.addEventListener('input', () => {
 /* Product dialog */
 
 function readForm() {
-  const number = (input) => (input.value.trim() === '' ? NaN : Number(input.value));
-  return {
+  const number = (input, empty = NaN) => (input.value.trim() === '' ? empty : Number(input.value));
+  const data = {
     barcode: fields.barcode.value.trim(),
     name: fields.name.value.trim(),
     category: fields.category.value,
     purchasePrice: number(fields.purchasePrice),
     salePrice: number(fields.salePrice),
+    trackStock: fields.trackStock.checked,
   };
+  // Untracked products keep whatever stock settings they had
+  if (data.trackStock) {
+    data.stock = number(fields.stock, 0);
+    data.lowStockAlert = number(fields.lowStockAlert, DEFAULT_LOW_STOCK);
+    data.blockWhenOut = fields.blockWhenOut.checked;
+  }
+  return data;
+}
+
+function setStockFields(product) {
+  fields.trackStock.checked = product ? Boolean(product.trackStock) : true;
+  fields.stock.value = product?.trackStock ? product.stock : '';
+  fields.lowStockAlert.value = product?.lowStockAlert ?? DEFAULT_LOW_STOCK;
+  fields.blockWhenOut.checked = Boolean(product?.blockWhenOut);
+  stockOptions.hidden = !fields.trackStock.checked;
 }
 
 function validate(data) {
@@ -297,6 +329,12 @@ function validate(data) {
   }
   if (!Number.isFinite(data.salePrice) || data.salePrice < 0) {
     return { field: 'salePrice', message: 'أدخل سعر بيع صحيحًا' };
+  }
+  if (data.trackStock) {
+    if (!Number.isInteger(data.stock)) return { field: 'stock', message: 'كمية المخزن يجب أن تكون عددًا صحيحًا' };
+    if (!Number.isInteger(data.lowStockAlert) || data.lowStockAlert < 0) {
+      return { field: 'lowStockAlert', message: 'حد التنبيه يجب أن يكون عددًا صحيحًا من 0 فأكثر' };
+    }
   }
   return null;
 }
@@ -350,6 +388,7 @@ function openProductDialog(product = null) {
   } else {
     fields.category.value = state.activeCategory;
   }
+  setStockFields(product);
   updateMarginNote();
   els.dialog.showModal();
   (product ? fields.name : fields.barcode).focus();
@@ -381,6 +420,10 @@ fields.barcode.addEventListener('keydown', (e) => {
   }
 });
 
+fields.trackStock.addEventListener('change', () => {
+  stockOptions.hidden = !fields.trackStock.checked;
+  if (fields.trackStock.checked) fields.stock.focus();
+});
 fields.purchasePrice.addEventListener('input', updateMarginNote);
 fields.salePrice.addEventListener('input', updateMarginNote);
 els.form.addEventListener('input', (e) => e.target.classList?.remove('is-invalid'));
@@ -409,6 +452,7 @@ els.form.addEventListener('submit', async (e) => {
     if (addAnother) {
       els.form.reset();
       fields.category.value = data.category;
+      setStockFields(null);
       updateMarginNote();
       fields.barcode.focus();
     } else {

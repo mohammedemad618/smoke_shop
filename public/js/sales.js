@@ -34,10 +34,20 @@ const els = {
   productsSection: $('productsSection'),
   productsArea: $('productsArea'),
   sorts: document.querySelectorAll('[data-sort]'),
+  returnDialog: $('returnDialog'),
+  returnForm: $('returnForm'),
+  returnTitle: $('returnTitle'),
+  returnLines: $('returnLines'),
+  returnAmount: $('returnAmount'),
+  returnError: $('returnError'),
+  returnAll: $('returnAllBtn'),
+  returnClose: $('returnCloseBtn'),
 };
 
 let mode = 'day';
 let request = 0;
+let daySales = [];
+let returning = null;
 const productView = { rows: [], sort: 'profit', showAll: false };
 
 /* Dates (all in the browser's time zone) */
@@ -126,7 +136,11 @@ function renderSummary(s) {
   const margin = marginOf(s);
   els.summary.innerHTML = `
     <div><div class="z-label">عدد الفواتير</div><div class="z-value num">${formatMoney(s.count)}</div></div>
-    <div><div class="z-label">المبيعات</div><div class="z-value num">${formatMoney(s.total)}</div></div>
+    <div>
+      <div class="z-label">المبيعات</div>
+      <div class="z-value num">${formatMoney(s.total)}</div>
+      ${s.returns ? `<div class="z-note">بعد خصم مرتجعات <span class="num">${formatMoney(s.returns)}</span></div>` : ''}
+    </div>
     <div><div class="z-label">تكلفة البضاعة المباعة</div><div class="z-value num">${formatMoney(s.cost)}</div></div>
     <div>
       <div class="z-label">الربح</div>
@@ -142,7 +156,34 @@ function emptyState(text) {
   </div>`;
 }
 
+// What an invoice still counts for after its returns
+const keptPieces = (sale) => sale.items.reduce((sum, i) => sum + i.quantity - (i.returnedQuantity ?? 0), 0);
+const netTotal = (sale) => sale.total - (sale.returnedTotal ?? 0);
+const netProfit = (sale) => sale.profit - ((sale.returnedTotal ?? 0) - (sale.returnedCost ?? 0));
+
+function statusBadge(sale) {
+  if (sale.returnStatus === 'full') return '<span class="badge is-cancelled">ملغاة</span>';
+  if (sale.returnStatus === 'partial') return '<span class="badge is-partial">مرتجع جزئي</span>';
+  return '';
+}
+
+function itemsDetail(sale) {
+  const items = sale.items
+    .map((i) => {
+      const back = i.returnedQuantity ? ` <span class="returned-inline">أُرجع <span class="num">${i.returnedQuantity}</span></span>` : '';
+      return `<li><span>${escapeHtml(i.name)} <span class="num">× ${i.quantity}</span>${back}</span><span class="num">${formatMoney(i.lineTotal)}</span></li>`;
+    })
+    .join('');
+  const log = (sale.returns ?? [])
+    .map(
+      (r) => `<li class="returns-log"><span>إرجاع ${r.items.map((i) => `${escapeHtml(i.name)} × <span class="num">${i.quantity}</span>`).join('، ')} الساعة ${formatTime(r.at)}</span><span class="num">−${formatMoney(r.amount)}</span></li>`,
+    )
+    .join('');
+  return `<ul>${items}${log}</ul>`;
+}
+
 function renderInvoices(sales) {
+  daySales = sales;
   if (!sales.length) {
     emptyState('لا توجد مبيعات في هذا اليوم');
     return;
@@ -159,21 +200,24 @@ function renderInvoices(sales) {
     </tr></thead>
     <tbody>${sales
       .map((sale) => {
-        const pieces = sale.items.reduce((sum, i) => sum + i.quantity, 0);
         const rowId = `items-${sale._id}`;
-        return `<tr>
-          <td class="num">${sale.number}</td>
+        const pieces = keptPieces(sale);
+        const cancelled = sale.returnStatus === 'full';
+        return `<tr${cancelled ? ' class="is-quiet"' : ''}>
+          <td><span class="num">${sale.number}</span>${statusBadge(sale)}</td>
           <td>${formatTime(sale.createdAt)}</td>
-          <td>${arCount(pieces, PIECES)}</td>
-          <td class="end num">${formatMoney(sale.total)}</td>
-          <td class="end num${profitClass(sale.profit)}">${formatMoney(sale.profit)}</td>
-          <td class="row-actions"><button class="btn btn-sm btn-ghost" type="button" data-toggle="${rowId}" aria-expanded="false" aria-controls="${rowId}">الأصناف</button></td>
+          <td>${pieces ? arCount(pieces, PIECES) : '–'}</td>
+          <td class="end">
+            <span class="num">${formatMoney(netTotal(sale))}</span>
+            ${sale.returnedTotal ? `<small class="returned">مرتجع <span class="num">${formatMoney(sale.returnedTotal)}</span></small>` : ''}
+          </td>
+          <td class="end num${profitClass(netProfit(sale))}">${formatMoney(netProfit(sale))}</td>
+          <td class="row-actions">
+            <button class="btn btn-sm btn-ghost" type="button" data-toggle="${rowId}" aria-expanded="false" aria-controls="${rowId}">الأصناف</button>
+            ${cancelled ? '' : `<button class="btn btn-sm" type="button" data-return="${sale._id}">إرجاع</button>`}
+          </td>
         </tr>
-        <tr class="sale-items" id="${rowId}" hidden><td colspan="6"><ul>${sale.items
-          .map(
-            (i) => `<li><span>${escapeHtml(i.name)} <span class="num">× ${i.quantity}</span></span><span class="num">${formatMoney(i.lineTotal)}</span></li>`,
-          )
-          .join('')}</ul></td></tr>`;
+        <tr class="sale-items" id="${rowId}" hidden><td colspan="6">${itemsDetail(sale)}</td></tr>`;
       })
       .join('')}</tbody>
   </table>`;
@@ -371,7 +415,87 @@ els.rangeForm.addEventListener('click', (e) => {
   load();
 });
 
+/* Returns */
+
+function returnQuantities() {
+  return [...els.returnLines.querySelectorAll('input')].map((input) => ({
+    item: returning.items[Number(input.dataset.index)],
+    max: Number(input.max),
+    quantity: input.value.trim() === '' ? 0 : Number(input.value),
+  }));
+}
+
+function updateReturnAmount() {
+  const amount = returnQuantities().reduce(
+    (sum, r) => sum + (Number.isInteger(r.quantity) && r.quantity > 0 ? Math.min(r.quantity, r.max) * r.item.unitPrice : 0),
+    0,
+  );
+  els.returnAmount.textContent = formatMoney(amount);
+}
+
+function openReturn(sale) {
+  returning = sale;
+  els.returnTitle.textContent = `إرجاع من الفاتورة رقم ${sale.number}`;
+  els.returnError.hidden = true;
+  els.returnLines.innerHTML = sale.items
+    .map((item, index) => {
+      const left = item.quantity - (item.returnedQuantity ?? 0);
+      return `<tr${left ? '' : ' class="is-quiet"'}>
+        <td><div class="pname">${escapeHtml(item.name)}</div><div class="pcat"><span class="num">${formatMoney(item.unitPrice)}</span> للقطعة</div></td>
+        <td><span class="num">${item.quantity}</span>${item.returnedQuantity ? ` <small class="returned-inline">أُرجع <span class="num">${item.returnedQuantity}</span></small>` : ''}</td>
+        <td><input class="input num return-qty" type="number" min="0" max="${left}" step="1" value="0" data-index="${index}"${left ? '' : ' disabled'} aria-label="الكمية المرتجعة من ${escapeHtml(item.name)}"></td>
+      </tr>`;
+    })
+    .join('');
+  updateReturnAmount();
+  els.returnDialog.showModal();
+  els.returnLines.querySelector('input:not([disabled])')?.select();
+}
+
+els.returnLines.addEventListener('input', updateReturnAmount);
+els.returnClose.addEventListener('click', () => els.returnDialog.close());
+els.returnAll.addEventListener('click', () => {
+  els.returnLines.querySelectorAll('input:not([disabled])').forEach((input) => (input.value = input.max));
+  updateReturnAmount();
+});
+
+els.returnForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const showError = (message) => {
+    els.returnError.textContent = message;
+    els.returnError.hidden = false;
+  };
+  const rows = returnQuantities();
+  const bad = rows.find((r) => !Number.isInteger(r.quantity) || r.quantity < 0 || r.quantity > r.max);
+  if (bad) {
+    showError(`كمية «${bad.item.name}» يجب أن تكون عددًا صحيحًا من 0 إلى ${bad.max}`);
+    return;
+  }
+  const items = rows.filter((r) => r.quantity > 0).map((r) => ({ productId: r.item.product, quantity: r.quantity }));
+  if (!items.length) {
+    showError('اكتب عدد القطع المرتجعة، أو اضغط «إرجاع الكل»');
+    return;
+  }
+  const button = els.returnForm.querySelector('[type="submit"]');
+  button.disabled = true;
+  try {
+    const { refunded } = await api(`/sales/${returning._id}/returns`, { method: 'POST', body: { items } });
+    els.returnDialog.close();
+    toast(`تم الإرجاع. أعد للزبون ${formatMoney(refunded)}، والقطع عادت إلى المخزن`);
+    load();
+  } catch (err) {
+    showError(err.message);
+  } finally {
+    button.disabled = false;
+  }
+});
+
 els.area.addEventListener('click', (e) => {
+  const returnButton = e.target.closest('[data-return]');
+  if (returnButton) {
+    openReturn(daySales.find((s) => s._id === returnButton.dataset.return));
+    return;
+  }
   const toggle = e.target.closest('[data-toggle]');
   if (toggle) {
     const row = $(toggle.dataset.toggle);

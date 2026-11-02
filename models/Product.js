@@ -31,6 +31,21 @@ const productSchema = new Schema(
       required: [true, 'اختر القسم'],
       index: true,
     },
+    // Inventory is opt-in per product: only tracked products have their stock counted
+    trackStock: { type: Boolean, default: false },
+    stock: {
+      type: Number,
+      default: 0,
+      validate: { validator: Number.isInteger, message: 'كمية المخزن يجب أن تكون عددًا صحيحًا' },
+    },
+    lowStockAlert: {
+      type: Number,
+      default: 5,
+      min: [0, 'حد التنبيه لا يمكن أن يكون سالبًا'],
+      validate: { validator: Number.isInteger, message: 'حد التنبيه يجب أن يكون عددًا صحيحًا' },
+    },
+    // On: the cashier cannot sell more than what is in stock. Off: stock may go below zero.
+    blockWhenOut: { type: Boolean, default: false },
   },
   { timestamps: true },
 );
