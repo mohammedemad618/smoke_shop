@@ -1,4 +1,19 @@
-import { api, toast, formatMoney, formatQty, formatTime, escapeHtml, arCount, qtyLabel, PIECES } from './common.js';
+import {
+  api,
+  toast,
+  formatMoney,
+  formatQty,
+  formatTime,
+  escapeHtml,
+  arCount,
+  qtyLabel,
+  dayKey,
+  monthKey,
+  parseKey,
+  addDays,
+  addMonths,
+  PIECES,
+} from './common.js';
 
 const TIME_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -52,15 +67,6 @@ const productView = { rows: [], sort: 'profit', showAll: false };
 
 /* Dates (all in the browser's time zone) */
 
-const pad = (n) => String(n).padStart(2, '0');
-const dayKey = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-const monthKey = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}`;
-const parseKey = (key) => {
-  const [y, m, d = 1] = key.split('-').map(Number);
-  return new Date(y, m - 1, d);
-};
-const addDays = (d, n) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
-const addMonths = (d, n) => new Date(d.getFullYear(), d.getMonth() + n, 1);
 const daysBetween = (a, b) => Math.round((b - a) / DAY_MS);
 const todayStart = () => parseKey(dayKey(new Date()));
 
@@ -98,7 +104,7 @@ async function load() {
     if (mode === 'day') {
       const [data, products] = await Promise.all([api(`/sales?${rangeQuery(period)}`), productsRequest]);
       if (current !== request) return;
-      renderSummary(data.summary);
+      renderSummary(data.summary, period);
       renderInvoices(data.sales);
       showProducts(products);
     } else {
@@ -107,7 +113,7 @@ async function load() {
         productsRequest,
       ]);
       if (current !== request) return;
-      renderSummary(data.summary);
+      renderSummary(data.summary, period);
       renderBreakdown(period, data);
       showProducts(products);
     }
@@ -132,8 +138,9 @@ function syncLimits() {
 const marginOf = (row) => (row.total > 0 ? `${Math.round((row.profit / row.total) * 100)}%` : '');
 const profitClass = (value) => (value < 0 ? ' loss' : '');
 
-function renderSummary(s) {
+function renderSummary(s, period) {
   const margin = marginOf(s);
+  const expensesLink = `/expenses.html?month=${monthKey(period.from)}`;
   els.summary.innerHTML = `
     <div><div class="z-label">عدد الفواتير</div><div class="z-value num">${formatMoney(s.count)}</div></div>
     <div>
@@ -143,9 +150,19 @@ function renderSummary(s) {
     </div>
     <div><div class="z-label">تكلفة البضاعة المباعة</div><div class="z-value num">${formatMoney(s.cost)}</div></div>
     <div>
-      <div class="z-label">الربح</div>
+      <div class="z-label">ربح المبيعات</div>
       <div class="z-value num ${s.profit < 0 ? 'is-loss' : 'is-profit'}">${formatMoney(s.profit)}</div>
       ${margin ? `<div class="z-note">نسبة الربح من المبيعات <span class="num">${margin}</span></div>` : ''}
+    </div>
+    <div>
+      <div class="z-label">المصاريف</div>
+      <div class="z-value num">${formatMoney(s.expenses)}</div>
+      <a class="z-link" href="${expensesLink}">${s.expenses ? 'تفاصيل المصاريف' : 'إضافة مصروف'}</a>
+    </div>
+    <div class="z-net">
+      <div class="z-label">صافي الربح</div>
+      <div class="z-value num ${s.netProfit < 0 ? 'is-loss' : 'is-profit'}">${formatMoney(s.netProfit)}</div>
+      <div class="z-note">ربح المبيعات بعد طرح المصاريف</div>
     </div>`;
 }
 
@@ -243,41 +260,47 @@ function periodKeys(period, groupBy) {
 }
 
 function renderBreakdown(period, { groupBy, summary, periods }) {
-  if (!summary.count) {
-    emptyState('لا توجد مبيعات في هذه الفترة');
+  if (!summary.count && !summary.expenses) {
+    emptyState('لا توجد مبيعات أو مصاريف في هذه الفترة');
     return;
   }
   const byKey = new Map(periods.map((p) => [p.key, p]));
-  const empty = { count: 0, pieces: 0, total: 0, profit: 0 };
+  const empty = { count: 0, pieces: 0, total: 0, profit: 0, expenses: 0, netProfit: 0 };
   const byMonth = groupBy === 'month';
   const pieces = periods.reduce((sum, p) => sum + p.pieces, 0);
+  const amount = (value, shown) => (shown ? formatMoney(value) : '–');
 
   const rows = periodKeys(period, groupBy).map((key) => {
     const row = byKey.get(key) ?? empty;
+    const active = row.count || row.expenses;
     const label = byMonth ? monthName.format(parseKey(key)) : rowDay.format(parseKey(key));
-    return `<tr${row.count ? '' : ' class="is-quiet"'}>
+    return `<tr${active ? '' : ' class="is-quiet"'}>
       <td>${
-        row.count
+        active
           ? `<button class="drill" type="button" data-drill="${key}" title="${byMonth ? 'عرض الشهر' : 'عرض فواتير اليوم'}">${label}</button>`
           : label
       }</td>
       <td class="num">${row.count || '–'}</td>
       <td class="num">${row.pieces || '–'}</td>
-      <td class="end num">${row.count ? formatMoney(row.total) : '–'}</td>
-      <td class="end num${profitClass(row.profit)}">${row.count ? formatMoney(row.profit) : '–'}</td>
+      <td class="end num">${amount(row.total, row.count)}</td>
+      <td class="end num${profitClass(row.profit)}">${amount(row.profit, row.count)}</td>
       <td class="end num">${marginOf(row) || '–'}</td>
+      <td class="end num">${amount(row.expenses, row.expenses)}</td>
+      <td class="end num net${profitClass(row.netProfit)}">${amount(row.netProfit, active)}</td>
     </tr>`;
   });
 
   els.area.innerHTML = `<div class="section-head"><h2>${byMonth ? 'حسب الأشهر' : 'حسب الأيام'}</h2></div>
-  <table class="ptable breakdown">
+  <div class="table-scroll"><table class="ptable breakdown">
     <thead><tr>
       <th scope="col">${byMonth ? 'الشهر' : 'اليوم'}</th>
       <th scope="col">الفواتير</th>
       <th scope="col">القطع</th>
       <th scope="col" class="end">المبيعات</th>
-      <th scope="col" class="end">الربح</th>
+      <th scope="col" class="end">ربح المبيعات</th>
       <th scope="col" class="end">نسبة الربح</th>
+      <th scope="col" class="end">المصاريف</th>
+      <th scope="col" class="end">صافي الربح</th>
     </tr></thead>
     <tbody>${rows.join('')}</tbody>
     <tfoot><tr>
@@ -287,8 +310,10 @@ function renderBreakdown(period, { groupBy, summary, periods }) {
       <td class="end num">${formatMoney(summary.total)}</td>
       <td class="end num${profitClass(summary.profit)}">${formatMoney(summary.profit)}</td>
       <td class="end num">${marginOf(summary) || '–'}</td>
+      <td class="end num">${formatMoney(summary.expenses)}</td>
+      <td class="end num net${profitClass(summary.netProfit)}">${formatMoney(summary.netProfit)}</td>
     </tr></tfoot>
-  </table>`;
+  </table></div>`;
 }
 
 function showProducts(rows) {

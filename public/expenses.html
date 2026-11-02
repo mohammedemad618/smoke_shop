@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>المصاريف | نقطة البيع</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Readex+Pro:wght@300..700&display=swap">
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/cashier.html"><span class="brand-mark" aria-hidden="true"></span><span class="brand-name">نقطة البيع</span></a>
+    <nav class="nav" aria-label="التنقل الرئيسي">
+      <a href="/cashier.html">الكاشير</a>
+      <a href="/">المنتجات</a>
+      <a href="/sales.html">المبيعات</a>
+      <a href="/expenses.html" aria-current="page">المصاريف</a>
+    </nav>
+  </header>
+
+  <main class="sales">
+    <div class="sales-head">
+      <h1>المصاريف</h1>
+    </div>
+
+    <form class="expense-form" id="expenseForm" novalidate autocomplete="off">
+      <h2 id="formTitle">مصروف جديد</h2>
+      <div class="expense-fields">
+        <div class="field">
+          <label for="eDate">التاريخ</label>
+          <input class="input" id="eDate" type="date">
+        </div>
+        <div class="field">
+          <label for="eCategory">النوع</label>
+          <input class="input" id="eCategory" list="expenseTypes" maxlength="40" placeholder="مثل: طعام">
+          <datalist id="expenseTypes"></datalist>
+        </div>
+        <div class="field">
+          <label for="eAmount">المبلغ</label>
+          <input class="input num" id="eAmount" type="number" min="0" step="any" inputmode="decimal">
+        </div>
+        <div class="field field-wide">
+          <label for="eNote">ملاحظة <span class="per">(اختيارية)</span></label>
+          <input class="input" id="eNote" maxlength="200" placeholder="مثل: غداء العمال">
+        </div>
+      </div>
+      <p class="form-error" id="expenseError" role="alert" hidden></p>
+      <div class="dialog-actions">
+        <button class="btn btn-primary" type="submit" id="expenseSubmit">إضافة المصروف</button>
+        <button class="btn btn-ghost" type="button" id="cancelEdit" hidden>إلغاء التعديل</button>
+      </div>
+    </form>
+
+    <div class="period-bar">
+      <div class="period-controls">
+        <button class="btn btn-sm" id="prevMonth" type="button">الشهر السابق</button>
+        <input class="input" id="monthInput" type="month" aria-label="الشهر">
+        <button class="btn btn-sm" id="nextMonth" type="button">الشهر التالي</button>
+        <button class="btn btn-sm btn-ghost" id="thisMonthBtn" type="button">هذا الشهر</button>
+      </div>
+    </div>
+
+    <h2 class="period-title" id="periodTitle"></h2>
+    <div class="expense-summary" id="expenseSummary"></div>
+    <div id="expensesArea"></div>
+  </main>
+
+  <div class="toasts" id="toasts"></div>
+  <script type="module" src="/js/expenses.js"></script>
+</body>
+</html>

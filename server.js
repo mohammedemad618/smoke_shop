@@ -6,6 +6,7 @@ import { errorHandler } from './lib/errors.js';
 import categoriesRouter from './routes/categories.js';
 import productsRouter from './routes/products.js';
 import salesRouter from './routes/sales.js';
+import expensesRouter from './routes/expenses.js';
 
 const app = express();
 
@@ -22,6 +23,7 @@ app.use('/vendor/zxing-wasm', express.static(fileURLToPath(new URL('./node_modul
 app.use('/api/categories', categoriesRouter);
 app.use('/api/products', productsRouter);
 app.use('/api/sales', salesRouter);
+app.use('/api/expenses', expensesRouter);
 app.use('/api', (req, res) => res.status(404).json({ error: 'المسار غير موجود' }));
 app.use(errorHandler);
 

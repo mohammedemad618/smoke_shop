@@ -212,6 +212,14 @@ h1, h2, h3 { line-height: 1.25; }
 .return-total { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 14px; padding: 10px 14px; border-radius: var(--r-s); background: var(--paper-2); }
 .return-total strong { font-size: 22px; font-weight: 600; }
 
+/* Expenses */
+.expense-form { margin-bottom: 24px; padding: 18px 20px 20px; background: var(--paper); border: 1px solid var(--line); border-radius: var(--r-m); }
+.expense-form h2 { margin: 0 0 12px; font-size: 17px; font-weight: 600; }
+.expense-fields { display: grid; grid-template-columns: 170px minmax(0, 1fr) 160px minmax(0, 1.5fr); gap: 0 12px; }
+.expense-summary { display: grid; grid-template-columns: 250px minmax(0, 1fr); gap: 16px; align-items: start; margin-bottom: 24px; }
+.expense-total { padding: 16px 20px; background: var(--paper); border: 1px solid var(--line); border-radius: var(--r-m); }
+.ptable tr.is-editing td { background: var(--warn-soft); }
+
 /* Camera scanner */
 .scanner-dialog { width: min(640px, calc(100vw - 32px)); }
 .scanner { padding: 22px 24px; }
@@ -413,9 +421,17 @@ h1, h2, h3 { line-height: 1.25; }
 .period-controls label { display: flex; align-items: center; gap: 6px; font-size: 14px; color: var(--ink-2); }
 .presets { display: flex; flex-wrap: wrap; gap: 2px; margin-inline-start: 6px; }
 .period-title { margin: 0 0 10px; font-size: 17px; font-weight: 500; color: var(--ink-2); }
-.zreport { display: grid; grid-template-columns: repeat(4, 1fr); margin-bottom: 16px; background: var(--paper); border: 1px solid var(--line); border-radius: var(--r-m); }
-.zreport > div { padding: 16px 20px; }
-.zreport > div + div { border-inline-start: 1px dashed var(--line); }
+/* Hairline grid: the gap shows the container's background between the cells */
+.zreport {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px;
+  margin-bottom: 16px; overflow: hidden;
+  background: var(--line-soft); border: 1px solid var(--line); border-radius: var(--r-m);
+}
+.zreport > div { padding: 16px 20px; background: var(--paper); }
+.zreport > .z-net { background: var(--paper-2); }
+.z-net .z-label { font-weight: 600; color: var(--ink); }
+.z-link { font-size: 12.5px; color: var(--focus); }
+.breakdown td.net { font-weight: 600; }
 .z-label { font-size: 13px; color: var(--muted); }
 .z-value { font-size: 26px; font-weight: 600; }
 .z-value.is-profit { color: var(--go); }
@@ -470,8 +486,14 @@ h1, h2, h3 { line-height: 1.25; }
   .search { flex: 1; width: auto; }
   .table-wrap { padding: 0 16px 16px; }
   .field-row { grid-template-columns: 1fr; }
-  .zreport { grid-template-columns: 1fr; }
-  .zreport > div + div { border-inline-start: 0; border-top: 1px dashed var(--line); }
+  .zreport { grid-template-columns: 1fr 1fr; }
+  .zreport > div { padding: 12px 14px; }
+  .z-value { font-size: 21px; }
+  /* Wide tables scroll sideways instead of widening the page */
+  .table-scroll { overflow-x: auto; }
+  .expense-fields { grid-template-columns: 1fr 1fr; }
+  .expense-fields .field-wide { grid-column: 1 / -1; }
+  .expense-summary { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 480px) {

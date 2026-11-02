@@ -8,6 +8,17 @@ export const formatDateTime = (d) => dateTimeFormat.format(new Date(d));
 export const formatTime = (d) => timeFormat.format(new Date(d));
 export const roundMoney = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
 
+// Calendar dates in this browser's time zone, keyed as YYYY-MM-DD and YYYY-MM
+const pad = (n) => String(n).padStart(2, '0');
+export const dayKey = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+export const monthKey = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}`;
+export const parseKey = (key) => {
+  const [y, m, d = 1] = key.split('-').map(Number);
+  return new Date(y, m - 1, d);
+};
+export const addDays = (d, n) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
+export const addMonths = (d, n) => new Date(d.getFullYear(), d.getMonth() + n, 1);
+
 // Quantities: pieces are whole, weights are kept to the gram
 const qtyFormat = new Intl.NumberFormat('en-US', { maximumFractionDigits: 3 });
 export const formatQty = (n) => qtyFormat.format(Number(n) || 0);
@@ -75,3 +86,4 @@ export function arCount(n, forms) {
 export const PRODUCTS = { one: 'منتج واحد', two: 'منتجان', few: 'منتجات', many: 'منتجًا', single: 'منتج' };
 export const INVOICES = { one: 'فاتورة واحدة', two: 'فاتورتان', few: 'فواتير', many: 'فاتورة', single: 'فاتورة' };
 export const PIECES = { one: 'قطعة واحدة', two: 'قطعتان', few: 'قطع', many: 'قطعة', single: 'قطعة' };
+export const EXPENSES = { one: 'مصروف واحد', two: 'مصروفان', few: 'مصاريف', many: 'مصروفًا', single: 'مصروف' };
