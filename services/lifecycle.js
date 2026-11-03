@@ -14,7 +14,7 @@ import mongoose from 'mongoose';
 import { httpError } from '../lib/errors.js';
 import { checkSlug, SLUG_MESSAGES } from '../lib/slug.js';
 import { createJobRunner, defineJob, enqueueJob, workerOf } from './jobs.js';
-import { WORKER_POLL_MS, certificateStep, dnsStep, finalError, mirrorCert, primaryHost, revokeSessions, slugAvailability, transition } from './tenants.js';
+import { WORKER_POLL_MS, certificateStep, dnsStep, finalError, mirrorCert, primaryHost, retireHost, revokeSessions, slugAvailability, transition } from './tenants.js';
 
 const DAY = 24 * 60 * 60 * 1000;
 export const PURGE_AFTER_MS = 30 * DAY;
@@ -99,23 +99,16 @@ defineJob('delete', {
 export async function cancelDeletion(ctx, tenantId, who) {
   const { Job } = ctx.db.controlModels;
   if (await Job.exists({ tenantId, active: true, type: 'purge' })) throw httpError(409, 'بدأ الحذف النهائي لهذا المتجر ولا يمكن إلغاؤه');
-  const tenant = await transition(ctx, tenantId, 'pending_deletion', 'suspended', { ...who, reason: 'أُلغي الحذف' }, { unset: ['deletion'] });
-  await ctx.db.controlModels.AuditLog.record({ ...who, action: 'tenant.delete.cancel', tenantId, tenantSlug: tenant.slug, details: {} });
-  return tenant;
+  return callOffDeletion(ctx, tenantId, who);
 }
 
-// Marks a host retired for ever and asks the worker to remove its certificate (24 hours later)
-async function retireHost(ctx, host) {
-  const { Host } = ctx.db.controlModels;
-  const doc = await Host.findOneAndUpdate(
-    { _id: host._id, kind: { $ne: 'retired' } },
-    { $set: { kind: 'retired', rev: await nextRev(ctx.db), 'cert.retireRequestedAt': new Date() } },
-    { returnDocument: 'after' },
-  ).lean();
-  if (!doc) return;
-  ctx.registry?.applyHost(doc);
-  await workerOf(ctx).retireCert(doc._id);
-  await Host.updateOne({ _id: doc._id }, { $set: { 'cert.status': 'retired' } });
+// Never for a shop whose setup was given up: it would come back half set up, its addresses retired
+async function callOffDeletion(ctx, tenantId, who) {
+  const { Tenant, AuditLog } = ctx.db.controlModels;
+  if (await Tenant.exists({ _id: tenantId, 'deletion.setupCancelled': true })) throw httpError(409, 'أُلغي تجهيز هذا المتجر قبل أن يعمل، فلا يُلغى حذفه');
+  const tenant = await transition(ctx, tenantId, 'pending_deletion', 'suspended', { ...who, reason: 'أُلغي الحذف' }, { unset: ['deletion'] });
+  await AuditLog.record({ ...who, action: 'tenant.delete.cancel', tenantId, tenantSlug: tenant.slug, details: {} });
+  return tenant;
 }
 
 defineJob('purge', {
@@ -145,6 +138,14 @@ defineJob('purge', {
     },
   },
   done: ({ ctx, job, tenant, result }) => audit(ctx, job, tenant, 'tenant.purge', { archive: archiveName(result.archive), dbName: tenant?.dbName }),
+  // A purge stuck before its drop (the archive changed since it was verified...): the
+  // deletion is called off as by «إلغاء الحذف», or the next upkeep would queue it again.
+  // Not once a drop was asked of the worker or done.
+  async cancel({ ctx, job, tenant, by: who = {} }) {
+    const drop = job.steps.find((s) => s.key === 'drop');
+    if (tenant?.status !== 'pending_deletion' || drop?.status === 'done' || drop?.ref) throw httpError(409, 'بدأ حذف قاعدة بيانات هذا المتجر، فلا يمكن إلغاء العمل. أعد المحاولة');
+    await callOffDeletion(ctx, tenant._id, { actor: who.actor ?? job.createdBy ?? 'system', ip: who.ip ?? null });
+  },
 });
 
 /* Rename: the new address with its certificate, then it becomes the primary and the old one
@@ -190,7 +191,8 @@ defineJob('rename', {
       const until = new Date(Date.now() + REDIRECT_MS);
       const old = await Host.find({ tenantId: tenant._id, kind: 'primary', _id: { $ne: params.host } }).lean();
       // The new address first, so the shop is never without one
-      const primary = await Host.findOneAndUpdate({ _id: params.host, tenantId: tenant._id }, { $set: { kind: 'primary', rev: await nextRev(db) } }, { returnDocument: 'after' }).lean();
+      // Still reserved (or made primary by a run stopped half way), never once retired
+      const primary = await Host.findOneAndUpdate({ _id: params.host, tenantId: tenant._id, kind: { $in: ['reserved', 'primary'] } }, { $set: { kind: 'primary', rev: await nextRev(db) } }, { returnDocument: 'after' }).lean();
       if (!primary) throw finalError('العنوان الجديد لم يعد محجوزًا لهذا المتجر');
       registry?.applyHost(primary);
       for (const host of old) {
@@ -293,6 +295,9 @@ defineJob('restore', {
     },
     async switch({ ctx, tenant, params, result }) {
       if (tenant.dbName !== params.targetDb) {
+        // Opened again meanwhile (not by the panel or the command line, which wait): what was
+        // written since the backup is only in the current database, so it is not replaced
+        if (tenant.status !== 'suspended') throw finalError('أُعيد فتح المتجر أثناء الاستعادة، فلم تُستبدل بياناته. ألغِ هذا العمل وابدأ الاستعادة من جديد');
         await switchDb(ctx, tenant._id, tenant.dbName, params.targetDb, result.preRestoreArchive);
         result.previousDb = tenant.dbName;
       }
@@ -340,8 +345,13 @@ export async function maintain(ctx, now = new Date()) {
   for (const tenant of await Tenant.find({ status: 'pending_deletion', 'deletion.purgeAfter': { $lte: now } }, '_id').lean()) {
     if (!(await busy(tenant._id))) await quietly(enqueueJob(ctx, { type: 'purge', tenantId: tenant._id }));
   }
-  for (const host of await Host.find({ kind: 'redirect', redirectUntil: { $lte: now } }).lean()) await retireHost(ctx, host);
-  for (const tenant of await Tenant.find({ status: { $ne: 'deleted' }, 'previousDbNames.dropAfter': { $lte: now } }, 'previousDbNames').lean()) {
+  // One the worker's folder refused stays a redirect and is asked again next time, without
+  // holding up the rest of the upkeep
+  for (const host of await Host.find({ kind: 'redirect', redirectUntil: { $lte: now } }).lean()) {
+    await retireHost(ctx, host).catch((err) => console.error(`Could not retire ${host._id}: ${err.message}`));
+  }
+  // A deleted shop's too: purged within the 7 days, it still has the database a restore replaced
+  for (const tenant of await Tenant.find({ 'previousDbNames.dropAfter': { $lte: now } }, 'previousDbNames').lean()) {
     const due = tenant.previousDbNames.find((p) => p.dropAfter <= now && p.archive);
     if (due && !(await busy(tenant._id))) await quietly(enqueueJob(ctx, { type: 'cleanup', tenantId: tenant._id, params: { dbName: due.name, archive: due.archive } }));
   }
@@ -381,7 +391,10 @@ export async function measureTenant(ctx, tenant) {
 }
 
 export async function measure(ctx) {
-  const tenants = await ctx.db.controlModels.Tenant.find({ status: { $in: ['active', 'suspended', 'pending_deletion'] } }, 'dbName lastActivityAt slug').lean();
+  const { Tenant, Job } = ctx.db.controlModels;
+  // Not a shop being purged: its database may be dropped already, and opening it would make it again
+  const purging = await Job.distinct('tenantId', { type: 'purge', active: true });
+  const tenants = await Tenant.find({ status: { $in: ['active', 'suspended', 'pending_deletion'] }, _id: { $nin: purging } }, 'dbName lastActivityAt slug').lean();
   for (const tenant of tenants) {
     await measureTenant(ctx, tenant).catch((err) => console.error(`Could not measure ${tenant.slug}: ${err.message}`));
   }

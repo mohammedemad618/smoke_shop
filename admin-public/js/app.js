@@ -4,7 +4,7 @@
 // the audit log. Every element is built with h() (dom.js), text as text only. The first
 // password of a new shop or of a reset is made here (password.js), shown once and kept in
 // this page's memory only.
-import { h, fill, formatDate, formatDateTime, formatNumber, formatBytes, formatAgo } from './dom.js';
+import { h, fill, formatDate, formatDateTime, formatNumber, formatBytes, formatAgo, monthRange } from './dom.js';
 import { request, download, setCsrf, setHandlers, ApiError } from './api.js';
 import { generatePassword, newRequestId } from './password.js';
 import {
@@ -17,6 +17,7 @@ import {
   certBadge,
   facts,
   sessionRow,
+  shopHref,
   shopRow,
   statusBadge,
   stepList,
@@ -61,12 +62,15 @@ const field = (label, input, hint) => {
 };
 const input = (props = {}) => h('input', { className: 'input', ...props });
 
+// Returns whether it was copied
 async function copy(text) {
   try {
     await navigator.clipboard.writeText(text);
     toast('نُسخ');
+    return true;
   } catch {
     toast('تعذّر النسخ. انسخه يدويًا', 'error');
+    return false;
   }
 }
 
@@ -81,14 +85,17 @@ async function busy(form, work) {
   }
 }
 
-// A modal dialog built from parts; resolves with what onSubmit returned, or null if closed
-function dialog({ title, lead, body = [], submitText = 'تأكيد', danger = false, onSubmit }) {
+// A modal dialog built from parts, named by its title; resolves with what onSubmit returned,
+// or null if closed. The button that closes it says «رجوع», not «إلغاء»: many actions here
+// are called «إلغاء ...» themselves (إلغاء الحذف، إلغاء العمل، إلغاء الجلسات).
+function dialog({ title, lead, body = [], submitText = 'تأكيد', cancelText = 'رجوع', danger = false, onSubmit }) {
   return new Promise((resolve) => {
     const error = errorBox();
     const submit = h('button', { className: danger ? 'btn btn-primary danger-fill' : 'btn btn-primary', type: 'submit', text: submitText });
-    const cancel = h('button', { className: 'btn btn-ghost', type: 'button', text: 'إلغاء' });
-    const form = h('form', { noValidate: true }, h('h2', { text: title }), lead ? h('p', { className: 'dialog-lead', text: lead }) : null, error, body, h('div', { className: 'dialog-actions' }, submit, cancel));
-    const box = h('dialog', { className: 'dialog' }, form);
+    const cancel = h('button', { className: 'btn btn-ghost', type: 'button', text: cancelText });
+    const heading = h('h2', { id: `d${Math.random().toString(36).slice(2, 9)}`, text: title });
+    const form = h('form', { noValidate: true }, heading, lead ? h('p', { className: 'dialog-lead', text: lead }) : null, error, body, h('div', { className: 'dialog-actions' }, submit, cancel));
+    const box = h('dialog', { className: 'dialog', attrs: { 'aria-labelledby': heading.id } }, form);
     let result = null;
     box.addEventListener('close', () => {
       box.remove();
@@ -120,6 +127,9 @@ function dialog({ title, lead, body = [], submitText = 'تأكيد', danger = fa
 /* Signing in */
 
 function signedOut(message = '') {
+  // A dialog left open (the action whose step-up ended the session) would sit, modal, over
+  // the sign-in form: each one closes, which removes it
+  for (const box of document.querySelectorAll('dialog[open]')) box.close();
   leaveScreen();
   me = null;
   setCsrf(null);
@@ -186,10 +196,7 @@ function showCode(session, message = '') {
     Object.assign(code, { value: '', maxLength: recovery ? 20 : 7, inputMode: recovery ? 'text' : 'numeric', autocomplete: recovery ? 'off' : 'one-time-code' });
     code.focus();
   });
-  other.addEventListener('click', async () => {
-    await request('/auth/logout', { method: 'POST' }).catch(() => {});
-    signedOut();
-  });
+  other.addEventListener('click', signOut);
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const value = code.value.trim();
@@ -217,16 +224,28 @@ function signedIn(answer) {
   route();
 }
 
-// The code again, for the riskiest actions (valid 5 minutes)
+// The code again, for the riskiest actions (valid 5 minutes): from the authenticator, or a
+// recovery code when the phone is not at hand, as at sign-in
 function stepUp() {
+  let recovery = false;
   const code = input({ inputMode: 'numeric', autocomplete: 'one-time-code', maxLength: 7, attrs: { dir: 'ltr' }, className: 'input code-input' });
+  const codeField = field('رمز التحقق', code);
+  const toggle = h('button', { className: 'link-btn', type: 'button', text: 'استخدم رمزًا احتياطيًا' });
+  toggle.addEventListener('click', () => {
+    recovery = !recovery;
+    codeField.querySelector('label').textContent = recovery ? 'رمز احتياطي' : 'رمز التحقق';
+    toggle.textContent = recovery ? 'استخدم رمز التطبيق' : 'استخدم رمزًا احتياطيًا';
+    Object.assign(code, { value: '', maxLength: recovery ? 20 : 7, inputMode: recovery ? 'text' : 'numeric', autocomplete: recovery ? 'off' : 'one-time-code' });
+    code.focus();
+  });
   return dialog({
     title: 'تأكيد بهويتك',
-    lead: 'هذا الإجراء يحتاج رمز التحقق من تطبيق المصادقة. يبقى التأكيد صالحًا 5 دقائق.',
-    body: [field('رمز التحقق', code)],
+    lead: 'هذا الإجراء يحتاج رمز التحقق من تطبيق المصادقة، أو أحد رموزك الاحتياطية. يبقى التأكيد صالحًا 5 دقائق.',
+    body: [codeField, toggle],
     onSubmit: async () => {
-      if (!code.value.trim()) throw new Error('اكتب رمز التحقق');
-      await request('/step-up', { method: 'POST', body: { code: code.value.trim() } });
+      const value = code.value.trim();
+      if (!value) throw new Error(recovery ? 'اكتب الرمز الاحتياطي' : 'اكتب رمز التحقق');
+      await request('/step-up', { method: 'POST', body: recovery ? { recoveryCode: value } : { code: value } });
       return true;
     },
   }).then(Boolean);
@@ -234,10 +253,27 @@ function stepUp() {
 
 setHandlers({ stepUp, signedOut: (err) => signedOut(err.message) });
 
-document.getElementById('logout').addEventListener('click', async () => {
-  await request('/auth/logout', { method: 'POST' }).catch(() => {});
+// Ends this session (at either stage), then shows the sign-in form. A token made stale by
+// signing in again in another tab is fetched again once; a sign-out that did not get through
+// leaves the panel as it is and says so, never a sign-in form over a session still alive.
+async function signOut() {
+  const send = () => request('/auth/logout', { method: 'POST' });
+  try {
+    await send().catch(async (err) => {
+      if (err.code !== 'CSRF_FAILED') throw err;
+      await request('/me');
+      return send();
+    });
+  } catch (err) {
+    if (err.code !== 'AUTH_EXPIRED' && err.code !== 'SESSION_ENDED') {
+      toast('تعذّر تسجيل الخروج، أعد المحاولة', 'error');
+      return;
+    }
+  }
   signedOut();
-});
+}
+
+document.getElementById('logout').addEventListener('click', signOut);
 
 /* Screens */
 
@@ -267,7 +303,7 @@ function notices(o) {
 
 const FILTERS = [['', 'الكل'], ['active', 'نشط'], ['provisioning', 'قيد التجهيز'], ['suspended', 'موقوف'], ['pending_deletion', 'بانتظار الحذف'], ['deleted', 'محذوف']];
 
-async function showShops() {
+async function showShops(current) {
   const count = h('span', { className: 'catalog-count' });
   const search = input({ type: 'search', placeholder: 'بحث بالاسم أو العنوان', className: 'input search', attrs: { 'aria-label': 'بحث' } });
   let filter = '';
@@ -283,10 +319,11 @@ async function showShops() {
   fill(view, page('المتاجر', { actions: [h('a', { className: 'btn btn-primary', href: '#/new', text: 'متجر جديد' })] }, count, notes, h('div', { className: 'admin-tools' }, search, chips), h('div', { className: 'table-scroll' }, table), empty));
 
   const [tenants, o] = await Promise.all([request('/tenants'), loadOverview()]);
+  if (!current()) return;
   fill(notes, notices(o));
   if (o) count.textContent = `${o.limits.tenants} من ${o.limits.maxTenants} متجرًا كحد أقصى، وأُنشئ خلال 24 ساعة ${o.limits.newToday} من ${o.limits.maxNewPerDay}`;
   const open = (t) => {
-    location.hash = t.status === 'provisioning' && t.job ? `#/job/${t.job.id}` : `#/shop/${t.id}`;
+    location.hash = shopHref(t);
   };
   const render = () => {
     const q = search.value.trim().toLowerCase();
@@ -345,15 +382,17 @@ function zoneSelect(current = 'Asia/Baghdad') {
   return h('select', { className: 'input' }, zones.map(([zone, label]) => h('option', { value: zone, selected: zone === current, text: label === zone ? zone : `${label} (${zone})` })));
 }
 
-function passwordField(initial, { username, slug }) {
-  const value = input({ readOnly: true, value: initial, className: 'input num password-out', attrs: { dir: 'ltr', 'aria-label': 'كلمة المرور الأولى' } });
+// label: the name it is shown under, which screen readers read too
+function passwordField(initial, { username, slug, label = 'كلمة المرور الأولى' }) {
+  const value = input({ readOnly: true, value: initial, className: 'input num password-out', attrs: { dir: 'ltr', 'aria-label': label } });
   const copyBtn = h('button', { className: 'btn', type: 'button', text: 'نسخ', on: { click: () => copy(value.value) } });
   const again = h('button', { className: 'btn btn-ghost', type: 'button', text: 'توليد غيرها', on: { click: () => (value.value = generatePassword({ avoid: [username(), slug()] })) } });
   return { input: value, element: h('div', { className: 'input-group' }, value, copyBtn, again) };
 }
 
-async function showNewShop() {
+async function showNewShop(current) {
   await loadOverview();
+  if (!current()) return;
   const requestId = newRequestId();
   const error = errorBox();
   const label = input({ maxLength: 80 });
@@ -404,7 +443,10 @@ async function showNewShop() {
             firstInvoiceNumber: first.value.trim(),
           },
         });
-        secrets.set(answer.tenant.id, { username: owner.value.trim().toLowerCase(), password: password.input.value, url: answer.tenant.url });
+        // passwordSet false: this form was sent before (its answer lost) and the account was
+        // made then, with the password shown at the time, not this one: none is kept to show
+        const kept = answer.passwordSet !== false;
+        secrets.set(answer.tenant.id, { username: owner.value.trim().toLowerCase(), password: kept ? password.input.value : null, url: answer.tenant.url });
         location.hash = answer.job ? `#/job/${answer.job.id}` : `#/shop/${answer.tenant.id}`;
       } catch (err) {
         showError(error, err.message);
@@ -427,10 +469,11 @@ async function showJob(id) {
     clearTimeout(timer);
   };
 
-  async function refresh() {
+  // poll: a look taken by the timer, not by the admin (it does not keep the session alive)
+  async function refresh(poll = false) {
     let job;
     try {
-      job = await request(`/jobs/${id}`);
+      job = await request(`/jobs/${id}`, { poll });
     } catch (err) {
       if (!stopped) fill(body, h('p', { className: 'form-error', text: err.message }));
       return;
@@ -447,7 +490,8 @@ async function showJob(id) {
     if (job.status === 'failed') {
       const error = errorBox();
       const retry = h('button', { className: 'btn btn-primary', type: 'button', text: 'إعادة المحاولة' });
-      const cancel = h('button', { className: 'btn danger', type: 'button', text: 'إلغاء العمل' });
+      // Offered only for the jobs that can be given up (the server says which)
+      const cancel = job.cancellable ? h('button', { className: 'btn danger', type: 'button', text: 'إلغاء العمل' }) : null;
       const box = h('div', { className: 'settings-card is-failed' }, h('p', { className: 'form-error', text: job.error || 'فشلت خطوة' }), error, h('div', { className: 'dialog-actions' }, retry, cancel));
       retry.addEventListener('click', () =>
         busy(box, async () => {
@@ -459,8 +503,9 @@ async function showJob(id) {
           }
         }),
       );
-      cancel.addEventListener('click', async () => {
-        const ok = await dialog({ title: 'إلغاء العمل', lead: job.type === 'rename' ? 'العنوان الجديد المحجوز لن يُستخدم بعد الآن.' : 'يتوقف العمل حيث هو، ويعود المتجر كما كان قدر الإمكان.', submitText: 'إلغاء العمل', danger: true, onSubmit: () => request(`/jobs/${id}/cancel`, { method: 'POST' }) });
+      cancel?.addEventListener('click', async () => {
+        const lead = CANCEL_LEADS[job.type] ?? 'يتوقف العمل حيث هو، ويعود المتجر كما كان قدر الإمكان.';
+        const ok = await dialog({ title: 'إلغاء العمل', lead, submitText: 'إلغاء العمل', danger: true, onSubmit: () => request(`/jobs/${id}/cancel`, { method: 'POST' }) });
         if (ok) refresh();
       });
       parts.push(box);
@@ -468,16 +513,27 @@ async function showJob(id) {
     if (job.status === 'done' && job.type === 'provision' && t) parts.push(readyCard(t, job));
     else if (job.status === 'done' && t) parts.push(h('p', {}, h('a', { className: 'btn', href: `#/shop/${t.id}`, text: 'صفحة المتجر' })));
     fill(body, parts);
-    if (running) timer = setTimeout(refresh, 2000);
+    if (running) timer = setTimeout(() => refresh(true), 2000);
   }
   await refresh();
 }
+
+// What giving up a failed job does, said before it is done
+const CANCEL_LEADS = Object.freeze({
+  provision: 'يُلغى تجهيز المتجر نهائيًا: يتوقف عنوانه ولا يُعطى لمتجر آخر، وتُحذف قاعدة بياناته إن أُنشئت، ولا يُحسب بعدها ضمن الحد الأقصى للمتاجر.',
+  rename: 'العنوان الجديد المحجوز لن يُستخدم بعد الآن.',
+  purge: 'يُلغى الحذف النهائي ويعود المتجر موقوفًا كما كان، ثم يمكنك استئنافه أو حذفه من جديد.',
+});
 
 // The new shop's address and sign-in, the password from this page's memory only
 function readyCard(t, job) {
   const secret = secrets.get(t.id);
   const username = secret?.username ?? job.owner?.username ?? 'owner';
-  const lines = [`المتجر: ${t.shopName || t.label}`, `العنوان: ${t.url}`, `اسم المستخدم: ${username}`, secret ? `كلمة المرور المؤقتة: ${secret.password}` : null].filter(Boolean);
+  const password = secret?.password ?? null;
+  // No password to show: the page was loaded again, or the account was made by an earlier
+  // send of the form with the password shown then
+  const missing = secret ? 'غير متاحة هنا: أُنشئ الحساب بكلمة المرور التي ظهرت عند الإرسال الأول. أعد تعيينها من صفحة المتجر.' : 'غير متاحة هنا (أُعيد تحميل الصفحة). أعد تعيينها من صفحة المتجر.';
+  const lines = [`المتجر: ${t.shopName || t.label}`, `العنوان: ${t.url}`, `اسم المستخدم: ${username}`, password ? `كلمة المرور المؤقتة: ${password}` : null].filter(Boolean);
   return h(
     'div',
     { className: 'settings-card ready-card' },
@@ -485,7 +541,7 @@ function readyCard(t, job) {
     facts([
       ['العنوان', h('a', { className: 'host-name', href: t.url, text: t.url, target: '_blank', rel: 'noopener' })],
       ['اسم المستخدم', h('span', { className: 'num', text: username })],
-      ['كلمة المرور المؤقتة', secret ? h('span', { className: 'num password-out', text: secret.password }) : h('span', { className: 'muted', text: 'غير متاحة هنا (أُعيد تحميل الصفحة). أعد تعيينها من صفحة المتجر.' })],
+      ['كلمة المرور المؤقتة', password ? h('span', { className: 'num password-out', text: password }) : h('span', { className: 'muted', text: missing })],
     ]),
     h('p', { className: 'hint', text: 'أرسلها لصاحب المتجر، وسيُطلب منه تغيير كلمة المرور عند أول دخول.' }),
     h('div', { className: 'dialog-actions' }, h('button', { className: 'btn btn-go', type: 'button', text: 'نسخ الكل', on: { click: () => copy(lines.join('\n')) } }), h('a', { className: 'btn', href: `#/shop/${t.id}`, text: 'صفحة المتجر' })),
@@ -503,10 +559,14 @@ function table(heads, rows, emptyText) {
   return h('div', { className: 'table-scroll' }, h('table', { className: 'ptable' }, h('thead', {}, h('tr', {}, heads.map((t) => h('th', { text: t })))), h('tbody', {}, rows)));
 }
 
-async function showShop(id) {
+async function showShop(id, current) {
+  // Drawn again after an action (reload): not over a screen opened since
+  if (!current()) return;
   fill(view, page('المتجر', { back: ['#/', 'المتاجر'] }, loading()));
   const t = await request(`/tenants/${id}`);
-  const reload = () => showShop(id);
+  // Another screen opened while this one loaded: its answer must not replace that screen
+  if (!current()) return;
+  const reload = () => showShop(id, current);
   const open = ['active', 'suspended', 'pending_deletion'].includes(t.status);
   const parts = [];
 
@@ -540,7 +600,7 @@ async function showShop(id) {
 
   if (open && t.settings) parts.push(settingsForm(t));
   if (open) {
-    parts.push(card('حسابات الدخول', table(['اسم المستخدم', 'الدور', 'الحالة', 'آخر دخول', ''], t.users.map((u) => userRow(u, { onReset: (user) => resetPassword(t, user) })), 'لا توجد حسابات')));
+    parts.push(card('حسابات الدخول', table(['اسم المستخدم', 'الدور', 'الحالة', 'آخر دخول', ''], t.users.map((u) => userRow(u, { onReset: (user) => resetPassword(t, user, reload) })), 'لا توجد حسابات')));
     const revoke = h('button', { className: 'btn danger', type: 'button', text: 'إلغاء كل الجلسات', disabled: !t.sessions.length });
     revoke.addEventListener('click', async () => {
       const ok = await dialog({ title: 'إلغاء كل الجلسات', lead: `يخرج كل من دخل إلى ${t.slug} من كل الأجهزة، ويحتاج الدخول من جديد.`, submitText: 'إلغاء الجلسات', danger: true, onSubmit: () => request(`/tenants/${t.id}/sessions/revoke`, { method: 'POST' }) });
@@ -620,11 +680,11 @@ function settingsForm(t) {
   return card('إعدادات المتجر', h('p', { className: 'hint', text: 'نفس إعدادات صفحة «الإعدادات» عند صاحب المتجر: الاسم والهاتف والعنوان تظهر على الإيصال.' }), form);
 }
 
-async function resetPassword(t, user) {
-  const password = passwordField(generatePassword({ avoid: [user.username, t.slug] }), { username: () => user.username, slug: () => t.slug });
+async function resetPassword(t, user, reload) {
+  const password = passwordField(generatePassword({ avoid: [user.username, t.slug] }), { username: () => user.username, slug: () => t.slug, label: 'كلمة المرور المؤقتة' });
   const done = await dialog({
     title: `كلمة مرور جديدة لـ ${user.username}`,
-    lead: 'تنتهي كل جلسات هذا الحساب فورًا، ويُطلب من صاحبه تغيير هذه الكلمة عند الدخول التالي. انسخها قبل التأكيد: لن تظهر مرة أخرى.',
+    lead: 'تنتهي كل جلسات هذا الحساب فورًا، ويُطلب من صاحبه تغيير هذه الكلمة عند الدخول التالي. تظهر مرة أخرى بعد التأكيد لتنسخها، ثم لا تظهر أبدًا.',
     body: [h('div', { className: 'field' }, h('span', { className: 'field-label', text: 'كلمة المرور المؤقتة' }), password.element)],
     submitText: 'تعيين كلمة المرور',
     danger: true,
@@ -634,8 +694,22 @@ async function resetPassword(t, user) {
     },
   });
   if (done) {
-    await dialog({ title: 'تم تعيين كلمة المرور', lead: 'أرسلها لصاحب المتجر مع العنوان واسم المستخدم.', body: [facts([['العنوان', t.url], ['اسم المستخدم', user.username], ['كلمة المرور المؤقتة', h('span', { className: 'num password-out', text: done })]])], submitText: 'نسخ الكل وإغلاق', onSubmit: () => copy(`العنوان: ${t.url}\nاسم المستخدم: ${user.username}\nكلمة المرور المؤقتة: ${done}`) });
-    showShop(t.id);
+    // Set already: closing only hides it, so the button says «إغلاق». A copy that failed
+    // keeps it open, the password selected to copy by hand.
+    const shown = h('span', { className: 'num password-out', text: done });
+    await dialog({
+      title: 'تم تعيين كلمة المرور',
+      lead: 'أرسلها لصاحب المتجر مع العنوان واسم المستخدم. لن تظهر بعد إغلاق هذه النافذة.',
+      body: [facts([['العنوان', t.url], ['اسم المستخدم', user.username], ['كلمة المرور المؤقتة', shown]])],
+      submitText: 'نسخ الكل وإغلاق',
+      cancelText: 'إغلاق',
+      onSubmit: async () => {
+        if (await copy(`العنوان: ${t.url}\nاسم المستخدم: ${user.username}\nكلمة المرور المؤقتة: ${done}`)) return true;
+        getSelection()?.selectAllChildren(shown);
+        throw new Error('تعذّر النسخ. انسخ كلمة المرور المحددة يدويًا، ثم أغلق النافذة');
+      },
+    });
+    reload();
   }
 }
 
@@ -662,14 +736,15 @@ async function restore(t, backup) {
 function exportCard(t) {
   const now = new Date();
   const month = input({ type: 'month', value: `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`, className: 'input month-input' });
+  // The month and its days on the shop's clock, not this computer's: the same figures as
+  // the owner's sales page and export
+  const zone = t.settings?.timeZone || 'Asia/Baghdad';
   const run = async (kind) => {
     let query = '';
     if (kind === 'sales') {
-      const [y, m] = (month.value || '').split('-').map(Number);
-      if (!y || !m) return toast('اختر الشهر', 'error');
-      const from = new Date(y, m - 1, 1);
-      const to = new Date(y, m, 1);
-      query = `?${new URLSearchParams({ from: from.toISOString(), to: to.toISOString(), tz: Intl.DateTimeFormat().resolvedOptions().timeZone })}`;
+      const range = monthRange(month.value, zone);
+      if (!range) return toast('اختر الشهر', 'error');
+      query = `?${new URLSearchParams({ from: range.from.toISOString(), to: range.to.toISOString(), tz: zone })}`;
     }
     try {
       await download(`/tenants/${t.id}/export/${kind}${query}`);
@@ -758,13 +833,14 @@ function dangerZone(t, reload) {
 
 /* The audit log */
 
-async function showAudit(params) {
+async function showAudit(params, current) {
   const tenantSelect = h('select', { className: 'input', attrs: { 'aria-label': 'المتجر' } }, h('option', { value: '', text: 'كل المتاجر' }));
   const actionSelect = h('select', { className: 'input', attrs: { 'aria-label': 'العملية' } }, h('option', { value: '', text: 'كل العمليات' }), Object.entries(ACTION_LABELS).map(([value, label]) => h('option', { value, text: label })));
   const tbody = h('tbody');
   const pager = h('div', { className: 'pager' });
   fill(view, page('سجل العمليات', {}, h('div', { className: 'admin-tools audit-filters' }, tenantSelect, actionSelect), h('div', { className: 'table-scroll' }, h('table', { className: 'ptable audit-table' }, h('thead', {}, h('tr', {}, ['العملية', 'الوقت', 'المتجر', 'التفاصيل', 'IP'].map((x) => h('th', { text: x })))), tbody)), pager));
   const tenants = await request('/tenants').catch(() => []);
+  if (!current()) return;
   tenantSelect.append(...tenants.map((t) => h('option', { value: t.id, text: `${t.label || t.slug} (${t.slug})` })));
   tenantSelect.value = params.get('tenant') ?? '';
   actionSelect.value = params.get('action') ?? '';
@@ -781,6 +857,7 @@ async function showAudit(params) {
   if (tenantSelect.value) q.set('tenant', tenantSelect.value);
   if (actionSelect.value) q.set('action', actionSelect.value);
   const data = await request(`/audit?${q}`);
+  if (!current()) return;
   fill(tbody, data.entries.map(auditRow));
   if (!data.entries.length) fill(tbody, h('tr', {}, h('td', { attrs: { colspan: '5' }, className: 'muted', text: 'لا توجد عمليات' })));
   fill(
@@ -793,21 +870,29 @@ async function showAudit(params) {
 
 /* The router */
 
+// Each opening of a screen has its number: a screen whose answer comes back after another
+// one was opened (a slow link) draws nothing, so the page never shows one shop at
+// another's address, its buttons acting on the wrong one
+let navSeq = 0;
+
 async function route() {
   if (!me) return;
   leaveScreen();
   leaveScreen = () => {};
+  const nav = ++navSeq;
+  const current = () => nav === navSeq && Boolean(me);
   const [path, query = ''] = location.hash.replace(/^#/, '').split('?');
   const parts = path.split('/').filter(Boolean);
   for (const a of topbar.querySelectorAll('[data-nav]')) a.setAttribute('aria-current', String((parts[0] ?? 'shops') === a.dataset.nav || (a.dataset.nav === 'shops' && ['new', 'shop', 'job'].includes(parts[0]))));
   try {
-    if (parts[0] === 'new') await showNewShop();
-    else if (parts[0] === 'shop' && parts[1]) await showShop(parts[1]);
+    if (parts[0] === 'new') await showNewShop(current);
+    else if (parts[0] === 'shop' && parts[1]) await showShop(parts[1], current);
     else if (parts[0] === 'job' && parts[1]) await showJob(parts[1]);
-    else if (parts[0] === 'audit') await showAudit(new URLSearchParams(query));
-    else await showShops();
-    window.scrollTo(0, 0);
+    else if (parts[0] === 'audit') await showAudit(new URLSearchParams(query), current);
+    else await showShops(current);
+    if (current()) window.scrollTo(0, 0);
   } catch (err) {
+    if (!current()) return;
     if (err instanceof ApiError && (err.code === 'AUTH_EXPIRED' || err.code === 'SESSION_ENDED')) return;
     fill(view, page('تعذّر فتح الصفحة', { back: ['#/', 'المتاجر'] }, h('p', { className: 'form-error', text: err.message })));
   }

@@ -43,8 +43,11 @@ export function testConfig(env = {}) {
     TENANT_BASE_DOMAINS: BASE_DOMAIN,
     ADMIN_HOST: `admin.${BASE_DOMAIN}`,
     TOTP_KEY: TEST_TOTP_KEY,
-    // Test files make many shops; the daily limit has its own test
+    // Test files make many shops and sign in often from one address; these limits have tests
+    // of their own
     MAX_NEW_TENANTS_PER_DAY: '1000',
+    SIGN_IN_PER_MINUTE: '100000',
+    ADMIN_SIGN_IN_PER_MINUTE: '100000',
     POS_LOCAL_DIR: LOCAL_DIR,
     ...env,
   });

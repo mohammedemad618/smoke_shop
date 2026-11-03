@@ -13,7 +13,7 @@ import { checkDns } from '../lib/dnscheck.js';
 import { SCHEMAS } from '../models/index.js';
 import { USERNAME, USERNAME_MESSAGE } from '../models/User.js';
 import { TENANT_STATUSES } from '../control/models/Tenant.js';
-import { hashPassword, passwordProblem } from '../lib/passwords.js';
+import { hashPassword, passwordProblem, verifyPassword } from '../lib/passwords.js';
 import { defineJob, runInline, workerOf } from './jobs.js';
 
 export const DEFAULT_CATEGORY = 'عام';
@@ -91,14 +91,16 @@ export async function slugAvailability(ctx, value, { tenantId = null } = {}) {
 }
 
 // The limits on how many shops there are and how many were made today (deleted ones count
-// for the day, not for the total)
-async function assertRoomForOneMore(ctx) {
+// for the day, not for the total). Before a shop is made there must be room for one more;
+// once made (made: true) it counts itself.
+async function assertRoom(ctx, { made = false } = {}) {
   const { Tenant } = ctx.db.controlModels;
   const { maxTenants, maxNewTenantsPerDay } = ctx.config;
+  const room = made ? 0 : 1;
   const count = await Tenant.countDocuments({ status: { $ne: 'deleted' } });
-  if (count >= maxTenants) throw httpError(409, `وصل عدد المتاجر إلى الحد الأقصى (${maxTenants})`, 'MAX_TENANTS');
+  if (count + room > maxTenants) throw httpError(409, `وصل عدد المتاجر إلى الحد الأقصى (${maxTenants})`, 'MAX_TENANTS');
   const today = await Tenant.countDocuments({ createdAt: { $gt: new Date(Date.now() - DAY) } });
-  if (today >= maxNewTenantsPerDay) {
+  if (today + room > maxNewTenantsPerDay) {
     throw httpError(409, `وصل عدد المتاجر الجديدة خلال 24 ساعة إلى الحد الأقصى (${maxNewTenantsPerDay}). أعد المحاولة لاحقًا`, 'MAX_NEW_TENANTS');
   }
 }
@@ -128,7 +130,7 @@ async function findOrCreateTenant(ctx, fields, by, retried = false) {
   if (await Host.exists({ _id: { $in: names }, tenantId: { $ne: tenant?._id ?? null } })) throw httpError(409, SLUG_MESSAGES.taken);
   if (tenant) return tenant;
 
-  await assertRoomForOneMore(ctx);
+  await assertRoom(ctx);
   // Made here, once, from nothing the request sent
   const dbName = db.assertDbName(`${config.tenantDbPrefix}${new mongoose.Types.ObjectId().toHexString()}`);
   try {
@@ -152,6 +154,17 @@ async function findOrCreateTenant(ctx, fields, by, retried = false) {
     // that shop; another one finds the address taken.
     return findOrCreateTenant(ctx, fields, by, true);
   }
+  // Counted again once made: shops made at the same moment all passed the count above. One
+  // over a limit takes its record back (nothing else of it exists yet). Each record is made
+  // before its own count, so the last count sees every shop still there: never one past the
+  // limit. At worst shops made at the same moment are all refused though one of them would
+  // have fitted; asking again makes it.
+  try {
+    await assertRoom(ctx, { made: true });
+  } catch (err) {
+    await Tenant.deleteOne({ _id: tenant._id, status: 'provisioning' });
+    throw err;
+  }
   registry?.applyTenant(tenant);
   return tenant;
 }
@@ -171,7 +184,9 @@ async function logCreation(AuditLog, tenant, by) {
 }
 
 // The shop's one active provision job, with the latest request's details and any step added
-// since it started; a failed step is set to run again
+// since it started; a failed step is set to run again. Returns { job, ownerMade }: ownerMade
+// when an earlier run already made the owner's account, whose password this request's then
+// leaves alone (its hash is not even kept).
 async function provisionJob(ctx, tenant, requestId, params, by) {
   const { Job } = ctx.db.controlModels;
   const found = await Job.findOne({ tenantId: tenant._id, active: true }).lean();
@@ -181,8 +196,10 @@ async function provisionJob(ctx, tenant, requestId, params, by) {
       s.status === 'failed' ? { key: s.key, status: 'pending', tries: 0, ref: s.ref, note: s.note } : s,
     );
     const status = found.status === 'failed' ? 'queued' : found.status;
-    await Job.updateOne({ _id: found._id }, { $set: { steps, status, params: { ...found.params, ...params }, runAfter: new Date(), error: null } });
-    return Job.findById(found._id).lean();
+    const ownerMade = Boolean(found.result?.owner) || found.steps.some((s) => s.key === 'owner' && s.status === 'done');
+    const { owner, ...rest } = params;
+    await Job.updateOne({ _id: found._id }, { $set: { steps, status, params: { ...found.params, ...(ownerMade ? rest : params) }, runAfter: new Date(), error: null } });
+    return { job: await Job.findById(found._id).lean(), ownerMade };
   }
   try {
     const job = await Job.create({
@@ -195,7 +212,7 @@ async function provisionJob(ctx, tenant, requestId, params, by) {
       createdBy: by.actor,
       runAfter: new Date(),
     });
-    return job.toObject();
+    return { job: job.toObject(), ownerMade: false };
   } catch (err) {
     ignoreDuplicate(err); // started at the same moment elsewhere: use that one
     return provisionJob(ctx, tenant, requestId, params, by);
@@ -209,6 +226,14 @@ async function existingOwner(db, tenant) {
   return owner ? { username: owner.usernameLower, created: false } : null;
 }
 
+// Whether the owner's account, made by an earlier run, has this password: a request sent
+// again after a lost answer may carry the same one, or one made again since
+async function ownerHasPassword(db, tenant, password) {
+  const { User } = await db.tenantModels(tenant);
+  const owner = await User.findOne({ role: 'owner' }).select('+passwordHash').lean();
+  return Boolean(owner && (await verifyPassword(password, owner.passwordHash)));
+}
+
 /*
  * Creates a shop: its record (status provisioning, its own database name) and a provision
  * job that makes its address, its database with every index, its settings, the category
@@ -220,9 +245,11 @@ async function existingOwner(db, tenant) {
  * inline (the command line, the tests): the job runs now, as far as it can; a step that has
  * to wait for the root worker (a real certificate) leaves the rest to the server's runner
  * (pending: true). Otherwise (the admin panel) the job is queued for the runner and this
- * returns at once. Returns { tenant, host, url, owner, job, pending }, owner being
- * { username, created } once the account step ran: created is false when an earlier run had
- * already made the account, whose password is then left as it was.
+ * returns at once. Returns { tenant, host, url, owner, job, pending, passwordSet }, owner
+ * being { username, created } once the account step ran: created is false when an earlier
+ * run had already made the account, whose password is then left as it was. passwordSet says
+ * whether the account has, or will be given, the password of this request: false when an
+ * earlier run made it with another one (the panel must not show this one then).
  * input: { slug, shopName, owner: { username, password, displayName? }, label?, receiptNote?,
  *          timeZone?, currency?, phone?, address?, firstInvoiceNumber?, notes?,
  *          contact?: { person, phone }, requestId? }
@@ -255,7 +282,7 @@ export async function createTenant(ctx, input, by = {}, { inline = true } = {}) 
     // step): close the job it may have left open
     await Job.updateMany({ tenantId: tenant._id, type: 'provision', active: true }, { $set: { status: 'done', active: false, finishedAt: new Date(), leaseUntil: null, leaseOwner: null } });
     const job = await Job.findOne({ tenantId: tenant._id, type: 'provision' }).sort({ createdAt: -1 }).lean();
-    return result({ owner: await existingOwner(db, tenant), job });
+    return result({ owner: await existingOwner(db, tenant), job, passwordSet: await ownerHasPassword(db, tenant, owner.password) });
   }
   if (tenant.status !== 'provisioning') throw httpError(409, 'هذا المتجر ليس قيد التجهيز');
 
@@ -266,16 +293,19 @@ export async function createTenant(ctx, input, by = {}, { inline = true } = {}) 
     firstInvoice,
     owner: { username: owner.username, displayName: owner.displayName, passwordHash: await hashPassword(owner.password) },
   };
-  let job = await provisionJob(ctx, tenant, requestId, params, who);
+  const provision = await provisionJob(ctx, tenant, requestId, params, who);
+  let { job } = provision;
+  const passwordSet = !provision.ownerMade || (await ownerHasPassword(db, tenant, owner.password));
   if (!inline) {
     ctx.runner?.kick();
-    return result({ job, pending: true });
+    return result({ job, pending: true, passwordSet });
   }
   const outcome = await runInline(ctx, job._id);
   tenant = (await Tenant.findById(tenant._id).lean()) ?? tenant;
   if (outcome.failed) throw outcome.error;
   job = await Job.findById(job._id).lean();
-  return result({ tenant, owner: job.result?.owner ?? (await existingOwner(db, tenant)), job, pending: Boolean(outcome.waiting) });
+  const made = job.result?.owner ?? (await existingOwner(db, tenant));
+  return result({ tenant, owner: made && { ...made, created: made.created && passwordSet }, job, pending: Boolean(outcome.waiting), passwordSet });
 }
 
 /* The provision job's steps (services/jobs.js runs them) */
@@ -291,6 +321,21 @@ export async function mirrorCert(ctx, host, state) {
     lastError: state.lastError ?? null,
   };
   await ctx.db.controlModels.Host.updateOne({ _id: host }, { $set: Object.fromEntries(Object.entries(cert).map(([k, v]) => [`cert.${k}`, v])) });
+}
+
+// Marks a host retired for ever and asks the worker to remove its certificate (24 hours
+// later). The worker's file first (asking twice changes nothing): if it cannot be written,
+// the host is left as it was, so the step's retry or the next upkeep asks again, instead of
+// a host marked retired whose certificate the worker keeps renewing.
+export async function retireHost(ctx, host) {
+  const { Host } = ctx.db.controlModels;
+  await workerOf(ctx).retireCert(host._id);
+  const doc = await Host.findOneAndUpdate(
+    { _id: host._id, kind: { $ne: 'retired' } },
+    { $set: { kind: 'retired', rev: await nextRev(ctx.db), 'cert.retireRequestedAt': new Date(), 'cert.status': 'retired' } },
+    { returnDocument: 'after' },
+  ).lean();
+  if (doc) ctx.registry?.applyHost(doc);
 }
 
 // The name must point at this server (on the server only; .localhost names never leave the machine)
@@ -387,6 +432,22 @@ defineJob('provision', {
       }
     },
   },
+  // Giving up a shop that never opened (a mistyped address, a certificate that keeps
+  // failing): its addresses are retired for ever (never given to another shop) and it stops
+  // counting against MAX_TENANTS. A database the job made goes as a deleted shop's does,
+  // by the purge (a verified backup, then the worker's drop), which the next upkeep queues
+  // at once; «إلغاء الحذف» cannot bring it back as a shop half set up.
+  async cancel({ ctx, job, tenant, by: who = {} }) {
+    if (tenant?.status !== 'provisioning') throw httpError(409, 'المتجر لم يعد قيد التجهيز');
+    const { Host, Job } = ctx.db.controlModels;
+    for (const host of await Host.find({ tenantId: tenant._id, kind: { $ne: 'retired' } }).lean()) await retireHost(ctx, host);
+    await Job.updateOne({ _id: job._id }, { $unset: { 'params.owner.passwordHash': 1 } });
+    const actor = { actor: who.actor ?? job.createdBy ?? 'system', ip: who.ip ?? null, reason: 'أُلغي التجهيز' };
+    if (!(await ctx.db.databaseExists(tenant.dbName))) return transition(ctx, tenant._id, 'provisioning', 'deleted', actor);
+    const now = new Date();
+    const deletion = { requestedAt: now, requestedBy: actor.actor, purgeAfter: now, setupCancelled: true };
+    return transition(ctx, tenant._id, 'provisioning', 'pending_deletion', actor, { set: { deletion } });
+  },
 });
 
 /* Status */
@@ -430,6 +491,16 @@ export async function transition(ctx, id, from, to, by = {}, { set = {}, unset =
     await revokeSessions(ctx, before._id).catch((err) => console.error(`Could not end the sessions of ${before.slug}: ${err.message}`));
   }
   return tenant;
+}
+
+// Opens a suspended shop again, for the admin panel and the command line alike: never while
+// a restore has it closed, since what was written meanwhile would go to the database the
+// restore is about to replace (the restore opens it again itself when it ends or is cancelled)
+export async function resumeTenant(ctx, id, by = {}) {
+  if (await ctx.db.controlModels.Job.exists({ tenantId: id, active: true, type: 'restore' })) {
+    throw httpError(409, 'تجري استعادة نسخة لهذا المتجر. انتظر حتى تنتهي، أو ألغِها من صفحة العمل', 'RESTORE_RUNNING');
+  }
+  return transition(ctx, id, 'suspended', 'active', { ...by, reason: '' });
 }
 
 // Ends the sessions of a shop, or of one of its accounts. Returns how many ended.

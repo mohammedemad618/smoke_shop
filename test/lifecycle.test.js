@@ -11,7 +11,7 @@ import fs from 'node:fs/promises';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { startTestEnv, BASE_DOMAIN, DB_PREFIX, signInAsOwner } from './support/harness.js';
 import { fakeRootWorker, makeAdmin, signInAdmin, waitForJob } from './support/admin.js';
-import { createTenant } from '../services/tenants.js';
+import { createTenant, resumeTenant, transition } from '../services/tenants.js';
 import { generatePassword } from '../lib/passwords.js';
 
 const ROOT = path.join(os.tmpdir(), `${DB_PREFIX}spool`);
@@ -267,6 +267,136 @@ test('restoring: into a new database, the current accounts kept, sessions ended;
   assert.ok(!(await databaseNames()).includes(shop.tenant.dbName));
   assert.deepStrictEqual((await control().Tenant.findById(id).lean()).previousDbNames, []);
   assert.strictEqual((await client.request('GET', '/api/products')).status, 200);
+});
+
+test('a shop whose setup keeps failing can be given up: its address retired for ever, its database purged at once', async () => {
+  const host = `give-up.${BASE_DOMAIN}`;
+  worker.failHosts.add(host);
+  const owner = { username: 'owner', password: generatePassword({ username: 'owner', slug: 'give-up' }) };
+  const made = await createTenant(env.ctx, { slug: 'give-up', shopName: 'متجر', owner }, { actor: 'test' });
+  let job = await waitForJob(env, admin, String(made.job._id), { tick });
+  assert.deepStrictEqual([job.status, job.cancellable], ['failed', true]);
+  const live = () => control().Tenant.countDocuments({ status: { $ne: 'deleted' } });
+  const before = await live();
+
+  const cancelled = await admin.api('POST', `/jobs/${made.job._id}/cancel`);
+  assert.deepStrictEqual([cancelled.status, cancelled.data.status, cancelled.data.active], [200, 'cancelled', false]);
+  let tenant = await control().Tenant.findById(made.tenant._id).lean();
+  assert.deepStrictEqual([tenant.status, tenant.deletion.setupCancelled], ['pending_deletion', true]);
+  const hostDoc = await control().Host.findById(host).lean();
+  assert.deepStrictEqual([hostDoc.kind, hostDoc.cert.status], ['retired', 'retired']);
+  assert.ok(await exists(path.join(SPOOL, 'retire', host)), 'retire/<host> written for the worker');
+  const back = await admin.api('POST', `/tenants/${made.tenant._id}/cancel-deletion`);
+  assert.strictEqual(back.status, 409, 'never back as a shop half set up');
+
+  // The next upkeep purges it: a verified backup, then the worker's drop
+  await env.runner.maintain();
+  const purge = await control().Job.findOne({ tenantId: made.tenant._id, type: 'purge' }).lean();
+  job = await waitForJob(env, admin, String(purge._id), { tick });
+  assert.strictEqual(job.status, 'done', JSON.stringify(job.steps));
+  tenant = await control().Tenant.findById(made.tenant._id).lean();
+  assert.strictEqual(tenant.status, 'deleted');
+  assert.ok(!(await databaseNames()).includes(tenant.dbName), 'dropped');
+  assert.strictEqual(await live(), before - 1, 'no longer counted against MAX_TENANTS');
+  assert.strictEqual((await admin.api('GET', '/slug-check?slug=give-up')).data.status, 'taken');
+});
+
+test('a new-shop request sent again with a password made again: the panel learns the account kept the first one', async () => {
+  const first = generatePassword({ username: 'owner', slug: 'sent-twice' });
+  const again = generatePassword({ username: 'owner', slug: 'sent-twice' });
+  const body = (ownerPassword) => ({ requestId: 'sent-twice-request-1', label: 'مكرر', shopName: 'مكرر', slug: 'sent-twice', ownerUsername: 'owner', ownerPassword, timeZone: 'Asia/Baghdad', currency: 'د.ع' });
+  const one = await admin.api('POST', '/tenants', body(first));
+  assert.deepStrictEqual([one.status, one.data.passwordSet], [202, true]);
+  // Its account made, waiting for the certificate; the answer was lost and the form sent again
+  await env.runner.drain();
+  const two = await admin.api('POST', '/tenants', body(again));
+  assert.deepStrictEqual([two.status, two.data.tenant.id, two.data.passwordSet], [202, one.data.tenant.id, false]);
+  assert.strictEqual((await admin.api('POST', '/tenants', body(first))).data.passwordSet, true, 'the same password again is the right one');
+  assert.strictEqual((await control().Job.findById(one.data.job.id).lean()).params.owner.passwordHash, undefined, 'no unused hash kept');
+  assert.strictEqual((await waitForJob(env, admin, one.data.job.id, { tick })).status, 'done');
+  const shop = env.client(`sent-twice.${BASE_DOMAIN}:${env.app.port}`);
+  assert.strictEqual((await shop.login('owner', again)).status, 401);
+  assert.strictEqual((await shop.login('owner', first)).status, 200);
+});
+
+test('an address retired while the worker\'s folder cannot be written is retired later, not left with its certificate', async () => {
+  const { _id: tenantId } = await control().Tenant.findOne({ status: 'active' }).lean();
+  const name = `long-gone.${BASE_DOMAIN}`;
+  await control().Host.create({ _id: name, tenantId, kind: 'redirect', redirectUntil: new Date(Date.now() - 1000), rev: await control().Counter.next('rev') });
+  const retireDir = path.join(SPOOL, 'retire');
+  await fs.rm(retireDir, { recursive: true, force: true });
+  // A file where the folder was: nothing can be written into it
+  await fs.writeFile(retireDir, '');
+  try {
+    await env.runner.maintain();
+    assert.strictEqual((await control().Host.findById(name).lean()).kind, 'redirect', 'left as it was, to be asked again');
+  } finally {
+    await fs.rm(retireDir, { force: true });
+    await fs.mkdir(retireDir, { recursive: true });
+  }
+  await env.runner.maintain();
+  const hostDoc = await control().Host.findById(name).lean();
+  assert.deepStrictEqual([hostDoc.kind, hostDoc.cert.status], ['retired', 'retired']);
+  assert.ok(await exists(path.join(retireDir, name)));
+});
+
+test('a shop purged within 7 days of a restore still has the database the restore replaced dropped', async () => {
+  const shop = await provisioned('restore-purge');
+  const id = String(shop.tenant._id);
+  const backup = await admin.api('POST', `/tenants/${id}/backups`);
+  await waitForJob(env, admin, backup.data.job.id, { tick });
+  const archive = (await admin.api('GET', `/tenants/${id}`)).data.backups[0];
+  const restored = await admin.api('POST', `/tenants/${id}/restore`, { archive: archive.path });
+  assert.strictEqual((await waitForJob(env, admin, restored.data.job.id, { tick })).status, 'done');
+  const deleted = await admin.api('POST', `/tenants/${id}/delete`, { confirm: 'restore-purge' });
+  assert.strictEqual((await waitForJob(env, admin, deleted.data.job.id, { tick })).status, 'done');
+  // npm run tenant:purge -- --confirm: due at once
+  await control().Tenant.updateOne({ _id: id }, { $set: { 'deletion.purgeAfter': new Date(Date.now() - 1000) } });
+  await env.runner.maintain();
+  const purge = await control().Job.findOne({ tenantId: id, type: 'purge' }).lean();
+  assert.strictEqual((await waitForJob(env, admin, String(purge._id), { tick })).status, 'done');
+  const tenant = await control().Tenant.findById(id).lean();
+  assert.strictEqual(tenant.status, 'deleted');
+  assert.deepStrictEqual(tenant.previousDbNames.map((p) => p.name), [shop.tenant.dbName]);
+  assert.ok((await databaseNames()).includes(shop.tenant.dbName), 'kept its 7 days');
+
+  await control().Tenant.updateOne({ _id: id }, { $set: { 'previousDbNames.0.dropAfter': new Date(Date.now() - 1000) } });
+  await env.runner.maintain();
+  const cleanup = await control().Job.findOne({ tenantId: id, type: 'cleanup' }).lean();
+  assert.ok(cleanup, 'queued for a deleted shop too');
+  assert.strictEqual((await waitForJob(env, admin, String(cleanup._id), { tick })).status, 'done');
+  assert.ok(!(await databaseNames()).includes(shop.tenant.dbName));
+  assert.deepStrictEqual((await control().Tenant.findById(id).lean()).previousDbNames, []);
+});
+
+test('a restore keeps the shop closed: resuming waits for it, and a shop opened all the same is not switched', async () => {
+  const shop = await provisioned('reopened');
+  const id = String(shop.tenant._id);
+  const backup = await admin.api('POST', `/tenants/${id}/backups`);
+  await waitForJob(env, admin, backup.data.job.id, { tick });
+  const archive = (await admin.api('GET', `/tenants/${id}`)).data.backups[0];
+  const asked = await admin.api('POST', `/tenants/${id}/restore`, { archive: archive.path });
+  assert.strictEqual(asked.status, 202);
+  // Closed, its backup waiting for the worker
+  await env.runner.drain();
+  assert.strictEqual((await control().Tenant.findById(id).lean()).status, 'suspended');
+  const refused = await admin.api('POST', `/tenants/${id}/resume`);
+  assert.deepStrictEqual([refused.status, refused.data.code], [409, 'RESTORE_RUNNING']);
+  // The command line goes through the same check (npm run tenant:suspend -- --resume)
+  await assert.rejects(resumeTenant(env.ctx, id, { actor: 'cli:test' }), (err) => err.code === 'RESTORE_RUNNING');
+
+  // Opened some other way all the same, and written to: the restore stops before the switch
+  await transition(env.ctx, id, 'suspended', 'active', { actor: 'test' });
+  const owner = env.client(`reopened.${BASE_DOMAIN}:${env.app.port}`);
+  assert.strictEqual((await owner.login('owner', shop.owner.password)).status, 200);
+  assert.strictEqual((await owner.request('POST', '/api/categories', { name: 'كُتب أثناء الاستعادة' })).status, 201);
+  const job = await waitForJob(env, admin, asked.data.job.id, { tick });
+  assert.strictEqual(job.status, 'failed');
+  assert.deepStrictEqual(job.steps.find((s) => s.key === 'switch').status, 'failed');
+  const tenant = await control().Tenant.findById(id).lean();
+  assert.strictEqual(tenant.dbName, shop.tenant.dbName, 'still the database those writes went to');
+  assert.ok((await owner.request('GET', '/api/categories')).data.some((c) => c.name === 'كُتب أثناء الاستعادة'));
+  assert.strictEqual((await admin.api('POST', `/jobs/${asked.data.job.id}/cancel`)).status, 200);
 });
 
 test('a request the worker refuses fails its step; nothing outside the backup folder is ever asked for', async () => {

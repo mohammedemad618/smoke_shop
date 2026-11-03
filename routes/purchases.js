@@ -224,13 +224,15 @@ router.post('/', async (req, res) => {
     });
     res.status(201).json(withRemaining(purchase.toObject()));
   } catch (err) {
+    // Saved twice at once: the other request saved it, and its invoice stands with the
+    // prices it set (the same ones). This one's goods come back out as if put in just
+    // before that invoice, so they leave its prices alone instead of putting back the ones
+    // both requests read before either ran.
+    const done = clientId && isDuplicateOf(err, 'clientId') ? await Purchase.findOne({ clientId }).lean() : null;
     // Nothing half done: the goods already put in come back out
-    await giveBack(req.models, { _id: new mongoose.Types.ObjectId(), createdAt: new Date(), items: received });
-    // Saved twice at once: the other request saved it
-    if (clientId && isDuplicateOf(err, 'clientId')) {
-      const done = await Purchase.findOne({ clientId }).lean();
-      if (done) return res.json(withRemaining(done));
-    }
+    const at = done ? new Date(done.createdAt.getTime() - 1) : new Date();
+    await giveBack(req.models, { _id: new mongoose.Types.ObjectId(), createdAt: at, items: received });
+    if (done) return res.json(withRemaining(done));
     throw err;
   }
 });

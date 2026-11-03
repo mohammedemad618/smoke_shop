@@ -2,13 +2,13 @@
 //   npm run tenant:suspend -- --slug amal [--reason "لم يُدفع الاشتراك"]
 //   npm run tenant:suspend -- --slug amal --resume
 // A suspended shop answers 423 «هذا المتجر موقوف مؤقتًا» to everything and every session of
-// it ends; resuming opens it again (everyone signs in again). The change is in the audit log,
-// and a running server sees it within 5 seconds.
+// it ends; resuming opens it again (everyone signs in again), except while a restore has it
+// closed. The change is in the audit log, and a running server sees it within 5 seconds.
 import { userInfo } from 'node:os';
 import { parseArgs } from 'node:util';
 import { loadConfig } from '../lib/config.js';
 import { openDatabases } from '../lib/db.js';
-import { transition } from '../services/tenants.js';
+import { resumeTenant, transition } from '../services/tenants.js';
 
 const USAGE = `Usage: npm run tenant:suspend -- --slug <address> [--reason <text>] [--resume]
 
@@ -38,7 +38,10 @@ try {
   if (!tenant) throw new Error(`No shop with the address "${slug}"`);
   const [from, to] = args.resume ? ['suspended', 'active'] : ['active', 'suspended'];
   if (tenant.status !== from) throw new Error(`"${slug}" is ${tenant.status}, not ${from}`);
-  await transition({ db, config }, tenant._id, from, to, { actor: `cli:${userInfo().username}`, reason: args.resume ? '' : (args.reason ?? '') });
+  const by = { actor: `cli:${userInfo().username}` };
+  // Resuming waits for a restore in progress, as in the admin panel
+  if (args.resume) await resumeTenant({ db, config }, tenant._id, by);
+  else await transition({ db, config }, tenant._id, from, to, { ...by, reason: args.reason ?? '' });
   console.log(`Shop "${slug}" is now ${to}.${to === 'suspended' ? ' Its sessions have ended.' : ''}`);
 } catch (err) {
   console.error(err.message);

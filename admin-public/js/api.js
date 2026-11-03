@@ -23,10 +23,13 @@ export const setHandlers = (next) => {
 
 const SAFE = new Set(['GET', 'HEAD']);
 
-async function send(path, { method = 'GET', body } = {}) {
+// poll: a look the page takes by itself (a job's progress every 2 seconds), which the server
+// does not count as the admin's activity, so a screen left open still signs out when idle
+async function send(path, { method = 'GET', body, poll = false } = {}) {
   const headers = {};
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   if (!SAFE.has(method) && csrfToken) headers['X-CSRF-Token'] = csrfToken;
+  if (poll) headers['X-Poll'] = '1';
   try {
     return await fetch(`/api/admin${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), credentials: 'same-origin', cache: 'no-store' });
   } catch {

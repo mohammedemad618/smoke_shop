@@ -2,7 +2,7 @@ import { Router } from 'express';
 import mongoose from 'mongoose';
 import { httpError } from '../lib/errors.js';
 import { clientIdOf, isDuplicateOf } from '../lib/idempotency.js';
-import { REPORT_MS } from '../lib/limits.js';
+import { REPORT_MS, runReport } from '../lib/limits.js';
 import { money, precise, roundQty, stockChange } from '../lib/util.js';
 import { DAY_MS, requestedRange, timeZoneParam } from '../lib/range.js';
 
@@ -209,9 +209,10 @@ const sumFigures = (rows) => {
 router.get('/', async (req, res) => {
   const { Sale } = req.models;
   const { start, end } = requestedRange(req.query, MAX_LIST_RANGE_MS);
+  // The day's figures replay the customers' accounts: a report, one at a time per shop
   const [sales, rows] = await Promise.all([
     Sale.find({ createdAt: { $gte: start, $lt: end } }).sort({ createdAt: -1 }).lean(),
-    periodFigures(req.models, start, end),
+    runReport(req.tenant._id, () => periodFigures(req.models, start, end)),
   ]);
   const summary = { ...EMPTY_FIGURES, ...rows[0] };
   delete summary.key;
@@ -222,7 +223,7 @@ router.get('/', async (req, res) => {
 router.get('/report', async (req, res) => {
   const { start, end } = requestedRange(req.query, MAX_REPORT_RANGE_MS);
   const groupBy = req.query.groupBy === 'month' ? 'month' : 'day';
-  const periods = await periodFigures(req.models, start, end, groupBy, timeZoneParam(req.query.tz));
+  const periods = await runReport(req.tenant._id, () => periodFigures(req.models, start, end, groupBy, timeZoneParam(req.query.tz)));
   res.json({ groupBy, summary: sumFigures(periods), periods });
 });
 
@@ -233,7 +234,7 @@ router.get('/products', async (req, res) => {
   const { start, end } = requestedRange(req.query, MAX_REPORT_RANGE_MS);
   const inRange = { $gte: start, $lt: end };
   const baseQty = (line) => ({ $multiply: [`${line}.quantity`, { $ifNull: [`${line}.packSize`, 1] }] });
-  const [sold, returned] = await Promise.all([
+  const [sold, returned] = await runReport(req.tenant._id, () => Promise.all([
     Sale.aggregate([
       { $match: { createdAt: inRange } },
       // Oldest first, so $last picks the product's most recent name
@@ -303,7 +304,7 @@ router.get('/products', async (req, res) => {
         },
       },
     ]).option({ maxTimeMS: REPORT_MS }),
-  ]);
+  ]));
 
   const rows = new Map();
   for (const s of sold) {

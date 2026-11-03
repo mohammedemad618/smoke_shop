@@ -5,6 +5,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { startTestEnv } from './support/harness.js';
+import { isPurchaseOf, isReturnOf, isSaleOf } from '../public/js/idempotency.js';
 
 let env;
 let shop;
@@ -92,6 +93,20 @@ test('a purchase saved twice is one invoice, its goods added once', async () => 
   assert.strictEqual(await shop.db.collection('purchases').countDocuments({ clientId: 'purchase-0001' }), 1);
 });
 
+test('a purchase sent twice at the same moment, with no earlier request: its goods once, and its prices stand', async () => {
+  for (let round = 0; round < 4; round++) {
+    // Every other round a product whose quantity was not counted yet: the purchase starts it
+    const p = await ok('POST', '/products', { name: `منتج معًا ${round}`, barcode: `TWICE-${round}`, category: category._id, purchasePrice: 100, salePrice: 250, trackStock: round % 2 === 0, stock: 5 });
+    const body = { items: [{ product: p._id, quantity: 10, price: 90, salePrice: 300 }], clientId: `purchase-twice-${round}` };
+    const answers = await Promise.all([call('POST', '/purchases', body), call('POST', '/purchases', body)]);
+    assert.deepStrictEqual(answers.map((a) => a.status).sort(), [200, 201], `round ${round}`);
+    assert.strictEqual(answers[0].data.number, answers[1].data.number);
+    const after = await ok('GET', `/products/barcode/TWICE-${round}`);
+    assert.deepStrictEqual([after.purchasePrice, after.salePrice, after.trackStock, after.stock], [90, 300, true, round % 2 === 0 ? 15 : 10], `round ${round}`);
+    assert.strictEqual(await shop.db.collection('purchases').countDocuments({ clientId: body.clientId }), 1);
+  }
+});
+
 test('a return sent twice gives the money and the stock back once, at once or one after the other', async () => {
   const p = await product('ONCE-6', 10);
   const sale = await ok('POST', '/sales', { items: [{ productId: p._id, quantity: 4 }] });
@@ -110,4 +125,39 @@ test('a return sent twice gives the money and the stock back once, at once or on
   const after = await shop.db.collection('sales').findOne({ number: sale.number });
   assert.deepStrictEqual([after.returns.length, after.returnedTotal, after.returnStatus], [2, 1000, 'full']);
   assert.strictEqual(await stockOf('ONCE-6'), 10);
+});
+
+test('the pages tell the record of their own request from one made earlier under the same id from another cart', async () => {
+  const sugar = await product('SAME-1', 50);
+  const tea = await product('SAME-2', 50);
+  // A cart with a line repeated: the server merges it, and it is still this cart's sale
+  const cart = { items: [{ productId: sugar._id, quantity: 1 }, { productId: sugar._id, quantity: 2 }], clientId: 'cart-same-0001' };
+  const sold = await call('POST', '/sales', cart);
+  assert.strictEqual(sold.status, 201);
+  assert.ok(isSaleOf(cart, sold.data));
+  // Its answer lost, the cart changed, sent again: the server gives back the sale it made,
+  // which the cashier must not take for this cart (it would be emptied, the tea never sold)
+  const changed = { ...cart, items: [...cart.items, { productId: tea._id, quantity: 3 }] };
+  const replay = await call('POST', '/sales', changed);
+  assert.deepStrictEqual([replay.status, replay.data.number], [200, sold.data.number]);
+  assert.ok(!isSaleOf(changed, replay.data));
+  assert.ok(isSaleOf(cart, replay.data), 'the same cart again is the same sale');
+  assert.ok(!isSaleOf({ items: [{ productId: sugar._id, quantity: 3, mode: 'wholesale' }] }, replay.data), 'sold by the pack is another line');
+
+  const draft = { items: [{ product: tea._id, quantity: 4, price: 80.004 }], clientId: 'purchase-same-01' };
+  const bought = await call('POST', '/purchases', draft);
+  assert.ok(isPurchaseOf(draft, bought.data));
+  const edited = { ...draft, items: [{ product: tea._id, quantity: 4, price: 85 }] };
+  const again = await call('POST', '/purchases', edited);
+  assert.deepStrictEqual([again.status, again.data.number], [200, bought.data.number]);
+  assert.ok(!isPurchaseOf(edited, again.data));
+
+  const back = { items: [{ line: 0, quantity: 1 }], clientId: 'return-same-001' };
+  const returned = await call('POST', `/sales/${sold.data._id}/returns`, back);
+  assert.ok(isReturnOf(back, returned.data.sale));
+  const more = { ...back, items: [{ line: 0, quantity: 2 }] };
+  const repeated = await call('POST', `/sales/${sold.data._id}/returns`, more);
+  assert.deepStrictEqual([repeated.status, repeated.data.refunded], [200, returned.data.refunded]);
+  assert.ok(!isReturnOf(more, repeated.data.sale));
+  assert.strictEqual(await stockOf('SAME-1'), 48);
 });

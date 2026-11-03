@@ -107,9 +107,33 @@ test('a shop past 50 failures in an hour makes every sign-in to it wait 2 s more
 test('a typed name is stored as typed, not read as part of the query', async () => {
   const { guard } = guardAt();
   const key = { scope: `test-${++scopes}`, username: '$count', ip: '10.4.0.1' };
-  await guard.failed(key);
+  await guard.failed(key, { known: true });
   const stored = await env.db.controlModels.LoginAttempt.findOne({ scope: key.scope, kind: 'ip' }).lean();
   assert.deepStrictEqual([stored.username, stored.count], ['$count', 1]);
+});
+
+test('a name that is no account (often the password, typed in the wrong box) is counted but never written down', async () => {
+  const { guard } = guardAt();
+  const key = { scope: `test-${++scopes}`, username: 'my shop password 99', ip: '10.4.0.2' };
+  assert.deepStrictEqual(await failTimes(guard, key, 4), {});
+  assert.deepStrictEqual(await guard.failed(key), { lockedMs: 15 * MIN }, 'it still locks');
+  const stored = await env.db.controlModels.LoginAttempt.find({ scope: key.scope }).lean();
+  assert.strictEqual(stored.length, 3);
+  assert.ok(!JSON.stringify(stored).includes('password'), JSON.stringify(stored));
+});
+
+test('one attempt of a name from an address is checked at a time; another name or address is not held', () => {
+  const { guard } = guardAt();
+  const key = keyFor('10.4.0.3');
+  const release = guard.hold(key);
+  assert.strictEqual(typeof release, 'function');
+  assert.strictEqual(guard.hold({ ...key }), null, 'the same triple waits');
+  const other = [guard.hold({ ...key, ip: '10.4.0.4' }), guard.hold({ ...key, username: 'cashier' })];
+  assert.ok(other.every((r) => typeof r === 'function'));
+  release();
+  const again = guard.hold(key);
+  assert.strictEqual(typeof again, 'function', 'free again once let go');
+  for (const r of [again, ...other]) r();
 });
 
 test('the wait in Arabic', () => {

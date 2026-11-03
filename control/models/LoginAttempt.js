@@ -3,7 +3,8 @@ import { Schema } from 'mongoose';
 // Failed sign-ins, counted by lib/login-guard.js in three ways: per (shop, username, IP),
 // which locks; per (shop, username) from every address, which only slows down, so nobody
 // can lock an owner out on purpose; and per shop. _id is the kind and a hash of the key, so
-// any username typed stays a fixed size; the readable key is kept beside it for the admin.
+// any username typed stays a fixed size; the readable key is kept beside it for the admin,
+// the username only when it names an account (whatever else was typed may be a password).
 const loginAttemptSchema = new Schema(
   {
     _id: { type: String, required: true },

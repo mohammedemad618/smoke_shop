@@ -13,6 +13,9 @@ const sessionSchema = new Schema(
     userId: { type: Schema.Types.ObjectId, required: true },
     // The user's authVersion when the session began; a change ends it
     authVersion: { type: Number, required: true },
+    // Only while this session changes its own password: the version the user is about to
+    // have, so its other requests meanwhile are not ended as sessions of the old password
+    nextAuthVersion: Number,
     // The token every request that changes something must send back (X-CSRF-Token)
     csrf: { type: String, required: true },
     createdAt: { type: Date, required: true },
@@ -23,8 +26,9 @@ const sessionSchema = new Schema(
     ua: String,
     // Admin only. stage code: the password was right and the authenticator code is awaited
     // (nothing else is open); full: signed in. stepUpAt: when a code was last given, which
-    // the riskiest actions need within 5 minutes. codeFailures: wrong codes, at sign-in and
-    // at step-up alike; the fifth ends the session (admin/auth.js).
+    // the riskiest actions need within 5 minutes. codeFailures: codes tried since the last
+    // right one, at sign-in and at step-up alike, each counted before it is checked; a fifth
+    // wrong one ends the session, and no sixth is checked (admin/auth.js).
     stage: { type: String, enum: ['code', 'full'] },
     stepUpAt: Date,
     codeFailures: { type: Number, default: 0 },

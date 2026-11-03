@@ -10,6 +10,8 @@ import { SHOP_CSP, contentSecurityPolicy, noStore, securityHeaders } from './lib
 import { publicUrl } from './lib/config.js';
 import { health } from './lib/health.js';
 import { requestLog } from './lib/requestlog.js';
+import { shopRequests } from './lib/limits.js';
+import { EXACT } from './lib/routing.js';
 import { createAdminRouter } from './admin/router.js';
 import { createAuthRouters } from './routes/auth.js';
 import { createSettingsRouter } from './routes/settings.js';
@@ -39,14 +41,17 @@ function mount(parent, path, ...handlers) {
  *   2. the public endpoints: the shop's name, signing in, CSP reports
  *   3. the session check (lib/auth.js): /api answers 401, a page goes to the sign-in page
  *   4. the account's own routes, then the first-password gate
- *   5. the pages, then the shop's models on req.models and the API, then 404 for /api
+ *   5. the pages, then the shop's models on req.models and the API (4 requests of the shop at
+ *      a time, lib/limits.js), then 404 for /api
  * Every state-changing /api request past 3 carries the session's CSRF token (lib/csrf.js).
+ * Paths match exactly, letter case and final slash included (lib/routing.js).
  */
 export function createTenantRouter({ db, registry, config }) {
-  const router = express.Router();
+  const router = express.Router(EXACT);
   const store = createSessionStore({ Session: db.controlModels.Session, config, kind: 'tenant' });
   const guard = createLoginGuard(db.controlModels.LoginAttempt);
   const auth = createAuthRouters({ config, store, guard });
+  const limitShop = shopRequests();
   const models = attachModels(db);
 
   // Report-only for now: browsers send what it would block to /api/csp-report
@@ -63,7 +68,7 @@ export function createTenantRouter({ db, registry, config }) {
 
   // 2. Public endpoints. CSP reports read their own body type, so they come before the JSON parser.
   mount(router, '/api/csp-report', cspReportRouter);
-  const publicApi = express.Router();
+  const publicApi = express.Router(EXACT);
   router.use(express.json({ limit: '200kb' }));
   // Express 5 leaves req.body undefined when the request had no JSON body
   router.use((req, res, next) => {
@@ -78,14 +83,14 @@ export function createTenantRouter({ db, registry, config }) {
   router.use('/api', requireCsrf(config));
 
   // 4. Signing out and changing the password work while the first password is unchanged
-  const sessionApi = express.Router();
+  const sessionApi = express.Router(EXACT);
   mount(sessionApi, '/auth', auth.sessionRouter);
   mount(router, '/api', sessionApi);
   router.use(requirePasswordChanged());
 
   // 5. The pages, then the shop's data
   router.use(express.static(PUBLIC_DIR));
-  const api = express.Router();
+  const api = express.Router(EXACT);
   mount(api, '/shop', shopRouter);
   mount(api, '/settings', createSettingsRouter({ db, registry, config }));
   mount(api, '/categories', categoriesRouter);
@@ -96,7 +101,7 @@ export function createTenantRouter({ db, registry, config }) {
   mount(api, '/stockcounts', stockCountsRouter);
   mount(api, '/purchases', purchasesRouter);
   mount(api, '/export', exportRouter);
-  mount(router, '/api', models, api);
+  mount(router, '/api', limitShop, models, api);
   router.use('/api', (req, res) => res.status(404).json({ error: 'المسار غير موجود' }));
   return router;
 }
@@ -113,6 +118,8 @@ export function createApp({ db, registry, config, worker, runner }) {
   // nginx on this machine is the only client: the address it passes on is the visitor's
   // (req.ip, for the failed sign-ins). Nothing else is taken from proxy headers.
   app.set('trust proxy', 'loopback');
+  app.set('case sensitive routing', true);
+  app.set('strict routing', true);
   if (config.requestLog) app.use(requestLog());
   app.use(securityHeaders());
   app.use(health({ db }));

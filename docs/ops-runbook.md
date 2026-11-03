@@ -17,6 +17,7 @@
 | `ops/sbin/pos-root-worker.mjs` | `/usr/local/sbin/pos-root-worker.mjs` | `root:root 0700` |
 | `ops/sbin/pos-monitor.mjs` | `/usr/local/sbin/pos-monitor.mjs` | `root:root 0700` |
 | `ops/sbin/pos-fingerprint.sh` | `/usr/local/sbin/pos-fingerprint` | `root:root 0700` |
+| `ops/sbin/pos-certbot.sh` | `/usr/local/sbin/pos-certbot` | `root:root 0700` |
 | `ops/deploy.sh` | `/usr/local/sbin/pos-deploy` | `root:root 0700` |
 | `ops/systemd/*.service` و`*.timer` | `/etc/systemd/system/` | `root:root 0644` |
 | `ops/nginx/pos.conf` | `/etc/nginx/sites-available/pos` ورابط في `sites-enabled` | `root:root 0644` |
@@ -152,16 +153,18 @@ find /root/pos-ops -type f | sort
 cd /root/pos-ops && node --test ops/test/worker.test.mjs; cd ~
 ```
 
-المتوقع: `pass 15` و`fail 0` و`skipped 0`. ثم التثبيت:
+المتوقع: `pass 18` و`fail 0` و`skipped 0`. ثم التثبيت:
 
 ```bash
 cd /root/pos-ops/ops
 install -o root -g root -m 0700 sbin/pos-root-worker.mjs /usr/local/sbin/pos-root-worker.mjs
 install -o root -g root -m 0700 sbin/pos-monitor.mjs /usr/local/sbin/pos-monitor.mjs
 install -o root -g root -m 0700 sbin/pos-fingerprint.sh /usr/local/sbin/pos-fingerprint
+install -o root -g root -m 0700 sbin/pos-certbot.sh /usr/local/sbin/pos-certbot
 install -o root -g root -m 0700 deploy.sh /usr/local/sbin/pos-deploy
 node --check /usr/local/sbin/pos-root-worker.mjs && node --check /usr/local/sbin/pos-monitor.mjs \
-  && bash -n /usr/local/sbin/pos-deploy && bash -n /usr/local/sbin/pos-fingerprint && echo "scripts: ok"
+  && bash -n /usr/local/sbin/pos-deploy && bash -n /usr/local/sbin/pos-fingerprint \
+  && bash -n /usr/local/sbin/pos-certbot && echo "scripts: ok"
 
 install -o root -g root -m 0644 systemd/pos.service systemd/pos-root-worker.service systemd/pos-root-worker.timer \
   systemd/pos-backup.service systemd/pos-backup.timer systemd/pos-monitor.service systemd/pos-monitor.timer /etc/systemd/system/
@@ -212,20 +215,29 @@ pos-fingerprint > /root/pos-fp-before.txt; cat /root/pos-fp-before.txt
 
 الملف فيه لكل موقع (hishin وapi.hishin وlapsa وsales وurgold وerp وغيرها، ومضيف من `*.erp` وآخر من `*.sites`): حالة HTTP على المنفذين 80 و443، وبصمة SHA-256 للشهادة. ثم `sha256sum` لكل ملفات nginx ما عدا ملفاتنا، ومنها ملفات niura.
 
-**ثانيًا التثبيت:**
+**ثانيًا التثبيت.** فحص الأسماء أولًا، للقراءة فقط (`pos_` قد يطابق نصًا لا علاقة له بنا):
 
 ```bash
 grep -rn 'pos_' /etc/nginx || echo "no pos_ names"
-test ! -e /etc/nginx/sites-available/pos && test ! -e /etc/nginx/snippets/pos-proxy.conf && echo "names free"
-install -o root -g root -m 0644 /root/pos-ops/ops/nginx/pos.conf /etc/nginx/sites-available/pos
-install -o root -g root -m 0644 /root/pos-ops/ops/nginx/pos-proxy.conf /etc/nginx/snippets/pos-proxy.conf
-# ملف كلمات مرور لوحة الإدارة، فارغ حتى الخطوة 9: الدخول مرفوض للجميع حتى ذلك الحين
-install -o root -g www-data -m 0640 /dev/null /etc/nginx/.htpasswd-pos-admin
-ln -s /etc/nginx/sites-available/pos /etc/nginx/sites-enabled/pos
-nginx -t && systemctl reload nginx
 ```
 
-إن فشل `nginx -t` فلا يُعاد تحميل شيء: احذف الرابط بـ `rm /etc/nginx/sites-enabled/pos` وأرسل لي الخطأ.
+إن طبع أي سطر غير `no pos_ names` فتوقف وأرسله لي. ثم التثبيت: لا يحدث إلا إذا لم يوجد أي من أسماء ملفاتنا الأربعة، وإلا يطبع `STOP` ولا يغيّر شيئًا:
+
+```bash
+# ملف كلمات مرور لوحة الإدارة يُنشأ فارغًا حتى الخطوة 9: الدخول مرفوض للجميع حتى ذلك الحين
+if test ! -e /etc/nginx/sites-available/pos && test ! -e /etc/nginx/sites-enabled/pos \
+  && test ! -e /etc/nginx/snippets/pos-proxy.conf && test ! -e /etc/nginx/.htpasswd-pos-admin; then
+  install -o root -g root -m 0644 /root/pos-ops/ops/nginx/pos.conf /etc/nginx/sites-available/pos \
+    && install -o root -g root -m 0644 /root/pos-ops/ops/nginx/pos-proxy.conf /etc/nginx/snippets/pos-proxy.conf \
+    && install -o root -g www-data -m 0640 /dev/null /etc/nginx/.htpasswd-pos-admin \
+    && ln -s /etc/nginx/sites-available/pos /etc/nginx/sites-enabled/pos \
+    && nginx -t && systemctl reload nginx
+else
+  echo "STOP: a POS name already exists in /etc/nginx; nothing was installed"
+fi
+```
+
+إن طُبع `STOP` فأرسل لي ناتج `ls -l /etc/nginx/sites-available/pos /etc/nginx/sites-enabled/pos /etc/nginx/snippets/pos-proxy.conf /etc/nginx/.htpasswd-pos-admin`. إن فشل `nginx -t` فلا يُعاد تحميل شيء: احذف ما ثبّته الأمر (لم يكن موجودًا قبله) بـ `rm -f /etc/nginx/sites-enabled/pos /etc/nginx/sites-available/pos /etc/nginx/snippets/pos-proxy.conf /etc/nginx/.htpasswd-pos-admin` وأرسل لي الخطأ.
 
 **ثالثًا البصمة «بعد»:**
 
@@ -255,17 +267,13 @@ timeout 10 openssl s_client -connect 127.0.0.1:443 -servername smoke.pos.108-61-
 
 ## 6. certbot: الحساب وتجربة staging
 
-إعداد certbot لنقطة البيع مستقل تمامًا: مجلداته الثلاثة خاصة، فلا يمس `/etc/letsencrypt` ولا قفل niura ولا حدوده. لتسهيل الأوامر في هذه الجلسة:
-
-```bash
-cbpos() { certbot --config-dir /etc/letsencrypt-pos --work-dir /var/lib/letsencrypt-pos --logs-dir /var/log/letsencrypt-pos "$@"; }
-```
+إعداد certbot لنقطة البيع مستقل تمامًا: مجلداته الثلاثة خاصة، فلا يمس `/etc/letsencrypt` ولا قفل niura ولا حدوده. كل أمر certbot لنقطة البيع، هنا وفي أي جلسة لاحقة، يمر عبر `pos-certbot` (ثُبّت في الخطوة 3): هو certbot نفسه بمجلدات نقطة البيع الثلاثة. لا تستعمل `certbot` وحده لنقطة البيع أبدًا: يعمل على `/etc/letsencrypt`، أي شهادات niura وsmoke والمواقع الأخرى، ومعه خطّاف niura الذي يعيد تحميل nginx.
 
 سجّل حسابين (اكتب بريدك مكان `you@example.com`؛ Let's Encrypt يراسلك عليه فقط عند مشكلة في الشهادات):
 
 ```bash
-cbpos register --agree-tos --no-eff-email -m you@example.com
-cbpos register --staging --agree-tos --no-eff-email -m you@example.com
+pos-certbot register --agree-tos --no-eff-email -m you@example.com
+pos-certbot register --staging --agree-tos --no-eff-email -m you@example.com
 ls /etc/letsencrypt-pos/accounts/
 # المتوقع مجلدان: acme-v02.api.letsencrypt.org و acme-staging-v02.api.letsencrypt.org
 ```
@@ -342,7 +350,7 @@ runuser -u pos -- touch /var/lib/pos-spool/desired/admin.pos.108-61-190-4.sslip.
 جرّب التجديد (على staging، لا يغيّر الشهادة). إن ظهر «Another instance of Certbot is already running» فالعامل يعمل في تلك اللحظة: أعد الأمر بعد ثوانٍ.
 
 ```bash
-cbpos renew --dry-run --cert-name admin.pos.108-61-190-4.sslip.io
+pos-certbot renew --dry-run --cert-name admin.pos.108-61-190-4.sslip.io
 ```
 
 ---
@@ -386,7 +394,7 @@ systemctl start pos-monitor.service; cat /var/lib/pos-spool/state/monitor.json
 systemctl list-timers 'pos*' --no-pager
 ```
 
-- **النسخ الليلي** في 03:30 بتوقيت بغداد (00:30 UTC): `pos_control` وكل قاعدة متجر غير محذوف، إلى `/var/backups/pos/<قاعدة>/<وقت UTC>-nightly.archive.gz`. كل ملف يُفحص (الضغط سليم كاملًا، وعدد المستندات في كل مجموعة محفوظ بجانبه). الاحتفاظ: 14 يومية، و8 أسبوعية، و6 شهرية. وكل أسبوع تُستعاد آخر نسخة لمتجر واحد إلى قاعدة مؤقتة وتُقارن الأعداد ثم تُحذف المؤقتة.
+- **النسخ الليلي** في 03:30 بتوقيت بغداد (00:30 UTC): `pos_control` وكل قاعدة متجر غير محذوف، إلى `/var/backups/pos/<قاعدة>/<وقت UTC>-nightly.archive.gz`. كل ملف يُفحص (الضغط سليم كاملًا، وعدد المستندات في كل مجموعة محفوظ بجانبه). الاحتفاظ: 14 يومية، و8 أسبوعية، و6 شهرية؛ ونسخ القاعدة التي لم تعد موجودة (متجر محذوف، أو القاعدة السابقة بعد استعادة) تُحذف كلها بعد 400 يوم، الليلية منها ونسخة الحذف. وكل أسبوع تُستعاد آخر نسخة لمتجر واحد إلى قاعدة مؤقتة وتُقارن الأعداد ثم تُحذف المؤقتة.
 - **المراقبة** كل 5 دقائق: الذاكرة المتاحة (أقل من 300 MB)، القرص (أكثر من 80%)، `mongod` و`pos`، `/healthz`، الشهادات التي تنتهي خلال 14 يومًا، آخر نسخة ليلية (أقدم من 26 ساعة)، تمرين الاستعادة، آخر تشغيل ناجح للعامل، المهام الفاشلة، صلاحيات ملفات النسخ، وأخطاء 5xx من سجل التطبيق. المشاكل تظهر في `journalctl -u pos-monitor -p warning` وفي `monitor.json` الذي تعرضه لوحة الإدارة.
 - قبل أول نسخة ليلية يظهر في المراقبة تنبيه «لم تكتمل أي نسخة احتياطية ليلية بعد»، وهذا متوقع.
 
@@ -474,7 +482,7 @@ pm2 stop smoke-shop && pm2 save
 pm2 ls
 ```
 
-**بعد أسبوعين** دون مشاكل: التحويل الدائم 301.
+**بعد 30 يومًا** دون مشاكل، أي بعد انتهاء مدة التراجع إلى التطبيق القديم: التحويل الدائم 301. لا تبدّله قبل ذلك: المتصفح يحفظ 301 بلا موعد انتهاء، فلو تراجعت بعده (الخطوة 13) لظلت الأجهزة التي رأته تذهب إلى العنوان الجديد الذي يزيله التراجع، ولا تصل إلى الموقع القديم حتى تُمسح ذاكرة كل متصفح.
 
 ```bash
 sed -i 's/return 302 /return 301 /' /etc/nginx/sites-available/smoke-shop && nginx -t && systemctl reload nginx
@@ -507,11 +515,14 @@ pos-fingerprint > /root/pos-fp-rollback.txt; diff /root/pos-fp-before.txt /root/
 
 المتوقع: لا فرق. ملفات نقطة البيع (`sites-available/pos` والمقطع وملفا htpasswd والشهادات) مستثناة من البصمة، وتبقى على القرص بلا أثر لأن رابطها في `sites-enabled` حُذف.
 
-**6. (اختياري) نقل بيانات متجر smoke إلى التطبيق القديم.** البيانات تجريبية، فلا حاجة عادة. إن أردت: خذ نسخة من القاعدة القديمة أولًا، ثم انقل المجموعات (أسماؤها لم تتغير، فيقرؤها الكود القديم كما هي) ما عدا `users` و`settings`:
+إن كان التحويل قد صار 301 (آخر الخطوة 12) فالأجهزة التي فتحت العنوان القديم بعده حفظته، وتذهب إلى `smoke.pos.108-61-190-4.sslip.io` الذي لم يعد يجيب: امسح ذاكرة المتصفح (بيانات الموقع) على كل جهاز كاشير حتى يصل إلى الموقع القديم.
+
+**6. (اختياري) نقل بيانات متجر smoke إلى التطبيق القديم.** البيانات تجريبية، فلا حاجة عادة. إن أردت: خذ نسخة من القاعدة القديمة أولًا، ثم انقل المجموعات (أسماؤها لم تتغير، فيقرؤها الكود القديم كما هي) ما عدا `users` و`settings`. التطبيق القديم يتوقف أثناء النقل، لأن `--drop` يفرغ مجموعاته ويعيد ملأها، ثم يعود في آخر سطر:
 
 ```bash
 DB=$(mongosh --quiet --eval 'db.getSiblingDB("pos_control").tenants.findOne({ slug: "smoke" }).dbName'); echo "$DB"
 mongodump --db smoke_shop --gzip --archive=/root/backups/smoke_shop-$(date -u +%Y%m%dT%H%M%SZ).archive.gz
+pm2 stop smoke-shop
 mongodump --db "$DB" --archive | mongorestore --archive --drop --nsInclude="$DB.*" \
   --nsExclude="$DB.users" --nsExclude="$DB.settings" --nsFrom="$DB.*" --nsTo='smoke_shop.*'
 pm2 restart smoke-shop
@@ -525,7 +536,7 @@ pm2 restart smoke-shop
 rm -f /etc/systemd/system/pos*.service /etc/systemd/system/pos*.timer && systemctl daemon-reload
 rm -f /etc/nginx/sites-available/pos /etc/nginx/snippets/pos-proxy.conf /etc/nginx/.htpasswd-pos-admin /etc/nginx/.htpasswd-pos
 rm -rf /etc/nginx/pos-certs /etc/letsencrypt-pos /var/lib/letsencrypt-pos /var/log/letsencrypt-pos /var/lib/pos-spool /var/lib/pos-root-worker /srv/pos /etc/pos
-rm -f /usr/local/sbin/pos-root-worker.mjs /usr/local/sbin/pos-monitor.mjs /usr/local/sbin/pos-deploy /usr/local/sbin/pos-fingerprint
+rm -f /usr/local/sbin/pos-root-worker.mjs /usr/local/sbin/pos-monitor.mjs /usr/local/sbin/pos-deploy /usr/local/sbin/pos-fingerprint /usr/local/sbin/pos-certbot
 userdel pos
 ```
 
@@ -555,7 +566,7 @@ systemctl start pos
 ```bash
 diff /usr/local/sbin/pos-root-worker.mjs /srv/pos/current/ops/sbin/pos-root-worker.mjs
 install -o root -g root -m 0700 /srv/pos/current/ops/sbin/pos-root-worker.mjs /usr/local/sbin/pos-root-worker.mjs
-# ومثله لـ pos-monitor.mjs و deploy.sh (-> pos-deploy). للوحدات: install ثم systemctl daemon-reload.
+# ومثله لـ pos-monitor.mjs و deploy.sh (-> pos-deploy) و pos-certbot.sh (-> pos-certbot). للوحدات: install ثم systemctl daemon-reload.
 # لملفات nginx: البصمة قبل، install، nginx -t && systemctl reload nginx، البصمة بعد، diff.
 ```
 
@@ -594,7 +605,20 @@ mongosh --quiet --eval 'const d = db.getSiblingDB("pos_check"); d.getCollectionN
 mongosh --quiet --eval 'db.getSiblingDB("pos_check").dropDatabase()'
 ```
 
-إن توقفت مهمة استعادة في منتصفها (إعادة تشغيل الخادم مثلًا) فحالتها تصبح `failed` في التشغيل التالي، وقد تبقى قاعدة الهدف ناقصة: اطلب الاستعادة من جديد إلى قاعدة هدف جديدة.
+إن توقفت مهمة استعادة في منتصفها (إعادة تشغيل الخادم أو العامل مثلًا) فحالتها تصبح `failed` في التشغيل التالي للعامل، والعامل نفسه يحذف قاعدة الهدف الناقصة، إلا إن كانت قاعدة متجر أو قاعدة محفوظة بعد استعادة سابقة فيتركها ويكتب ذلك في سجله (`journalctl -u pos-root-worker`). بعدها «إعادة المحاولة» في صفحة العمل تستعيد إلى الهدف نفسه من جديد. ولبدء استعادة أخرى بدلها ألغِ العمل الفاشل أولًا (للمتجر عمل واحد نشط في كل وقت).
+
+إن ألغيت عمل استعادة **بعد** أن نجحت خطوة الاستعادة نفسها (فشل بعدها في خطوة الحسابات أو التبديل)، فالقاعدة المستعادة تبقى ولا يحذفها شيء. رقم العمل في آخر عنوان صفحته في اللوحة (`#/job/<الرقم>`):
+
+```bash
+J=<رقم العمل>
+mongosh --quiet --eval "const j = db.getSiblingDB('pos_control').jobs.findOne({ _id: ObjectId('$J') }); print(j.type, j.status, j.params.targetDb)"
+T=<القاعدة التي طبعها الأمر السابق، pos_t_...>
+# يجب أن يطبع 0: لا يستخدمها أي متجر، لا قاعدةً حالية ولا سابقة
+mongosh --quiet --eval "print(db.getSiblingDB('pos_control').tenants.countDocuments({ \$or: [{ dbName: '$T' }, { 'previousDbNames.name': '$T' }] }))"
+mongosh --quiet --eval "db.getSiblingDB('$T').dropDatabase()"
+```
+
+**الأعمال الفاشلة:** صفحة العمل في اللوحة تعرض «إعادة المحاولة» دائمًا، و«إلغاء العمل» للأنواع التي لها تراجع فقط. إلغاء تجهيز متجر فشل (عنوان مكتوب خطأ، أو شهادة تفشل في كل مرة) يوقف عناوينه نهائيًا فلا تُعطى لمتجر آخر، ويُخرجه من عدّ `MAX_TENANTS`، وقاعدته إن أُنشئت تُحذف بالحذف النهائي المعتاد (نسخة يتحقق منها العامل ثم يحذف القاعدة) في الصيانة التالية خلال دقيقة؛ ولا يعيده «إلغاء الحذف». والحذف النهائي الفاشل لا يُلغى إلا قبل أن يُطلب من العامل حذف القاعدة: يُلغى الحذف ويعود المتجر موقوفًا. بعد ذلك تبقى «إعادة المحاولة» وحدها.
 
 **الشهادات:**
 
@@ -602,7 +626,7 @@ mongosh --quiet --eval 'db.getSiblingDB("pos_check").dropDatabase()'
 cat /var/lib/pos-spool/state/certs/<العنوان>.json
 runuser -u pos -- touch /var/lib/pos-spool/desired/<العنوان>       # إعادة المحاولة بعد failed
 /usr/bin/node /usr/local/sbin/pos-root-worker.mjs --install <العنوان>   # إعادة نسخ الشهادة إلى nginx
-cbpos renew --dry-run                                                # فحص التجديد كله (staging)
+pos-certbot renew --dry-run                                          # فحص التجديد كله (staging)، لا certbot وحده
 ```
 
 التجديد تلقائي مرتين يوميًا لكل عنوان بقي له أقل من 35 يومًا، ولا يحتاج nginx إعادة تحميل. حدود الإصدار الذاتية: 3 شهادات في كل تشغيل و15 في اليوم.

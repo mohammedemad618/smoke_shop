@@ -43,6 +43,9 @@ try {
   const slug = args.slug.trim().toLowerCase();
   const tenant = await db.controlModels.Tenant.findOne({ slug }).lean();
   if (!tenant) throw new Error(`No shop with the address "${slug}"`);
+  // Before its database is opened: opening a purged shop's would make it again, empty, and
+  // a shop being set up or deleted has no use for a new password
+  if (!['active', 'suspended'].includes(tenant.status)) throw new Error(`"${slug}" is ${tenant.status}: only an active or suspended shop's owner gets a new password`);
   const { User } = await db.tenantModels(tenant);
   const existing = await User.findOne({ role: 'owner' }, 'usernameLower').lean();
   const username = existing?.usernameLower ?? (args.username ?? 'owner').trim().toLowerCase();

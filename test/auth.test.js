@@ -10,7 +10,7 @@ import { readdir } from 'node:fs/promises';
 import { createTenantRouter } from '../app.js';
 import { hashToken, createSessionStore } from '../lib/sessions.js';
 import { transition, setOwnerPassword } from '../services/tenants.js';
-import { startTestEnv, testConfig, FIRST_PASSWORD } from './support/harness.js';
+import { startTestEnv, startApp, browser, testConfig, BASE_DOMAIN, FIRST_PASSWORD } from './support/harness.js';
 
 let env;
 let a;
@@ -122,6 +122,17 @@ test('signing in takes a string username and password only: operators and odd ty
   assert.strictEqual(await env.db.controlModels.LoginAttempt.countDocuments({ scope: String(a.tenant._id) }), 0, 'and nothing counted');
 });
 
+test('a name that is no account is counted but never written down: a password typed in the username box stays out of pos_control', async () => {
+  const shop = await env.createShop('auth-names', { signIn: false });
+  const browser = stranger(shop);
+  assert.strictEqual((await browser.login('My Shop Password 99', 'anything at all')).status, 401);
+  assert.strictEqual((await browser.login('owner', 'Wrong-Password-2')).status, 401);
+  const attempts = await env.db.controlModels.LoginAttempt.find({ scope: String(shop.tenant._id) }).lean();
+  assert.ok(attempts.length >= 4, 'both are counted');
+  assert.ok(!JSON.stringify(attempts).toLowerCase().includes('password 99'), JSON.stringify(attempts));
+  assert.ok(attempts.some((d) => d.kind === 'user' && d.username === 'owner'), "an account's name is kept, for the reset to clear");
+});
+
 test('a wrong password and an unknown name get the same answer; the right one a session, stored hashed', async () => {
   const shop = await env.createShop('auth-login', { signIn: false });
   const first = shop.owner.password;
@@ -211,6 +222,40 @@ test('a new password ends every other session of the account and keeps this one'
   assert.strictEqual((await stranger(shop).login('owner', newPassword)).status, 200);
 });
 
+test('a request of this session made while it changes its password is not taken for a session of the old one', async () => {
+  const shop = await env.createShop('auth-during');
+  const { User } = await env.db.tenantModels(shop.tenant);
+  const original = User.findOneAndUpdate;
+  const during = [];
+  // Another tab of the same browser asks something right after the account takes its new
+  // version, before the session is given it
+  const spy = mock.method(User, 'findOneAndUpdate', function (...args) {
+    const query = original.apply(this, args);
+    const exec = query.exec.bind(query);
+    query.exec = async (...rest) => {
+      const result = await exec(...rest);
+      during.push(await shop.client.request('GET', '/api/auth/me'));
+      return result;
+    };
+    return query;
+  });
+  try {
+    const res = await shop.client.request('POST', '/api/auth/password', { currentPassword: shop.owner.password, newPassword: 'During-The-Change-5' });
+    assert.strictEqual(res.status, 200);
+  } finally {
+    spy.mock.restore();
+  }
+  assert.deepStrictEqual(during.map((r) => r.status), [200]);
+  assert.strictEqual((await shop.client.request('GET', '/api/products')).status, 200, 'still signed in');
+  const session = await env.db.controlModels.Session.findById(hashToken(shop.client.cookie.split('=')[1])).lean();
+  assert.deepStrictEqual([session.authVersion, session.nextAuthVersion], [(await User.findOne({ role: 'owner' }).lean()).authVersion, null]);
+  // The mark lets nothing else in: a session of the old password still ends
+  const old = stranger(shop);
+  assert.strictEqual((await old.login('owner', 'During-The-Change-5')).status, 200);
+  await shop.client.request('POST', '/api/auth/password', { currentPassword: 'During-The-Change-5', newPassword: 'After-The-Change-6' });
+  assert.strictEqual((await old.request('GET', '/api/auth/me')).status, 401);
+});
+
 test('signing out ends this session; signing out everywhere ends them all', async () => {
   const shop = await env.createShop('auth-out');
   const second = stranger(shop);
@@ -231,6 +276,45 @@ test('signing out ends this session; signing out everywhere ends them all', asyn
   assert.strictEqual((await third.request('POST', '/api/auth/logout-all')).status, 204);
   assert.strictEqual(await sessionCount(shop.tenant), 0);
   assert.strictEqual((await shop.client.request('GET', '/api/products')).status, 401);
+});
+
+// fetch for the pages' own code (public/js/auth.js), sent to the app as `browser` (one
+// cookie jar, the page's Origin); the header the page sets wins over the harness's
+function pageFetch(browser) {
+  return async (url, { method = 'GET', headers = {}, body } = {}) => {
+    const sent = Object.fromEntries(Object.entries(headers).map(([name, value]) => [name.toLowerCase(), value]));
+    const res = await browser.request(method, url, body === undefined ? undefined : JSON.parse(body), sent);
+    return new Response(res.status === 204 ? null : res.text, { status: res.status, headers: { 'content-type': res.headers['content-type'] ?? 'text/plain' } });
+  };
+}
+
+test('signing out from a page whose token went stale (signed in again in another tab) still ends the session; offline it fails', async () => {
+  const shop = await env.createShop('auth-signout', { signIn: false });
+  const tabs = stranger(shop);
+  assert.strictEqual((await tabs.login('owner', shop.owner.password)).status, 200);
+  const { fetchMe, signOut } = await import('../public/js/auth.js');
+  const spy = mock.method(globalThis, 'fetch', pageFetch(tabs));
+  try {
+    await fetchMe(); // the page's token
+    // Another tab of this browser signs in again: a new session and token, the page's is stale
+    assert.strictEqual((await tabs.login('owner', shop.owner.password)).status, 200);
+    await signOut();
+    assert.strictEqual((await tabs.request('GET', '/api/auth/me')).status, 401, 'no session left');
+    assert.strictEqual(await sessionCount(shop.tenant), 0);
+    // Already over: nothing left to end, and that is not a failure
+    await signOut();
+
+    // Offline: the session stays, and the page must not act as if it had ended
+    assert.strictEqual((await tabs.login('owner', shop.owner.password)).status, 200);
+    await fetchMe();
+    spy.mock.mockImplementation(async () => {
+      throw new TypeError('fetch failed');
+    });
+    await assert.rejects(signOut(), (err) => err.code === 'NETWORK');
+    assert.strictEqual((await tabs.request('GET', '/api/auth/me')).status, 200);
+  } finally {
+    spy.mock.restore();
+  }
 });
 
 test('a new first password from the admin ends the sessions and must be changed again', async () => {
@@ -348,6 +432,57 @@ test('wrong guesses lock this name from this address only, and refuse even the r
   // The owner from another address is not locked out, nor another name from this one
   assert.strictEqual((await guess('Wrong-guess-6', '10.0.0.1', 'someone')).status, 401);
   assert.strictEqual((await guess(first, '10.0.0.2')).status, 200);
+});
+
+test('signing in is reached by its exact path only, and is limited per address in the app itself', async () => {
+  const { LoginAttempt } = env.db.controlModels;
+  const from = (ip) => ({ 'x-forwarded-for': ip });
+  const counted = () => LoginAttempt.countDocuments({ scope: { $in: [String(a.tenant._id), String(b.tenant._id)] } });
+  const before = await counted();
+  // Express would take these for /api/auth/login, where nginx's pattern might not: no handler
+  // sees them (nothing is counted, no LOGIN_FAILED), with a session or without
+  for (const path of ['/api/auth/login/', '/API/AUTH/LOGIN', '/api/Auth/Login', '/api/auth/LOGIN']) {
+    const res = await stranger(a).request('POST', path, { username: 'owner', password: 'Not the password 1' }, from('10.7.0.1'));
+    assert.ok([401, 404].includes(res.status) && res.data?.code !== 'LOGIN_FAILED', `${path} -> ${res.status} ${res.text}`);
+  }
+  for (const path of ['/api/auth/password/', '/api/AUTH/password', '/API/AUTH/PASSWORD/']) {
+    const res = await a.client.request('POST', path, { currentPassword: 'Not the password 1', newPassword: 'Another new one 77' }, from('10.7.0.1'));
+    assert.ok(res.data?.code !== 'WRONG_PASSWORD' && res.status !== 200, `${path} -> ${res.status} ${res.text}`);
+  }
+  assert.strictEqual(await counted(), before);
+
+  // The app's own limit, on an app whose limit is 3 a minute: every shop together, per address
+  const app = await startApp({ ...env.ctx, config: testConfig({ SIGN_IN_PER_MINUTE: '3' }) });
+  try {
+    const shopA = browser(app.request, `auth-a.${BASE_DOMAIN}:${app.port}`);
+    const shopB = browser(app.request, `auth-b.${BASE_DOMAIN}:${app.port}`);
+    for (let i = 1; i <= 2; i++) assert.strictEqual((await shopA.login('nobody', `Wrong guess ${i}`, from('10.7.0.2'))).status, 401);
+    assert.strictEqual((await shopB.login('nobody', 'Wrong guess 3', from('10.7.0.2'))).status, 401);
+    const over = await shopB.login('owner', b.owner.password, from('10.7.0.2'));
+    assert.deepStrictEqual([over.status, over.data.code], [429, 'RATE_LIMITED']);
+    assert.ok(Number(over.headers['retry-after']) > 0);
+    assert.ok(!over.headers['set-cookie'], 'not even the right password is checked');
+    // Another address has its own
+    assert.strictEqual((await shopB.login('owner', b.owner.password, from('10.7.0.3'))).status, 200);
+  } finally {
+    await app.close();
+  }
+});
+
+test('two sign-ins of one name from one address at the same moment: one is checked, the other waits its turn', async () => {
+  const shop = await env.createShop('auth-twice', { signIn: false });
+  const from = { 'x-forwarded-for': '10.7.1.1' };
+  const answers = await Promise.all(Array.from({ length: 12 }, (_, i) => stranger(shop).login('owner', `Wrong guess ${i}`, from)));
+  const statuses = answers.map((r) => r.data.code ?? r.status);
+  assert.ok(statuses.every((s) => ['LOGIN_FAILED', 'LOGIN_LOCKED', 'LOGIN_BUSY'].includes(s)), statuses.join());
+  assert.ok(statuses.includes('LOGIN_BUSY'), statuses.join());
+  // However many arrive at once, no more are checked than the lock allows (the name's count
+  // from every address holds each one checked)
+  const named = await env.db.controlModels.LoginAttempt.findOne({ scope: String(shop.tenant._id), kind: 'user' }).lean();
+  assert.ok(named.count >= 1 && named.count <= 5, `${named.count} checked: ${statuses.join()}`);
+  // Once they are done the name is free again from this address (or locked, never busy)
+  const next = await stranger(shop).login('owner', shop.owner.password, from);
+  assert.ok(next.status === 200 || next.data.code === 'LOGIN_LOCKED', next.text);
 });
 
 test('session limits: 72 hours idle, 14 days at most, the idle limit moved on by use', async () => {

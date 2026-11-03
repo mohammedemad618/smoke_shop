@@ -31,8 +31,9 @@ const tenantSchema = new Schema(
     lastActivityAt: Date,
     schemaVersion: { type: Number, default: 1 },
     // A deletion asked for from the admin panel: the verified backup taken first, and the day
-    // the database goes (30 days later); cancelling it clears this
-    deletion: { requestedAt: Date, requestedBy: String, purgeAfter: Date, backupFile: String },
+    // the database goes (30 days later); cancelling it clears this. setupCancelled: a shop
+    // whose setup was given up (services/tenants.js), purged at once and never brought back.
+    deletion: { requestedAt: Date, requestedBy: String, purgeAfter: Date, backupFile: String, setupCancelled: Boolean },
     rev: { type: Number, required: true, index: true },
     // Repeating a create request with the same id makes one shop, not two
     createRequestId: String,

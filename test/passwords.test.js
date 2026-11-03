@@ -49,6 +49,21 @@ test('at most two hashes run at a time; the rest wait their turn', async () => {
   assert.deepStrictEqual(hashQueue(), { running: 0, waiting: 0 });
 });
 
+test('one address has at most four hashes running or waiting; past that it is busy, others are not', async () => {
+  const mine = Array.from({ length: 4 }, (_, i) => verifyDummy(`guess number ${i}`, { key: '10.9.9.1' }));
+  await assert.rejects(verifyDummy('one more', { key: '10.9.9.1' }), (err) => err.status === 503);
+  await assert.rejects(verifyPassword('one more', 'not a hash', { key: '10.9.9.1' }), (err) => err.status === 503);
+  // Another address, and the work that names none (a new shop's owner), still get theirs
+  const other = verifyDummy('from elsewhere', { key: '10.9.9.2' });
+  const unnamed = hashPassword('Kq7mT4vR9xWp2n');
+  assert.ok(await unnamed);
+  assert.strictEqual(await other, false);
+  await Promise.all(mine);
+  // Once those are done the address has its four again
+  assert.strictEqual(await verifyDummy('later', { key: '10.9.9.1' }), false);
+  assert.deepStrictEqual(hashQueue(), { running: 0, waiting: 0 });
+});
+
 test('the rules for a new password', () => {
   const ok = { username: 'ahmed', slug: 'amal' };
   const cases = [

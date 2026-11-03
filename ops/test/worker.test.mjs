@@ -49,6 +49,11 @@ if (tool === 'mongodump') {
   const to = opt('nsTo').replace(/\.\*$/, '');
   if (archive.db !== from) { process.stderr.write('wrong source'); process.exit(1); }
   const collections = { ...archive.collections };
+  // FAKE_RESTORE_PEEK=<jobs folder>|<file>: the job states as they are while this runs
+  if (process.env.FAKE_RESTORE_PEEK) {
+    const [dir, out] = process.env.FAKE_RESTORE_PEEK.split('|');
+    fs.writeFileSync(out, JSON.stringify(fs.readdirSync(dir).map((n) => JSON.parse(fs.readFileSync(dir + '/' + n, 'utf8')))));
+  }
   if (process.env.FAKE_RESTORE_LOSE) { const first = Object.keys(collections)[0]; if (first) collections[first] -= 1; }
   state.databases[to] = collections;
   save();
@@ -524,6 +529,70 @@ test('a job left running by a dead run is marked failed', async () => {
   assert.match(state.error, /توقف العامل/);
 });
 
+test('a restore cut off half way: its partial target is dropped, so asking again works; a database a shop names never is', async () => {
+  const config = makeConfig('orphan-restore');
+  const server = fakeServer(config, { [DB_A]: { sales: 5 }, [DB_B]: { sales: 2 }, [DB_NEW]: { sales: 3 } }, [
+    { id: TENANT, slug: 'amal', dbName: DB_A, status: 'suspended', previous: [DB_B] },
+  ]);
+  const jobs = path.join(config.stateDir, 'jobs');
+  fs.mkdirSync(jobs, { recursive: true });
+  const running = (id, targetDb) =>
+    fs.writeFileSync(path.join(jobs, `${id}.json`), JSON.stringify({ jobId: id, type: 'restore', status: 'running', targetDb, result: null, error: null, updatedAt: new Date().toISOString() }));
+  // The running state a restore writes names its target
+  await runOnce(config); // makes the state folders
+  const archive = await dumpDatabase(config, DB_A, 'manual', { verify: 'restore' });
+  const fresh = `pos_t_${'d'.repeat(24)}`;
+  const firstId = '1'.repeat(23) + 'a';
+  request(config, firstId, { type: 'restore', tenantId: TENANT, archive: archive.path, fromDb: DB_A, targetDb: fresh });
+  const peek = path.join(path.dirname(config.spoolDir), 'peek.json');
+  process.env.FAKE_RESTORE_PEEK = `${jobs}|${peek}`;
+  try {
+    await runOnce(config);
+  } finally {
+    delete process.env.FAKE_RESTORE_PEEK;
+  }
+  const during = read(peek).find((s) => s.jobId === firstId);
+  assert.deepStrictEqual([during.status, during.targetDb], ['running', fresh]);
+  assert.strictEqual(read(path.join(jobs, `${firstId}.json`)).status, 'done');
+  assert.strictEqual(server().databases[fresh].sales, 5);
+
+  // Killed while restoring into DB_NEW (half of it there); another state names DB_B, a database
+  // the shop keeps after a restore, and one names the shop's own: those two stay
+  running('2'.repeat(24), DB_NEW);
+  running('3'.repeat(24), DB_B);
+  running('4'.repeat(24), DB_A);
+  await runOnce(config);
+  for (const id of ['2', '3', '4']) assert.strictEqual(read(path.join(jobs, `${id.repeat(24)}.json`)).status, 'failed');
+  assert.deepStrictEqual(Object.keys(server().databases).sort(), [DB_A, DB_B, fresh].sort());
+  assert.ok(config.logs.some((l) => l.includes(`Dropped ${DB_NEW}`)), config.logs.join('\n'));
+
+  // The same restore asked for again now goes through
+  const againId = '5'.repeat(24);
+  request(config, againId, { type: 'restore', tenantId: TENANT, archive: archive.path, fromDb: DB_A, targetDb: DB_NEW });
+  await runOnce(config);
+  const again = read(path.join(jobs, `${againId}.json`));
+  assert.strictEqual(again.status, 'done', again.error);
+  assert.deepStrictEqual(server().databases[DB_NEW], { sales: 5 });
+});
+
+test('state folders the worker recreates stay 0755 under UMask=0077, so the app can read them', async (t) => {
+  if (process.platform === 'win32') return t.skip('file modes are POSIX only');
+  const config = makeConfig('state-dirs');
+  fakeServer(config, {});
+  fs.rmSync(config.stateDir, { recursive: true, force: true });
+  // The umask of pos-root-worker.service and pos-backup.service
+  const previous = process.umask(0o077);
+  try {
+    await runOnce(config);
+  } finally {
+    process.umask(previous);
+  }
+  for (const dir of [config.stateDir, ...['certs', 'jobs', 'backups'].map((d) => path.join(config.stateDir, d))]) {
+    assert.strictEqual(fs.statSync(dir).mode & 0o777, 0o755, dir);
+  }
+  assert.strictEqual(fs.statSync(config.workDir).mode & 0o777, 0o700);
+});
+
 test('nightly: pos_control and every live shop, then a restore drill', async () => {
   const config = makeConfig('nightly');
   fakeServer(config, { [DB_A]: { sales: 2 }, [DB_B]: { sales: 9 }, pos_control: { tenants: 2 }, other_site: { x: 1 } }, [
@@ -570,6 +639,37 @@ test('retention: 14 daily, 8 weekly, 6 monthly; job archives by age; the newest 
   const old = [{ name: 'old', kind: 'manual', createdAt: new Date(now - 300 * day) }];
   assert.deepStrictEqual(retentionPlan(old, { now, dbExists: true }).remove, []);
   assert.strictEqual(retentionPlan(old, { now, dbExists: false }).remove.length, 1);
+});
+
+test('retention: a deleted database keeps nothing after 400 days, its nightly archives included', () => {
+  const now = new Date('2026-11-03T01:00:00Z');
+  const day = 24 * 3600_000;
+  const history = (deletedAt, kind) => {
+    const list = [{ name: kind, kind, createdAt: new Date(deletedAt) }];
+    for (let i = 1; i <= 200; i += 1) list.push({ name: `n${i}`, kind: 'nightly', createdAt: new Date(deletedAt - i * day - 30 * 60_000) });
+    return list;
+  };
+
+  // Purged 730 days ago after 200 nights: nothing is left, and no nightly archive outlives the purge one
+  const purged = history(now - 730 * day, 'purge');
+  const gone = retentionPlan(purged, { now, dbExists: false });
+  assert.deepStrictEqual(gone.keep, []);
+  assert.strictEqual(gone.remove.length, purged.length);
+
+  // Deleted 30 days ago: its deletion archive and the nightly ones of the 14/8/6 rules stay...
+  const deletedAt = now - 30 * day;
+  const recent = history(deletedAt, 'pre-delete');
+  const kept = retentionPlan(recent, { now, dbExists: false }).keep;
+  assert.ok(kept.some((a) => a.kind === 'pre-delete'));
+  const nightly = kept.filter((a) => a.kind === 'nightly');
+  assert.ok(nightly.length >= 14 && nightly.length <= 14 + 8 + 6, String(nightly.length));
+  // ...each nightly one goes when it is 400 days old, and once the deletion archive is 400 days old, all are gone
+  const halfway = new Date(deletedAt + 300 * day);
+  const fewer = retentionPlan(kept, { now: halfway, dbExists: false }).keep;
+  assert.ok(fewer.length < kept.length && fewer.every((a) => halfway - a.createdAt < 400 * day));
+  assert.deepStrictEqual(retentionPlan(kept, { now: new Date(deletedAt + 400 * day), dbExists: false }).keep, []);
+  // A database that still exists is not affected: its old nightly archives follow the rules alone
+  assert.ok(retentionPlan(purged, { now, dbExists: true }).keep.filter((a) => a.kind === 'nightly').length >= 14);
 });
 
 test('mongodump counts are read from its own output', () => {

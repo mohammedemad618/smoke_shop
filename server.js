@@ -37,7 +37,16 @@ const ctx = { db, registry, config, worker };
 const runner = createRunner(ctx);
 ctx.runner = runner;
 
-const server = createApp(ctx).listen(config.port, config.host, () => {
+// Express calls this with the error when the port cannot be had (taken, not allowed): then
+// nothing is served, so nothing else starts, and the exit lets systemd restart it in a while.
+// Node's own keepAliveTimeout (5 s) is left as it is: nginx drops an idle connection to the
+// app after 4 s (ops/nginx/pos.conf), and must always do so first, or a POST sent on a
+// connection Node is closing gets a 502. Never set it below 5 s.
+const server = createApp(ctx).listen(config.port, config.host, (err) => {
+  if (err) {
+    console.error(`Could not listen on ${config.host}:${config.port}: ${err.message}`);
+    process.exit(1);
+  }
   console.log(`POS running at http://${config.host}:${config.port}`);
   console.log(`  admin: ${publicUrl(config, config.adminHost)}`);
   if (worker.mode === 'local') console.log('  certificates and backups: done in this process (development, .pos-local/)');

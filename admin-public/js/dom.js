@@ -95,6 +95,29 @@ export function formatAgo(value, now = Date.now()) {
   return formatDate(d);
 }
 
+// The moment `zone`'s clock reads midnight at the start of day y-m-d (month 1 to 12; 13 is
+// January of the next year): the zone's offset is read for that day, and read again at the
+// moment found, for a day whose clocks change
+function zoneMidnight(y, m, d, zone) {
+  const clock = new Intl.DateTimeFormat('en-US', { timeZone: zone, hourCycle: 'h23', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric' });
+  const offset = (at) => {
+    const p = Object.fromEntries(clock.formatToParts(new Date(at)).map((part) => [part.type, Number(part.value)]));
+    return Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second) - at;
+  };
+  const wall = Date.UTC(y, m - 1, d);
+  const first = wall - offset(wall);
+  return new Date(wall - offset(first));
+}
+
+// A month ('YYYY-MM') of the shop's calendar, midnight to midnight on its own clock (its
+// time zone), as the from/to of the API: the owner's figures for that month, wherever the
+// admin's own computer is. Null for anything else.
+export function monthRange(month, zone) {
+  const [y, m] = String(month ?? '').split('-').map(Number);
+  if (!Number.isInteger(y) || !Number.isInteger(m) || m < 1 || m > 12) return null;
+  return { from: zoneMidnight(y, m, 1, zone), to: zoneMidnight(y, m + 1, 1, zone) };
+}
+
 // 1 and 2 have their own words, 3 to 10 the plural, 11 and up the singular
 function count(n, [one, two, few, many]) {
   if (n === 1) return one;

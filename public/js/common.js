@@ -226,11 +226,19 @@ async function loadSession() {
 }
 export const session = loadSession();
 
-// Signing out ends the shift on this tab: its cart and the rest it kept go with it
+// Signing out ends the shift on this tab: its cart and the rest it kept go with it. Only
+// once the server has ended the session: a sign-out that did not get through leaves the
+// page as it is and says so, rather than the sign-in page sending a live session back in.
 for (const button of document.querySelectorAll('[data-logout]')) {
   button.addEventListener('click', async () => {
     button.disabled = true;
-    await signOut().catch(() => {});
+    try {
+      await signOut();
+    } catch {
+      button.disabled = false;
+      toast('تعذّر تسجيل الخروج، أعد المحاولة', 'error');
+      return;
+    }
     try {
       sessionStorage.clear();
     } catch {

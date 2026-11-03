@@ -37,7 +37,9 @@ export const workerOf = (ctx) => (ctx.worker ??= createWorker(ctx.config, ctx.db
  * { wait: ms, note } (not done yet: look again after ms). The job context is
  * { ctx, job, step, tenant, params, result, inline, save() }: params and result are the
  * job's own, changed in place and stored by save() (called after each step anyway).
- * audit names the action failures are logged under; done(jc) runs once the last step is.
+ * audit names the action failures are logged under; done(jc) runs once the last step is;
+ * cancel({ ctx, job, tenant, params, result, by }) undoes a failed job given up (cancelJob),
+ * and may refuse with an error, which leaves the job failed.
  */
 const HANDLERS = new Map();
 export function defineJob(type, handler) {
@@ -204,15 +206,25 @@ export async function retryJob(ctx, jobId) {
 }
 
 // Gives up a failed job: its type undoes what it must (a reserved address, a suspension),
-// then the shop is free for another job
-export async function cancelJob(ctx, jobId) {
+// then the shop is free for another job. The job is taken first, in the same write that
+// finds it failed, so a retry at the same moment can neither start it nor be undone by this
+// while the runner carries it out. by: who, for the audit entries the undoing writes.
+export async function cancelJob(ctx, jobId, by = {}) {
   const { Job, Tenant } = ctx.db.controlModels;
   const job = await Job.findById(jobId).lean();
   const handler = job && HANDLERS.get(job.type);
-  if (!job || !job.active || job.status !== 'failed' || !handler?.cancel) throw httpError(409, JOB_MESSAGES.noCancel);
-  const tenant = await Tenant.findById(job.tenantId).lean();
-  await handler.cancel({ ctx, job, tenant, params: job.params ?? {}, result: job.result ?? {} });
-  await Job.updateOne({ _id: job._id }, { $set: { status: 'cancelled', active: false, finishedAt: new Date(), leaseUntil: null, leaseOwner: null } });
+  if (!job || !handler?.cancel) throw httpError(409, JOB_MESSAGES.noCancel);
+  const taken = await Job.findOneAndUpdate({ _id: job._id, active: true, status: 'failed' }, { $set: { status: 'cancelled' } }, { returnDocument: 'after' }).lean();
+  if (!taken) throw httpError(409, JOB_MESSAGES.noCancel);
+  const tenant = await Tenant.findById(taken.tenantId).lean();
+  try {
+    await handler.cancel({ ctx, job: taken, tenant, params: taken.params ?? {}, result: taken.result ?? {}, by });
+  } catch (err) {
+    // Not undone: failed as it was, to retry or cancel again
+    await Job.updateOne({ _id: job._id, status: 'cancelled', active: true }, { $set: { status: 'failed' } });
+    throw err;
+  }
+  await Job.updateOne({ _id: job._id }, { $set: { active: false, finishedAt: new Date(), leaseUntil: null, leaseOwner: null } });
   return Job.findById(job._id).lean();
 }
 
@@ -319,6 +331,8 @@ export function jobView(job) {
     tenantId: String(job.tenantId),
     status: job.status,
     active: job.active,
+    // Its type can be given up once failed (cancelJob); the panel offers it only then
+    cancellable: Boolean(HANDLERS.get(job.type)?.cancel),
     attempts: job.attempts ?? 0,
     error: job.error ?? null,
     steps: (HANDLERS.has(job.type) ? stepsOf(job) : (job.steps ?? [])).map((s) => ({ key: s.key, status: s.status, at: s.at ?? null, error: s.error ?? null, note: s.note ?? null })),

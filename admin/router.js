@@ -1,6 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import express, { Router } from 'express';
 import { createSessionStore } from '../lib/sessions.js';
+import { EXACT } from '../lib/routing.js';
 import { createLoginGuard } from '../lib/login-guard.js';
 import { ADMIN_CSP, contentSecurityPolicy, noStore } from '../lib/security.js';
 import { createAdminAuth } from './auth.js';
@@ -15,11 +16,12 @@ const SHARED_CSS = fileURLToPath(new URL('../public/css', import.meta.url));
  *   2. its files: the one page, its scripts, its styles and the shops' shared style.css
  *   3. /api/admin: signing in (admin/auth.js), then a full session for everything else,
  *      every write CSRF checked (admin/api.js), 404 JSON for anything unknown
+ * Paths match exactly, letter case and final slash included (lib/routing.js).
  * ctx is { db, registry, config, worker?, runner? } (services/).
  */
 export function createAdminRouter(ctx) {
   const { db, config } = ctx;
-  const router = Router();
+  const router = Router(EXACT);
   const store = createSessionStore({ Session: db.controlModels.Session, config, kind: 'admin' });
   const guard = createLoginGuard(db.controlModels.LoginAttempt);
   const auth = createAdminAuth({ db, config, store, guard });
@@ -37,7 +39,7 @@ export function createAdminRouter(ctx) {
   router.get('/favicon.ico', (req, res) => res.status(204).end());
 
   // 3. The API
-  const api = Router();
+  const api = Router(EXACT);
   api.use(noStore);
   api.use(express.json({ limit: '64kb' }));
   api.use((req, res, next) => {

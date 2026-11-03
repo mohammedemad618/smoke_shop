@@ -226,3 +226,30 @@ test(`no more than MAX_TENANTS shops (${MAX} here); deleted ones do not count`, 
   assert.deepStrictEqual(await status(create({ slug: `fill-${MAX - 1}`, shopName: 'x' })), [409, 'هذا العنوان مستخدم']);
   assert.strictEqual(primaryHost(env.config, 'x-y'), `x-y.${BASE_DOMAIN}`);
 });
+
+test('shops created at the same moment never go past MAX_TENANTS or the day\'s limit', async () => {
+  // Room for two more
+  for (const { _id } of await control.Tenant.find({ status: 'active' }).limit(2).lean()) {
+    await transition(env.ctx, _id, 'active', 'deleted', { actor: 'test' });
+  }
+  const live = () => control.Tenant.countDocuments({ status: { $ne: 'deleted' } });
+  assert.strictEqual(await live(), MAX - 2);
+  const rush = (ctx, prefix) =>
+    Promise.all(Array.from({ length: 6 }, (_, i) => status(createTenant(ctx, { owner: owner(), slug: `${prefix}-${i}`, shopName: 'معًا', requestId: `${prefix}-request-${i}` }, { actor: 'test' }, { inline: false }))));
+  const answers = await rush(env.ctx, 'rush');
+  assert.ok(answers.filter((a) => a === 'created').length <= 2, JSON.stringify(answers));
+  for (const a of answers) if (a !== 'created') assert.deepStrictEqual(a, [409, `وصل عدد المتاجر إلى الحد الأقصى (${MAX})`]);
+  assert.ok((await live()) <= MAX);
+  // A refused one left nothing behind: its address is free again
+  const refused = answers.findIndex((a) => a !== 'created');
+  assert.strictEqual(await control.Tenant.countDocuments({ slug: `rush-${refused}` }), 0);
+
+  // The same for the shops made in the last 24 hours
+  const made = await control.Tenant.countDocuments({ createdAt: { $gt: new Date(Date.now() - 864e5) } });
+  const ctx = { ...env.ctx, config: { ...env.config, maxTenants: 1000, maxNewTenantsPerDay: made + 2 } };
+  const daily = await rush(ctx, 'daily');
+  assert.ok(daily.filter((a) => a === 'created').length <= 2, JSON.stringify(daily));
+  assert.ok(daily.every((a) => a === 'created' || a[0] === 409));
+  assert.ok((await control.Tenant.countDocuments({ createdAt: { $gt: new Date(Date.now() - 864e5) } })) <= made + 2);
+  await env.runner.drain();
+});

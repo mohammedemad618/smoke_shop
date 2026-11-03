@@ -140,6 +140,12 @@ els.logoutAll.addEventListener('click', async () => {
       return;
     }
   }
+  // The shift on this tab ends too, as with «تسجيل الخروج»: its cart and the rest it kept
+  try {
+    sessionStorage.clear();
+  } catch {
+    // storage blocked: nothing was kept
+  }
   location.assign('/login.html');
 });
 

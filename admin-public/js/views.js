@@ -103,12 +103,16 @@ export function certBadge(cert) {
   return badge;
 }
 
-// One row of the shops list
+// Where a shop of the list opens: its page, or the progress of its setup while it is made
+export const shopHref = (t) => (t.status === 'provisioning' && t.job ? `#/job/${t.job.id}` : `#/shop/${t.id}`);
+
+// One row of the shops list. Its name is the link (keyboards and screen readers reach the
+// shop through it); a click anywhere on the row opens it too.
 export function shopRow(t, { onOpen } = {}) {
   const row = h(
     'tr',
-    { className: 'is-link', tabIndex: 0, dataset: { id: t.id } },
-    titleCell({}, h('span', { className: 'pname', text: t.label || t.slug }), t.shopName && t.shopName !== t.label ? h('span', { className: 'pcat', text: t.shopName }) : null),
+    { className: 'is-link', dataset: { id: t.id } },
+    titleCell({}, h('a', { className: 'pname', href: shopHref(t), text: t.label || t.slug }), t.shopName && t.shopName !== t.label ? h('span', { className: 'pcat', text: t.shopName }) : null),
     cell('العنوان', { className: 'host-cell' }, h('span', { className: 'host-name', text: t.host })),
     cell('الحالة', {}, statusBadge(t.status), t.job ? h('span', { className: 'pcat', text: `${JOB_LABELS[t.job.type] ?? t.job.type}: ${JOB_STATUS[t.job.status] ?? t.job.status}` }) : null),
     cell('الفواتير', { className: 'end num', text: formatNumber(t.usage?.salesCount) }),
@@ -116,12 +120,7 @@ export function shopRow(t, { onOpen } = {}) {
     cell('آخر نشاط', { text: formatAgo(t.lastActivityAt) }),
     cell('الشهادة', {}, certBadge(t.cert)),
   );
-  if (onOpen) {
-    row.addEventListener('click', () => onOpen(t));
-    row.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') onOpen(t);
-    });
-  }
+  if (onOpen) row.addEventListener('click', (e) => e.target.closest?.('a') || onOpen(t));
   return row;
 }
 

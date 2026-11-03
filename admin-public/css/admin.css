@@ -30,7 +30,9 @@ body.auth-page .admin-main { flex: none; max-width: none; padding: 0; }
 .admin-notice a { color: inherit; font-weight: 600; }
 .table-scroll { overflow-x: auto; }
 .ptable tr.is-link { cursor: pointer; }
-.ptable tr.is-link:focus-visible td { background: var(--paper-2); }
+.ptable tr.is-link:focus-within td, .ptable tr.is-link:hover td { background: var(--paper-2); }
+.ptable tr.is-link a.pname { color: inherit; text-decoration: none; }
+.ptable tr.is-link a.pname:hover, .ptable tr.is-link a.pname:focus-visible { text-decoration: underline; }
 .host-name { direction: ltr; unicode-bidi: isolate; font-size: 14px; color: var(--ink-2); overflow-wrap: anywhere; }
 .admin .ptable .pcat { display: block; }
 a.host-name { color: var(--focus); }

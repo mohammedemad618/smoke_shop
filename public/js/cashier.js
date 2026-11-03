@@ -20,6 +20,7 @@ import {
   withSignIn,
 } from './common.js';
 import { scanBarcodes } from './scanner.js';
+import { isSaleOf } from './idempotency.js';
 
 const MAX_QTY = 10000;
 // On touch screens, refocusing the scan box would keep popping up the keyboard
@@ -788,6 +789,16 @@ async function checkout() {
     // A session that ended asks to sign in here, then the same sale is sent again: with the
     // same id it is recorded once, whatever happened to the first try
     const sale = await withSignIn(() => api('/sales', { method: 'POST', body }));
+    if (!isSaleOf(body, sale)) {
+      // Another cart under the same id was sold before (a try whose answer was lost, then a
+      // change; or a tab duplicated with its cart): this one is not sold. It stays, with an
+      // id of its own, for the cashier to check against that invoice.
+      state.clientSaleId = newClientId();
+      saveCart();
+      loadToday();
+      alert(`سُجّلت الفاتورة رقم ${sale.number} من قبل بأصناف غير أصناف السلة الحالية، ولم تُبَع هذه السلة بعد. راجع الفاتورة رقم ${sale.number} في صفحة المبيعات، واحذف من السلة ما بيع فيها، ثم أتمم البيع.`);
+      return;
+    }
     state.cart = [];
     state.clientSaleId = null;
     els.paid.value = '';

@@ -310,11 +310,17 @@ async function ensurePrivateDir(dir) {
   await fsp.chmod(dir, 0o700);
 }
 
+// The state folders the app (user pos) reads: 0755 even when recreated under the units'
+// UMask=0077, which would make them 0700 and leave the app's jobs waiting for ever
 async function ensureStateDirs(config) {
   for (const dir of [config.stateDir, ...['certs', 'jobs', 'backups'].map((d) => path.join(config.stateDir, d))]) {
     const st = await lstatOrNull(dir);
-    if (!st) await fsp.mkdir(dir, { mode: 0o755 });
-    else if (!st.isDirectory()) throw new Error(`${dir} is not a directory`);
+    if (!st) {
+      await fsp.mkdir(dir, { mode: 0o755 });
+      await fsp.chmod(dir, 0o755);
+    } else if (!st.isDirectory()) {
+      throw new Error(`${dir} is not a directory`);
+    }
   }
   await ensurePrivateDir(config.workDir);
 }
@@ -704,10 +710,12 @@ export async function dumpDatabase(config, dbName, kind, { verify }) {
 // Which archives of one database to keep: the newest nightly one of each of the last 14 days,
 // 8 weeks and 6 months that have one; job archives for 90 days, the deletion ones (pre-delete,
 // purge) for 400 days; and always the newest archive of a database that still exists.
+// A database that no longer exists gets no new nightly archive, so its last ones would fill
+// those 14 + 8 + 6 places for ever: they go after 400 days, like its deletion archive.
 export function retentionPlan(archives, { now, dbExists, daily = 14, weekly = 8, monthly = 6 }) {
   const sorted = [...archives].sort((a, b) => b.createdAt - a.createdAt);
   const keep = new Set();
-  const nightly = sorted.filter((a) => a.kind === 'nightly');
+  const nightly = sorted.filter((a) => a.kind === 'nightly' && (dbExists || now - a.createdAt < 400 * DAY));
   const dayKey = (d) => d.toISOString().slice(0, 10);
   // Weeks start on Monday: 1970-01-05 was one
   const weekKey = (d) => Math.floor((Math.floor(d.getTime() / DAY) - 4) / 7);
@@ -837,14 +845,40 @@ async function jobDrop(config, job) {
 
 const JOBS = { backup: jobBackup, restore: jobRestore, drop: jobDrop };
 
-// A job left "running" by a run that died: no run holds the lock but this one
+// What a restore cut off half way left in its new database. Dropped, so the restore can be
+// asked for again (it never writes over a database that exists), unless a shop names it as
+// its database or one kept after a restore, which the target of a restore still under way
+// never is.
+async function dropPartialTarget(config, dbName, tenants) {
+  if (!TENANT_DB.test(dbName)) return;
+  const user = tenants.find((t) => t.dbName === dbName || (t.previous ?? []).includes(dbName));
+  if (user) {
+    config.log('error', `${dbName}, the target of an interrupted restore, belongs to the shop ${user.slug}: left as it is`);
+    return;
+  }
+  if (!(await listDatabases(config)).includes(dbName)) return;
+  await dropDatabase(config, dbName);
+  config.log('warn', `Dropped ${dbName}, the partial target of an interrupted restore`);
+}
+
+// A job left "running" by a run that died: no run holds the lock but this one. A restore's
+// partial target goes with it.
 async function failOrphanJobs(config) {
   const dir = path.join(config.stateDir, 'jobs');
   let orphans = 0;
+  let tenants = null;
   for (const name of await fsp.readdir(dir)) {
     if (!isJobFile(name)) continue;
     const state = await readJson(path.join(dir, name));
     if (state?.status !== 'running') continue;
+    if (state.type === 'restore' && state.targetDb) {
+      try {
+        tenants ??= await listTenants(config);
+        await dropPartialTarget(config, state.targetDb, tenants);
+      } catch (err) {
+        config.log('error', `Could not drop ${state.targetDb}, the target of an interrupted restore: ${err.message}`);
+      }
+    }
     await writeJobState(config, name.slice(0, 24), { type: state.type, status: 'failed', result: null, error: 'توقف العامل قبل أن تنتهي المهمة، فأعد طلبها' });
     config.log('warn', `Job ${name.slice(0, 24)} was interrupted`);
     orphans += 1;
@@ -887,7 +921,9 @@ async function processJobs(config, ctx, notices) {
       config.log('warn', `Job ${jobId} refused: ${err.message}`);
       continue;
     }
-    await writeJobState(config, jobId, { type: job.type, status: 'running', result: null, error: null });
+    // A restore names its target here, so a run that dies half way leaves it to be dropped
+    const target = job.type === 'restore' ? { targetDb: job.targetDb } : {};
+    await writeJobState(config, jobId, { type: job.type, status: 'running', ...target, result: null, error: null });
     await unlinkIfExists(entry.path);
     config.log('info', `Job ${jobId}: ${job.type} ${job.dbName ?? job.targetDb}`);
     try {

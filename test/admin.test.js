@@ -10,11 +10,13 @@ import { readdir, readFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import mongoose from 'mongoose';
-import { startTestEnv, BASE_DOMAIN, TEST_TOTP_KEY, signInAsOwner } from './support/harness.js';
+import { startTestEnv, startApp, browser, testConfig, BASE_DOMAIN, TEST_TOTP_KEY, signInAsOwner } from './support/harness.js';
 import { ADMIN_PASSWORD, adminClient, makeAdmin, nextCode, signInAdmin, waitForJob } from './support/admin.js';
-import { createTenant } from '../services/tenants.js';
+import { createTenant, transition } from '../services/tenants.js';
+import { cancelJob, retryJob } from '../services/jobs.js';
 import { unlockAdmins } from '../services/admins.js';
 import { hashToken } from '../lib/sessions.js';
+import { MAX_CODE_FAILURES } from '../admin/auth.js';
 import { generatePassword, newRequestId } from '../admin-public/js/password.js';
 
 const MAX = 14;
@@ -30,6 +32,13 @@ after(async () => {
 
 const sessions = (filter = {}) => env.db.controlModels.Session.countDocuments({ kind: 'admin', ...filter });
 const audit = (action, filter = {}) => env.db.controlModels.AuditLog.find({ action, ...filter }).sort({ at: 1, _id: 1 }).lean();
+const dbNames = async () => (await env.db.base.db.admin().listDatabases({ nameOnly: true })).databases.map((d) => d.name);
+// One of scripts/, run as npm run would, against this file's databases
+const runScript = (name, args) =>
+  promisify(execFile)(process.execPath, [`scripts/${name}`, ...args], {
+    cwd: new URL('..', import.meta.url),
+    env: { ...process.env, NODE_ENV: 'test', MONGODB_URI: env.config.mongodbUri, CONTROL_DB: env.config.controlDb, TENANT_DB_PREFIX: env.config.tenantDbPrefix, TENANT_BASE_DOMAINS: BASE_DOMAIN, ADMIN_HOST: env.config.adminHost },
+  });
 
 // A shop made from the API as the panel makes it: a browser-made password and a request id
 async function createFromApi(client, slug, extra = {}) {
@@ -135,6 +144,106 @@ test('five wrong codes end the session; the address is then locked until admin:u
   await signInAdmin(env, boss, '10.0.3.2');
   await unlockAdmins(env.ctx, { username: 'boss' }, { actor: 'test' });
   assert.strictEqual((await client.api('POST', '/auth/login', { username: 'boss', password: ADMIN_PASSWORD })).status, 200);
+});
+
+test('codes sent all at once are checked five times at most, at sign-in and at step-up alike', async () => {
+  const racer = await makeAdmin(env, 'racer');
+  // Every code checked and found wrong is one failure on the admin's name, from any address
+  const checked = async () => (await env.db.controlModels.LoginAttempt.findOne({ scope: 'admin', kind: 'user', username: 'racer' }).lean())?.count ?? 0;
+  const client = adminClient(env, '10.0.17.1');
+  assert.strictEqual((await client.api('POST', '/auth/login', { username: 'racer', password: ADMIN_PASSWORD })).status, 200);
+  const burst = await Promise.all(Array.from({ length: 30 }, () => client.api('POST', '/auth/code', { code: '000000' })));
+  assert.ok(burst.every((r) => [401, 429].includes(r.status)), burst.map((r) => r.status).join());
+  assert.strictEqual(await checked(), MAX_CODE_FAILURES);
+  assert.strictEqual(await sessions({ userId: racer.id }), 0, 'the session ended');
+
+  const full = await signInAdmin(env, racer, '10.0.17.2');
+  const stepUps = await Promise.all(Array.from({ length: 30 }, () => full.api('POST', '/step-up', { code: '000000' })));
+  assert.ok(stepUps.every((r) => [401, 429].includes(r.status)), stepUps.map((r) => r.status).join());
+  assert.strictEqual(await checked(), 2 * MAX_CODE_FAILURES);
+  assert.strictEqual((await full.api('GET', '/me')).status, 401);
+});
+
+test('one code stage per admin; a locked address cannot use the one it opened before; it can sign out', async () => {
+  const late = await makeAdmin(env, 'late');
+  const ip = '10.0.18.1';
+  const first = adminClient(env, ip);
+  assert.strictEqual((await first.api('POST', '/auth/login', { username: 'late', password: ADMIN_PASSWORD })).status, 200);
+  const second = adminClient(env, ip);
+  assert.strictEqual((await second.api('POST', '/auth/login', { username: 'late', password: ADMIN_PASSWORD })).status, 200);
+  assert.strictEqual((await first.api('GET', '/me')).status, 401, 'the first one ended');
+  assert.strictEqual(await sessions({ userId: late.id, stage: 'code' }), 1);
+
+  // Five wrong passwords from that address lock it, for the code too
+  for (let i = 1; i <= 5; i++) {
+    const res = await adminClient(env, ip).api('POST', '/auth/login', { username: 'late', password: `Not the password ${i}` });
+    assert.strictEqual(res.status, i < 5 ? 401 : 429, `try ${i}`);
+  }
+  const refused = await second.api('POST', '/auth/code', { code: await nextCode(env, late) });
+  assert.deepStrictEqual([refused.status, refused.data.code], [429, 'LOGIN_LOCKED']);
+
+  // «الدخول بحساب آخر» at the code stage ends that session
+  assert.strictEqual((await second.api('POST', '/auth/logout')).status, 204);
+  assert.strictEqual((await second.api('GET', '/me')).status, 401);
+  assert.strictEqual(await sessions({ userId: late.id }), 0);
+});
+
+test('the sign-in, code and step-up paths are reached exactly only, and limited per address in the app itself', async () => {
+  const exact = await makeAdmin(env, 'exact');
+  const ip = '10.0.21.1';
+  const before = await env.db.controlModels.LoginAttempt.countDocuments({ scope: 'admin' });
+  for (const path of ['/api/admin/auth/login/', '/API/ADMIN/auth/login', '/api/admin/AUTH/login', '/api/admin/Auth/Login/']) {
+    const res = await adminClient(env, ip).request('POST', path, { username: 'exact', password: 'Not the password at all' });
+    assert.ok([401, 404].includes(res.status) && res.data?.code !== 'LOGIN_FAILED', `${path} -> ${res.status} ${res.text}`);
+  }
+  assert.strictEqual(await env.db.controlModels.LoginAttempt.countDocuments({ scope: 'admin' }), before, 'nothing checked');
+  const client = adminClient(env, ip);
+  assert.strictEqual((await client.api('POST', '/auth/login', { username: 'exact', password: ADMIN_PASSWORD })).status, 200);
+  for (const path of ['/api/admin/auth/code/', '/api/admin/Auth/Code', '/API/ADMIN/AUTH/CODE']) {
+    const res = await client.request('POST', path, { code: '000000' });
+    assert.ok(res.data?.code !== 'CODE_FAILED', `${path} -> ${res.status} ${res.text}`);
+  }
+  const codeFailures = async (stage) => (await env.db.controlModels.Session.findOne({ kind: 'admin', userId: exact.id, stage }).lean()).codeFailures;
+  assert.strictEqual(await codeFailures('code'), 0, 'no code was taken');
+  const full = await signInAdmin(env, exact, '10.0.21.2');
+  for (const path of ['/api/admin/STEP-UP', '/api/admin/step-up/']) {
+    const res = await full.request('POST', path, { code: '000000' });
+    assert.ok(res.data?.code !== 'CODE_FAILED', `${path} -> ${res.status} ${res.text}`);
+  }
+  assert.strictEqual(await codeFailures('full'), 0, 'no step-up code was taken');
+
+  // An app whose limit is 2 a minute: passwords, codes and step-ups of one address together
+  const app = await startApp({ ...env.ctx, config: testConfig({ ADMIN_SIGN_IN_PER_MINUTE: '2', MAX_TENANTS: String(MAX) }) });
+  try {
+    const panel = (address) => {
+      const c = browser(app.request, `admin.${BASE_DOMAIN}:${app.port}`);
+      return (method, url, body) => c.request(method, `/api/admin${url}`, body, { 'x-forwarded-for': address });
+    };
+    const send = panel('10.0.21.3');
+    assert.strictEqual((await send('POST', '/auth/login', { username: 'exact', password: 'Not the password at all' })).status, 401);
+    assert.strictEqual((await send('POST', '/auth/login', { username: 'exact', password: ADMIN_PASSWORD })).status, 200);
+    const over = await send('POST', '/auth/code', { code: await nextCode(env, exact) });
+    assert.deepStrictEqual([over.status, over.data.code], [429, 'RATE_LIMITED']);
+    assert.ok(Number(over.headers['retry-after']) > 0);
+    const elsewhere = panel('10.0.21.4');
+    assert.strictEqual((await elsewhere('POST', '/auth/login', { username: 'exact', password: ADMIN_PASSWORD })).status, 200);
+  } finally {
+    await app.close();
+  }
+});
+
+test('a password typed in the username box is written neither to the audit log nor to the failed sign-ins', async () => {
+  const client = adminClient(env, '10.0.19.1');
+  const res = await client.api('POST', '/auth/login', { username: 'Typed Password 77', password: 'whatever was in the other box' });
+  assert.strictEqual(res.status, 401);
+  const entry = (await audit('admin.login', { result: 'failed', ip: '10.0.19.1' })).at(-1);
+  assert.strictEqual(entry.actor, 'admin:?');
+  const { EJSON } = mongoose.mongo.BSON;
+  const stored = EJSON.stringify([await env.db.controlModels.AuditLog.find().lean(), await env.db.controlModels.LoginAttempt.find().lean()]);
+  assert.ok(!stored.toLowerCase().includes('typed password'));
+  // A real admin's name is still kept, so admin:unlock can find it
+  await client.api('POST', '/auth/login', { username: 'late', password: 'Not the password either' });
+  assert.ok(await env.db.controlModels.LoginAttempt.exists({ scope: 'admin', kind: 'ip', username: 'late', ip: '10.0.19.1' }));
 });
 
 test('an admin whose authenticator was never enabled cannot sign in', async () => {
@@ -289,6 +398,12 @@ test('the command line can suspend and resume a shop too (npm run tenant:suspend
   assert.match(out.stdout, /now suspended/);
   await env.registry.poll();
   assert.strictEqual((await shop.client.request('GET', '/api/products')).status, 423);
+  // Not while a restore has it closed (one that failed half way, here)
+  const { Job, Tenant } = env.db.controlModels;
+  const restore = await Job.create({ type: 'restore', tenantId: shop.tenant._id, status: 'failed', steps: [{ key: 'suspend', status: 'done' }, { key: 'backup', status: 'failed' }] });
+  await assert.rejects(run(['--slug', 'cli-pause', '--resume']), (err) => err.code === 1 && err.stderr.includes('تجري استعادة نسخة لهذا المتجر'));
+  assert.strictEqual((await Tenant.findById(shop.tenant._id).lean()).status, 'suspended');
+  await Job.updateOne({ _id: restore._id }, { $set: { status: 'cancelled', active: false } });
   await run(['--slug', 'cli-pause', '--resume']);
   await env.registry.poll();
   assert.strictEqual((await shop.client.request('GET', '/api/auth/shop')).status, 200);
@@ -429,6 +544,49 @@ test("the panel's code never writes HTML: no innerHTML, no inline handlers, no e
   assert.doesNotMatch(html, /\son[a-z]+=|style=|<script>/i);
 });
 
+test('step-up takes a recovery code as sign-in does; a look the panel takes by itself (X-Poll) does not keep the session alive', async () => {
+  const keeper = await makeAdmin(env, 'keeper');
+  const client = await signInAdmin(env, keeper, '10.0.23.1');
+  const { Session } = env.db.controlModels;
+  const sid = hashToken(client.cookie.split('=')[1]);
+  await Session.updateOne({ _id: sid }, { $set: { stepUpAt: new Date(Date.now() - 10 * 60 * 1000) } });
+  const stepped = await client.api('POST', '/step-up', { recoveryCode: keeper.recoveryCodes[0] });
+  assert.strictEqual(stepped.status, 200, stepped.text);
+  assert.ok(new Date(stepped.data.stepUpUntil) > new Date(Date.now() + 4 * 60 * 1000));
+
+  // Twenty minutes without the admin doing anything, a job's progress polled meanwhile
+  const idle = { lastSeenAt: new Date(Date.now() - 20 * 60 * 1000), expiresAt: new Date(Date.now() + 10 * 60 * 1000) };
+  await Session.updateOne({ _id: sid }, { $set: idle });
+  assert.strictEqual((await client.api('GET', '/me', undefined, { 'x-poll': '1' })).status, 200);
+  assert.deepStrictEqual((await Session.findById(sid).lean()).expiresAt, idle.expiresAt, 'still ends 30 minutes after the last use');
+  // The admin's own request moves it on
+  assert.strictEqual((await client.api('GET', '/me')).status, 200);
+  assert.ok((await Session.findById(sid).lean()).expiresAt > new Date(Date.now() + 29 * 60 * 1000));
+});
+
+test("the panel: a shop of the list opens from a link; a month's sales are cut on the shop's own clock", async () => {
+  const fake = fakeDocument();
+  globalThis.document = fake.document;
+  try {
+    const { shopRow, shopHref } = await import('../admin-public/js/views.js');
+    const row = shopRow({ id: 'abc', slug: 'amal', label: 'أمل', status: 'active', host: 'amal.x' }, { onOpen: () => {} });
+    const link = fake.made.find((el) => el.tagName === 'A');
+    assert.deepStrictEqual([link?.href, link?.textContent], ['#/shop/abc', 'أمل']);
+    assert.strictEqual(row.tabIndex, undefined, 'the link is the one stop for the keyboard');
+    assert.strictEqual(shopHref({ id: 'abc', status: 'provisioning', job: { id: 'j1' } }), '#/job/j1');
+  } finally {
+    delete globalThis.document;
+  }
+  const { monthRange } = await import('../admin-public/js/dom.js');
+  const iso = (r) => [r.from.toISOString(), r.to.toISOString()];
+  assert.deepStrictEqual(iso(monthRange('2026-11', 'Asia/Baghdad')), ['2026-10-31T21:00:00.000Z', '2026-11-30T21:00:00.000Z']);
+  // The clocks change within the month: each midnight on the clock of its own day
+  assert.deepStrictEqual(iso(monthRange('2026-03', 'Europe/London')), ['2026-03-01T00:00:00.000Z', '2026-03-31T23:00:00.000Z']);
+  assert.deepStrictEqual(iso(monthRange('2026-09', 'America/Santiago')), ['2026-09-01T04:00:00.000Z', '2026-10-01T03:00:00.000Z']);
+  assert.deepStrictEqual(iso(monthRange('2026-12', 'UTC')), ['2026-12-01T00:00:00.000Z', '2027-01-01T00:00:00.000Z']);
+  for (const bad of ['', '2026-13', 'May']) assert.strictEqual(monthRange(bad, 'UTC'), null, bad);
+});
+
 test('settings and notes edited from the panel reach the shop; the audit log reads back 50 a page with filters', async () => {
   const shop = await env.createShop('edit-me');
   const client = await signInAdmin(env, boss, '10.0.12.1');
@@ -492,6 +650,96 @@ test('deleting from the panel in development: a verified backup, 30 days closed,
   assert.strictEqual((await env.db.controlModels.Host.findById(`local-purge.${BASE_DOMAIN}`).lean()).kind, 'retired');
   const gone = await shop.client.request('GET', '/api/shop');
   assert.deepStrictEqual([gone.status, gone.data.code], [410, 'TENANT_DELETED']);
+  // Nothing opens the purged database again, which would make it again, empty, for ever
+  await assert.rejects(env.db.tenantModels(tenant), (err) => err.status === 410);
+  await assert.rejects(runScript('tenant-owner.js', ['--slug', 'local-purge']), (err) => err.code === 1 && err.stderr.includes('is deleted'));
+  assert.ok(!(await dbNames()).includes(tenant.dbName), 'still gone');
+});
+
+test('a shop given up before its database was made is deleted at once; its address is never given again', async () => {
+  const client = await signInAdmin(env, boss, '10.0.20.1');
+  const { Job, Tenant } = env.db.controlModels;
+  // Queued and stopped before its first step (no runner kicked here)
+  const quiet = { ...env.ctx, runner: undefined };
+  const made = await createTenant(quiet, { slug: 'never-made', shopName: 'لم يكتمل', owner: { username: 'owner', password: generatePassword({ avoid: ['owner', 'never-made'] }) } }, { actor: 'test' }, { inline: false });
+  await Job.updateOne({ _id: made.job._id }, { $set: { status: 'failed', error: 'توقف' } });
+  const job = (await client.api('GET', `/jobs/${made.job._id}`)).data;
+  assert.deepStrictEqual([job.status, job.cancellable], ['failed', true]);
+  const res = await client.api('POST', `/jobs/${made.job._id}/cancel`);
+  assert.deepStrictEqual([res.status, res.data.status, res.data.active], [200, 'cancelled', false]);
+  const tenant = await Tenant.findById(made.tenant._id).lean();
+  assert.strictEqual(tenant.status, 'deleted');
+  assert.ok(!(await dbNames()).includes(tenant.dbName));
+  assert.strictEqual((await Job.findById(made.job._id).lean()).params.owner.passwordHash, undefined, 'its first password hash goes too');
+  const entry = (await audit('tenant.status', { tenantId: tenant._id })).at(-1);
+  assert.deepStrictEqual([entry.actor, entry.details.to, entry.details.reason], ['admin:boss', 'deleted', 'أُلغي التجهيز']);
+  assert.strictEqual((await client.api('GET', '/slug-check?slug=never-made')).data.status, 'taken');
+});
+
+test('cancelling and retrying a failed job at the same moment: one of them wins, never both', async () => {
+  const shop = await env.createShop('race-rename', { signIn: false });
+  const { Job, Host, Tenant, Counter } = env.db.controlModels;
+  for (let round = 0; round < 4; round++) {
+    const tenant = await Tenant.findById(shop.tenant._id).lean();
+    const host = `race-new-${round}.${BASE_DOMAIN}`;
+    await Host.create({ _id: host, tenantId: tenant._id, kind: 'reserved', rev: await Counter.next('rev') });
+    // A rename that failed at its switch, the new address still reserved
+    const steps = [{ key: 'dns', status: 'skipped' }, { key: 'certificate', status: 'done' }, { key: 'switch', status: 'failed', error: 'تعذّر' }];
+    const job = await Job.create({ type: 'rename', tenantId: tenant._id, status: 'failed', error: 'تعذّر', steps, params: { fromSlug: tenant.slug, slug: `race-new-${round}`, host }, createdBy: 'test' });
+    const [cancel, retry] = await Promise.allSettled([cancelJob(env.ctx, job._id, { actor: 'test' }), retryJob(env.ctx, job._id)]);
+    assert.strictEqual([cancel, retry].filter((r) => r.status === 'fulfilled').length, 1, `round ${round}`);
+    await env.runner.drain();
+    const after = await Job.findById(job._id).lean();
+    const hostDoc = await Host.findById(host).lean();
+    if (cancel.status === 'fulfilled') {
+      assert.deepStrictEqual([after.status, after.active, hostDoc.kind], ['cancelled', false, 'retired'], `round ${round}`);
+    } else {
+      assert.deepStrictEqual([after.status, hostDoc.kind, hostDoc.cert?.retireRequestedAt ?? null], ['done', 'primary', null], `round ${round}`);
+    }
+  }
+});
+
+test('a purge stopped before its drop can be given up (the deletion called off); not once the drop was asked for', async () => {
+  const client = await signInAdmin(env, boss, '10.0.22.1');
+  const { Job, Tenant } = env.db.controlModels;
+  const pending = async (slug) => {
+    const shop = await env.createShop(slug, { signIn: false });
+    const deletion = { requestedAt: new Date(), requestedBy: 'test', purgeAfter: new Date(Date.now() + 864e5) };
+    await transition(env.ctx, shop.tenant._id, 'active', 'pending_deletion', { actor: 'test' }, { set: { deletion } });
+    return shop;
+  };
+  // Failed at its backup
+  const early = await pending('stop-purge');
+  const stuck = await Job.create({ type: 'purge', tenantId: early.tenant._id, status: 'failed', error: 'تعذّر', steps: [{ key: 'backup', status: 'failed', error: 'تعذّر' }] });
+  const res = await client.api('POST', `/jobs/${stuck._id}/cancel`);
+  assert.deepStrictEqual([res.status, res.data.status], [200, 'cancelled']);
+  const back = await Tenant.findById(early.tenant._id).lean();
+  assert.deepStrictEqual([back.status, back.deletion], ['suspended', undefined]);
+  assert.strictEqual((await audit('tenant.delete.cancel', { tenantId: early.tenant._id })).at(-1).actor, 'admin:boss');
+
+  // Its database dropped by the worker, the job stopped before it recorded so (a restart)
+  const late = await pending('mid-purge');
+  const dropping = await Job.create({ type: 'purge', tenantId: late.tenant._id, status: 'failed', error: 'تعذّر', steps: [{ key: 'backup', status: 'done' }, { key: 'drop', status: 'failed', ref: '0123456789abcdef01234567' }] });
+  await env.db.dropTenantDb(late.tenant.dbName);
+  const refused = await client.api('POST', `/jobs/${dropping._id}/cancel`);
+  assert.strictEqual(refused.status, 409);
+  assert.strictEqual((await Job.findById(dropping._id).lean()).status, 'failed', 'left to retry');
+  assert.strictEqual((await Tenant.findById(late.tenant._id).lean()).status, 'pending_deletion');
+  // Neither the hourly figures nor its page open the dropped database, which would make it again
+  await env.runner.measure();
+  const page = await client.api('GET', `/tenants/${late.tenant._id}`);
+  assert.deepStrictEqual([page.status, page.data.settings, page.data.users], [200, null, []]);
+  // Nor its settings, an account's new password or an export
+  const owner = await env.db.controlModels.Session.findOne({ kind: 'tenant' }).lean();
+  for (const [method, url, body] of [
+    ['PUT', `/tenants/${late.tenant._id}/settings`, { shopName: 'لا' }],
+    ['POST', `/tenants/${late.tenant._id}/users/${owner?.userId ?? '0'.repeat(24)}/password`, { password: 'Kq7mT4vR9xWp2n' }],
+    ['GET', `/tenants/${late.tenant._id}/export/products`],
+  ]) {
+    const refusedOpen = await client.api(method, url, body);
+    assert.strictEqual(refusedOpen.status, 409, `${method} ${url}: ${refusedOpen.text}`);
+  }
+  assert.ok(!(await dbNames()).includes(late.tenant.dbName), 'not made again');
 });
 
 test('no password, code or authenticator secret in plain text anywhere in pos_control', async () => {

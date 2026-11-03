@@ -19,6 +19,7 @@ import {
   withSignIn,
 } from './common.js';
 import { scanBarcodes } from './scanner.js';
+import { isPurchaseOf } from './idempotency.js';
 
 const LOCALE = 'ar-u-nu-latn';
 const monthName = new Intl.DateTimeFormat(LOCALE, { month: 'long', year: 'numeric' });
@@ -947,6 +948,15 @@ els.save.addEventListener('click', async () => {
   els.save.disabled = true;
   try {
     const purchase = await withSignIn(() => api('/purchases', { method: 'POST', body }));
+    if (!isPurchaseOf(body, purchase)) {
+      // Another draft under the same id was saved before (in another tab: the draft is kept
+      // for the whole browser, or before this one was changed): this one is not saved. It
+      // stays, with an id of its own, to be checked against that invoice.
+      d.clientId = newClientId();
+      saveDraft();
+      showError(`حُفظت فاتورة الشراء رقم ${purchase.number} من قبل بأصناف غير أصناف هذه الفاتورة، ولم تُحفظ هذه بعد. راجع الفاتورة رقم ${purchase.number} أولًا، ثم احفظ هذه إن كانت فاتورة أخرى.`);
+      return;
+    }
     clearDraft();
     toast(`حُفظت فاتورة الشراء رقم ${purchase.number}، وأُضيفت الكميات إلى المخزن`);
     els.month.value = els.date.value.slice(0, 7);

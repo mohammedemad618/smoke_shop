@@ -3,7 +3,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import http from 'node:http';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import mongoose from 'mongoose';
 import { loadConfig, publicUrl } from '../lib/config.js';
+import { BASE_DOMAIN, DB_PREFIX, LOCAL_DIR } from './support/harness.js';
+import { TEST_MONGODB_URI, dropDatabases } from './support/databases.js';
 
 // What production needs besides NODE_ENV: the TOTP key and the root worker's spool
 const KEY = 'f0'.repeat(32);
@@ -23,7 +29,12 @@ test('development defaults: shops on *.pos.localhost, listening on 127.0.0.1', (
     adminHost: 'admin.pos.localhost',
     publicScheme: 'http',
     maxTenants: 20,
+    // Sign-in requests per address per minute, as nginx allows: shops, then the admin panel
+    signInPerMinute: 10,
+    adminSignInPerMinute: 5,
   });
+  assert.throws(() => loadConfig({ SIGN_IN_PER_MINUTE: '0' }), /SIGN_IN_PER_MINUTE/);
+  assert.throws(() => loadConfig({ ADMIN_SIGN_IN_PER_MINUTE: 'many' }), /ADMIN_SIGN_IN_PER_MINUTE/);
   // No root worker in development: certificates and backups are done in-process, under .pos-local
   assert.deepStrictEqual([maxNewTenantsPerDay, totpKey, spoolDir, workerMode, publicIpv4, requestLog], [5, null, null, 'local', null, false]);
   assert.ok(localDir.endsWith('.pos-local'), localDir);
@@ -93,4 +104,39 @@ test('the admin panel and the root worker: what production refuses', () => {
   assert.strictEqual(loadConfig({ SPOOL_DIR: '/tmp/spool', DEV_FAKE_CERTS: '1' }).workerMode, 'local');
   assert.strictEqual(loadConfig({ SPOOL_DIR: '/tmp/spool', POS_BACKUP_DIR: '/tmp/b' }).backupDir, '/tmp/b');
   assert.strictEqual(loadConfig({ REQUEST_LOG: '1' }).requestLog, true);
+});
+
+test('a port already taken: the server says so and exits 1, with nothing started', async () => {
+  const taken = http.createServer();
+  await new Promise((resolve) => taken.listen(0, '127.0.0.1', resolve));
+  const env = {
+    ...process.env,
+    NODE_ENV: 'test',
+    HOST: '127.0.0.1',
+    PORT: String(taken.address().port),
+    MONGODB_URI: TEST_MONGODB_URI,
+    CONTROL_DB: `${DB_PREFIX}control`,
+    TENANT_DB_PREFIX: `${DB_PREFIX}t_`,
+    TENANT_BASE_DOMAINS: BASE_DOMAIN,
+    ADMIN_HOST: `admin.${BASE_DOMAIN}`,
+    POS_LOCAL_DIR: LOCAL_DIR,
+  };
+  try {
+    // Before, it said it was running and stayed up serving nothing, its job runner started
+    const run = promisify(execFile)(process.execPath, ['server.js'], { cwd: new URL('..', import.meta.url), env, timeout: 20000 });
+    await assert.rejects(run, (err) => {
+      assert.strictEqual(err.code, 1, `exit ${err.code} ${err.signal ?? ''}\n${err.stdout}\n${err.stderr}`);
+      assert.match(err.stderr, /Could not listen on 127\.0\.0\.1:\d+: .*EADDRINUSE/);
+      assert.ok(!err.stdout.includes('POS running'), err.stdout);
+      return true;
+    });
+  } finally {
+    taken.close();
+    const conn = await mongoose.createConnection(TEST_MONGODB_URI).asPromise();
+    try {
+      await dropDatabases(conn, DB_PREFIX);
+    } finally {
+      await conn.close();
+    }
+  }
 });

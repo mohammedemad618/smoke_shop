@@ -12,10 +12,11 @@ import { publicUrl } from '../lib/config.js';
 import { SLUG_MESSAGES } from '../lib/slug.js';
 import { sendCsv } from '../lib/csv.js';
 import { DAY_MS, requestedRange, timeZoneParam } from '../lib/range.js';
-import { createTenant, primaryHost, resetUserPassword, revokeSessions, setShopNameCache, slugAvailability, transition } from '../services/tenants.js';
+import { createTenant, primaryHost, resetUserPassword, resumeTenant, revokeSessions, setShopNameCache, slugAvailability, transition } from '../services/tenants.js';
 import { backupsOf, cancelDeletion, startRename, startRestore } from '../services/lifecycle.js';
 import { cancelJob, enqueueJob, jobView, retryJob, workerOf } from '../services/jobs.js';
 import { EXPORT_KINDS, exportCsv } from '../services/exports.js';
+import { runReport } from '../lib/limits.js';
 
 const PAGE_SIZE = 50;
 const SETTINGS_FIELDS = ['shopName', 'receiptNote', 'timeZone', 'currency', 'phone', 'address'];
@@ -37,6 +38,12 @@ export function createAdminApi(ctx, { requireStepUp }) {
     return tenant;
   }
 
+  // Before the shop's database is opened: a state that has one, and no purge under way (its
+  // database may be dropped already, and opening it would make it again, empty, for good)
+  async function assertOpenable(tenant, message) {
+    if (!OPEN_DB.includes(tenant.status) || (await Job.exists({ tenantId: tenant._id, active: true, type: 'purge' }))) throw httpError(409, message);
+  }
+
   const certView = (cert) => (cert ? { status: cert.status ?? 'none', attempts: cert.attempts ?? 0, nextAttemptAt: cert.nextAttemptAt ?? null, expiresAt: cert.expiresAt ?? null, lastError: cert.lastError ?? null } : null);
 
   function tenantView(t, hosts, job) {
@@ -56,7 +63,7 @@ export function createAdminApi(ctx, { requireStepUp }) {
       usage: t.usage ?? null,
       lastActivityAt: t.lastActivityAt ?? null,
       createdAt: t.createdAt ?? null,
-      deletion: t.deletion?.purgeAfter ? { requestedAt: t.deletion.requestedAt ?? null, purgeAfter: t.deletion.purgeAfter } : null,
+      deletion: t.deletion?.purgeAfter ? { requestedAt: t.deletion.requestedAt ?? null, purgeAfter: t.deletion.purgeAfter, setupCancelled: Boolean(t.deletion.setupCancelled) } : null,
       job: job ? { id: String(job._id), type: job.type, status: job.status } : null,
     };
   }
@@ -119,7 +126,9 @@ export function createAdminApi(ctx, { requireStepUp }) {
     if (!input.requestId) throw httpError(400, 'رقم الطلب غير صالح. حدّث الصفحة وأعد المحاولة');
     const made = await createTenant(ctx, input, by(req), { inline: false });
     const hosts = await Host.find({ tenantId: made.tenant._id }).lean();
-    res.status(made.pending ? 202 : 200).json({ tenant: tenantView(made.tenant, hosts, made.pending ? made.job : null), job: jobView(made.job) });
+    // passwordSet false: an earlier run of this request made the account with another
+    // password (sent again after a lost answer, with the password made again)
+    res.status(made.pending ? 202 : 200).json({ tenant: tenantView(made.tenant, hosts, made.pending ? made.job : null), job: jobView(made.job), passwordSet: made.passwordSet });
   });
 
   router.get('/tenants/:id', async (req, res) => {
@@ -132,7 +141,8 @@ export function createAdminApi(ctx, { requireStepUp }) {
     ]);
     let settings = null;
     let users = [];
-    if (OPEN_DB.includes(tenant.status)) {
+    // Not while it is purged: its database may be dropped already, and opening it would make it again
+    if (OPEN_DB.includes(tenant.status) && active?.type !== 'purge') {
       const models = await db.tenantModels(tenant);
       const [s, accounts] = await Promise.all([models.Setting.findById('shop').lean(), models.User.find().sort({ createdAt: 1 }).lean()]);
       settings = Object.fromEntries(SETTINGS_FIELDS.map((key) => [key, s?.[key] ?? '']));
@@ -181,7 +191,7 @@ export function createAdminApi(ctx, { requireStepUp }) {
   // The shop's own settings document, as its owner edits it on its settings page
   router.put('/tenants/:id/settings', async (req, res) => {
     const tenant = await tenantOf(req);
-    if (!OPEN_DB.includes(tenant.status)) throw httpError(409, 'لا يمكن تعديل إعدادات متجر في هذه الحالة');
+    await assertOpenable(tenant, 'لا يمكن تعديل إعدادات متجر في هذه الحالة');
     const changes = {};
     for (const key of SETTINGS_FIELDS) {
       const value = req.body[key];
@@ -207,8 +217,7 @@ export function createAdminApi(ctx, { requireStepUp }) {
 
   router.post('/tenants/:id/resume', requireStepUp, async (req, res) => {
     const tenant = await tenantOf(req);
-    if (await Job.exists({ tenantId: tenant._id, active: true, type: 'restore' })) throw httpError(409, 'تجري استعادة نسخة لهذا المتجر. انتظر حتى تنتهي');
-    const updated = await transition(ctx, tenant._id, 'suspended', 'active', { ...by(req), reason: '' });
+    const updated = await resumeTenant(ctx, tenant._id, by(req));
     res.json({ status: updated.status });
   });
 
@@ -216,7 +225,7 @@ export function createAdminApi(ctx, { requireStepUp }) {
   // sign-in, and every session of the account ends now
   router.post('/tenants/:id/users/:userId/password', requireStepUp, async (req, res) => {
     const tenant = await tenantOf(req);
-    if (!OPEN_DB.includes(tenant.status)) throw httpError(409, 'لا يمكن تعديل حسابات متجر في هذه الحالة');
+    await assertOpenable(tenant, 'لا يمكن تعديل حسابات متجر في هذه الحالة');
     const password = typeof req.body.password === 'string' ? req.body.password : undefined;
     const { username } = await resetUserPassword(ctx, tenant._id, req.params.userId, password, by(req));
     res.json({ username, mustChangePassword: true });
@@ -269,9 +278,10 @@ export function createAdminApi(ctx, { requireStepUp }) {
     const tenant = await tenantOf(req);
     const kind = req.params.kind;
     if (!EXPORT_KINDS.includes(kind)) throw httpError(404, 'المسار غير موجود');
-    if (!OPEN_DB.includes(tenant.status)) throw httpError(409, 'لا يمكن تصدير بيانات متجر في هذه الحالة');
+    await assertOpenable(tenant, 'لا يمكن تصدير بيانات متجر في هذه الحالة');
     const range = kind === 'sales' ? { ...requestedRange(req.query, 3 * 366 * DAY_MS), timeZone: timeZoneParam(req.query.tz) } : null;
-    const csv = await exportCsv(await db.tenantModels(tenant), kind, range);
+    // A report of that shop's, in turn with the owner's own (lib/limits.js)
+    const csv = await runReport(tenant._id, async () => exportCsv(await db.tenantModels(tenant), kind, range));
     await log(req, 'tenant.export', tenant, { kind, ...(range ? { from: range.start, to: range.end } : {}) });
     sendCsv(res, `${kind}-${tenant.slug}-${new Date().toISOString().slice(0, 10)}.csv`, csv);
   });
@@ -301,7 +311,7 @@ export function createAdminApi(ctx, { requireStepUp }) {
 
   router.post('/jobs/:id/cancel', async (req, res) => {
     const job = await jobOf(req);
-    const cancelled = await cancelJob(ctx, job._id);
+    const cancelled = await cancelJob(ctx, job._id, by(req));
     const tenant = await Tenant.findById(job.tenantId, 'slug').lean();
     await log(req, 'job.cancel', tenant ?? { _id: job.tenantId }, { job: job.type });
     res.json(jobView(cancelled));

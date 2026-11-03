@@ -19,6 +19,7 @@ import {
   newClientId,
   withSignIn,
 } from './common.js';
+import { isReturnOf } from './idempotency.js';
 
 const TIME_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -577,9 +578,17 @@ els.returnForm.addEventListener('submit', async (e) => {
   const button = els.returnForm.querySelector('[type="submit"]');
   button.disabled = true;
   try {
-    const { refunded, toAccount, customerName } = await withSignIn(() =>
-      api(`/sales/${returning._id}/returns`, { method: 'POST', body: { items, clientId: returningId } }),
-    );
+    const body = { items, clientId: returningId };
+    const { sale, refunded, toAccount, customerName } = await withSignIn(() => api(`/sales/${returning._id}/returns`, { method: 'POST', body }));
+    if (!isReturnOf(body, sale)) {
+      // A return of other quantities was made under this id before (its answer lost, then
+      // the quantities changed): this one was not made. The form, whose limits are those of
+      // before, closes; opened again it shows what is left, under a new id.
+      els.returnDialog.close();
+      toast(`سُجّل من قبل إرجاع من هذه الفاتورة بكميات غير التي أدخلتها (${refundMessage(refunded, toAccount, customerName)})، ولم يُسجَّل الإرجاع الجديد. راجع الفاتورة ثم أرجع ما بقي إن لزم`, 'error');
+      load();
+      return;
+    }
     els.returnDialog.close();
     toast(`تم الإرجاع: ${refundMessage(refunded, toAccount, customerName)}. والكمية عادت إلى المخزن`);
     load();

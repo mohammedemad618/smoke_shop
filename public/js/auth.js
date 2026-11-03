@@ -51,8 +51,25 @@ export async function request(path, { method = 'GET', body } = {}) {
 export const fetchMe = () => request('/auth/me');
 export const signIn = (username, password) => request('/auth/login', { method: 'POST', body: { username, password } });
 export const changePassword = (currentPassword, newPassword) => request('/auth/password', { method: 'POST', body: { currentPassword, newPassword } });
+
+// Answers that say this browser has no session left: ended already, or the shop is closed,
+// moved or gone (each of which ended every session)
+const NO_SESSION = new Set(['AUTH_EXPIRED', 'TENANT_SUSPENDED', 'TENANT_MOVED', 'TENANT_DELETED']);
+
+// Ends this browser's session. A token made stale by signing in again in another tab is
+// fetched again and the sign-out sent once more. Resolves once no session is left; throws
+// (ApiError) when one may still be there (offline, refused), so the page stays as it is.
 export async function signOut() {
-  await request('/auth/logout', { method: 'POST' });
+  const send = () => request('/auth/logout', { method: 'POST' });
+  try {
+    await send().catch(async (err) => {
+      if (err.code !== 'CSRF_FAILED') throw err;
+      await fetchMe();
+      return send();
+    });
+  } catch (err) {
+    if (!NO_SESSION.has(err.code)) throw err;
+  }
   csrfToken = null;
 }
 
