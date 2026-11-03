@@ -14,8 +14,9 @@ const state = {
   query: '',
   editingId: null,
   renamingId: null,
-  // Part of the stock asked for by a link: out, low or untracked (see STOCK_FILTERS)
+  // Which part of the stock is shown, and in what order (see STOCK_FILTERS and SORTS)
   stockFilter: '',
+  sort: 'name',
 };
 
 const $ = (id) => document.getElementById(id);
@@ -27,7 +28,8 @@ const els = {
   search: $('searchInput'),
   addProduct: $('addProductBtn'),
   area: $('productsArea'),
-  filterBar: $('filterBar'),
+  stockFilter: $('stockFilter'),
+  sort: $('sortSelect'),
   dialog: $('productDialog'),
   form: $('productForm'),
   dialogTitle: $('productDialogTitle'),
@@ -181,36 +183,77 @@ function profitCell(p) {
   return `<span class="num${profit < 0 ? ' loss' : ''}">${formatMoney(profit)}</span>${pct ? `<small class="pct num">${pct}</small>` : ''}`;
 }
 
-// The summary page links here for part of the stock: ?stock=out | low | untracked
+/* Filtering and sorting */
+
+// Part of the stock; the summary page links here with ?stock=out | low | untracked
 const STOCK_FILTERS = {
-  out: { label: 'المنتجات التي نفدت كميتها', test: (p) => p.trackStock && p.stock <= 0 },
+  '': { label: 'كل المنتجات', test: () => true },
+  out: { label: 'نفدت كميتها', test: (p) => p.trackStock && p.stock <= 0 },
   low: {
-    label: 'المنتجات التي قاربت على النفاد',
+    label: 'قاربت على النفاد',
     test: (p) => p.trackStock && p.stock > 0 && p.stock <= (p.lowStockAlert ?? DEFAULT_LOW_STOCK),
   },
-  untracked: { label: 'المنتجات بلا كمية مسجّلة', test: (p) => !p.trackStock },
+  available: { label: 'متوفرة', test: (p) => p.trackStock && p.stock > 0 },
+  untracked: { label: 'بلا كمية مسجّلة', test: (p) => !p.trackStock },
 };
 
-function renderFilterBar() {
-  const filter = STOCK_FILTERS[state.stockFilter];
-  els.filterBar.hidden = !filter;
-  if (filter) {
-    els.filterBar.innerHTML = `<span>تعرض: ${filter.label}</span>
-      <button class="link-btn" type="button" data-clear-filter>عرض كل المنتجات</button>`;
+// Products without a recorded quantity have nothing to compare, so they go last
+const byStock = (direction) => (a, b) => {
+  if (a.trackStock !== b.trackStock) return a.trackStock ? -1 : 1;
+  return a.trackStock ? direction * (a.stock - b.stock) : 0;
+};
+// The server sends products by name; the other orders keep it among equals
+const SORTS = {
+  name: null,
+  low: byStock(1),
+  high: byStock(-1),
+  new: (a, b) => String(b.createdAt).localeCompare(String(a.createdAt)),
+};
+const SORT_KEY = 'productsSort';
+
+function readSavedSort() {
+  try {
+    const saved = localStorage.getItem(SORT_KEY);
+    return Object.hasOwn(SORTS, saved ?? '') ? saved : 'name';
+  } catch {
+    return 'name';
   }
 }
 
-els.filterBar.addEventListener('click', (e) => {
-  if (!e.target.closest('[data-clear-filter]')) return;
-  state.stockFilter = '';
-  history.replaceState(null, '', location.pathname);
-  renderFilterBar();
+// How many products each choice would show, within the current section and search
+function renderFilterControls() {
+  for (const option of els.stockFilter.options) {
+    const filter = STOCK_FILTERS[option.value];
+    const count = state.products.filter(filter.test).length;
+    option.textContent = option.value ? `${filter.label} (${count})` : filter.label;
+  }
+  els.stockFilter.value = state.stockFilter;
+  els.stockFilter.classList.toggle('is-active', state.stockFilter !== '');
+  els.sort.value = state.sort;
+}
+
+els.stockFilter.addEventListener('change', () => {
+  state.stockFilter = els.stockFilter.value;
+  // Kept in the address, so a refresh or a shared link shows the same list
+  const query = state.stockFilter ? `?stock=${state.stockFilter}` : '';
+  history.replaceState(null, '', location.pathname + query);
+  renderProducts();
+});
+
+els.sort.addEventListener('change', () => {
+  state.sort = els.sort.value;
+  try {
+    localStorage.setItem(SORT_KEY, state.sort);
+  } catch {
+    // Only remembering the choice fails; the list is still sorted
+  }
   renderProducts();
 });
 
 function renderProducts() {
-  const filter = STOCK_FILTERS[state.stockFilter];
-  const products = filter ? state.products.filter(filter.test) : state.products;
+  renderFilterControls();
+  const filtered = state.products.filter(STOCK_FILTERS[state.stockFilter].test);
+  const products = SORTS[state.sort] ? [...filtered].sort(SORTS[state.sort]) : filtered;
   els.count.textContent = products.length ? arCount(products.length, PRODUCTS) : '';
 
   if (!state.categories.length) {
@@ -220,8 +263,8 @@ function renderProducts() {
   if (!products.length) {
     els.area.innerHTML = state.query
       ? emptyState(`لا توجد نتائج لـ «${escapeHtml(state.query)}»`, 'جرّب جزءًا من الاسم أو آخر أرقام الباركود.')
-      : filter
-        ? emptyState('لا شيء هنا', 'لا توجد منتجات تطابق هذا العرض في هذا القسم.')
+      : state.stockFilter
+        ? emptyState('لا شيء هنا', `لا توجد منتجات «${STOCK_FILTERS[state.stockFilter].label}» في هذا القسم.`)
         : emptyState('لا توجد منتجات هنا بعد', 'أضف أول منتج، ويمكنك مسح الباركود مباشرة بالقارئ.', true);
     return;
   }
@@ -626,6 +669,6 @@ els.area.addEventListener('click', async (e) => {
 });
 
 const requestedFilter = new URLSearchParams(location.search).get('stock');
-state.stockFilter = STOCK_FILTERS[requestedFilter] ? requestedFilter : '';
-renderFilterBar();
+state.stockFilter = Object.hasOwn(STOCK_FILTERS, requestedFilter ?? '') ? requestedFilter : '';
+state.sort = readSavedSort();
 refresh();

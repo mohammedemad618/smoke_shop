@@ -277,12 +277,12 @@ h1, h2, h3 { line-height: 1.25; }
 .debt-chip.credit { background: #E3F4EC; color: var(--go); }
 .debt-chip.clear { background: var(--paper-2); color: var(--muted); font-weight: 400; }
 
-/* Products page: part of the stock, opened from the summary */
-.filter-bar {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px;
-  margin: 0 28px 12px; padding: 10px 14px; border-radius: var(--r-m);
-  background: var(--warn-soft); color: var(--warn); font-weight: 500;
-}
+/* Products page: which part of the stock, and in what order */
+.catalog-filters { display: flex; flex-wrap: wrap; gap: 8px 18px; padding: 0 28px 14px; }
+.filter-field { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--ink-2); }
+.filter-field .input { width: auto; padding-block: 6px; }
+/* A filter that hides products stands out, so a short list is not mistaken for all of it */
+.filter-field .input.is-active { border-color: var(--warn); background: var(--warn-soft); color: var(--warn); font-weight: 500; }
 .link-btn { padding: 0; border: 0; background: none; color: var(--focus); font: inherit; cursor: pointer; }
 .link-btn:hover { text-decoration: underline; }
 .muted { color: var(--muted); }
@@ -924,8 +924,9 @@ a.ledger-row:hover { background: var(--paper-2); }
   .ptable:not(.keep-table) .tag { font-size: 13px; }
 
   /* Stock value and stocktake */
-  .filter-bar { margin: 0 16px 12px; }
-  .filter-bar .link-btn { padding-block: 8px; }
+  .catalog-filters { gap: 8px; padding: 0 16px 12px; }
+  .filter-field { flex: 1 1 0; min-width: 0; flex-direction: column; align-items: stretch; gap: 4px; font-size: 12px; }
+  .filter-field .input { width: 100%; }
   .head-actions { width: 100%; }
   .head-actions .btn { flex: 1; }
   .count-intro { padding: 16px; }

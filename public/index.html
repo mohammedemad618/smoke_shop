@@ -51,7 +51,27 @@
           <button class="btn btn-primary" id="addProductBtn" type="button">إضافة منتج</button>
         </div>
       </div>
-      <div class="filter-bar" id="filterBar" role="status" hidden></div>
+      <div class="catalog-filters">
+        <label class="filter-field">
+          <span>المخزن</span>
+          <select class="input" id="stockFilter">
+            <option value="">كل المنتجات</option>
+            <option value="out"></option>
+            <option value="low"></option>
+            <option value="available"></option>
+            <option value="untracked"></option>
+          </select>
+        </label>
+        <label class="filter-field">
+          <span>الترتيب</span>
+          <select class="input" id="sortSelect">
+            <option value="name">حسب الاسم</option>
+            <option value="low">الأقل كمية أولًا</option>
+            <option value="high">الأكثر كمية أولًا</option>
+            <option value="new">الأحدث إضافة</option>
+          </select>
+        </label>
+      </div>
       <div class="table-wrap" id="productsArea"></div>
     </section>
   </main>
