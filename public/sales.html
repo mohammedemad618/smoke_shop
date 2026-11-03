@@ -17,6 +17,7 @@
       <a href="/">المنتجات</a>
       <a href="/sales.html" aria-current="page">المبيعات</a>
       <a href="/expenses.html">المصاريف</a>
+      <a href="/debts.html">الديون</a>
     </nav>
   </header>
 
@@ -75,7 +76,7 @@
   <dialog class="dialog return-dialog" id="returnDialog" aria-labelledby="returnTitle">
     <form id="returnForm" novalidate>
       <h2 id="returnTitle"></h2>
-      <p class="hint">حدّد عدد القطع التي أعادها الزبون من كل صنف. يُعاد ثمنها إليه وتعود القطع إلى المخزن.</p>
+      <p class="hint" id="returnHint"></p>
       <table class="ptable return-table">
         <thead><tr>
           <th scope="col">الصنف</th>

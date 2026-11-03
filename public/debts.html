@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>الديون | نقطة البيع</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Readex+Pro:wght@300..700&display=swap">
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body class="app-shell">
+  <header class="topbar">
+    <a class="brand" href="/cashier.html"><span class="brand-mark" aria-hidden="true"></span><span class="brand-name">نقطة البيع</span></a>
+    <nav class="nav" aria-label="التنقل الرئيسي">
+      <a href="/cashier.html">الكاشير</a>
+      <a href="/">المنتجات</a>
+      <a href="/sales.html">المبيعات</a>
+      <a href="/expenses.html">المصاريف</a>
+      <a href="/debts.html" aria-current="page">الديون</a>
+    </nav>
+  </header>
+
+  <main class="catalog">
+    <aside class="rail" aria-labelledby="railTitle">
+      <h2 id="railTitle">الزبائن</h2>
+      <div class="rail-add">
+        <input class="input" id="customerSearch" type="search" placeholder="ابحث بالاسم أو الهاتف" aria-label="بحث في الزبائن">
+        <button class="btn btn-primary" id="addCustomerBtn" type="button">إضافة</button>
+      </div>
+      <ul class="rail-list" id="customerList"></ul>
+    </aside>
+    <section class="catalog-main debt-main" id="customerPanel"></section>
+  </main>
+
+  <dialog class="dialog" id="customerDialog" aria-labelledby="customerDialogTitle">
+    <form id="customerForm" novalidate autocomplete="off">
+      <h2 id="customerDialogTitle">زبون جديد</h2>
+      <div class="field">
+        <label for="cName">الاسم</label>
+        <input class="input" id="cName" maxlength="80">
+      </div>
+      <div class="field">
+        <label for="cPhone">الهاتف <span class="per">(اختياري)</span></label>
+        <input class="input num" id="cPhone" maxlength="30" inputmode="tel">
+      </div>
+      <div class="field">
+        <label for="cNote">ملاحظة <span class="per">(اختيارية)</span></label>
+        <input class="input" id="cNote" maxlength="200" placeholder="مثل: جار المحل">
+      </div>
+      <p class="form-error" id="customerError" role="alert" hidden></p>
+      <div class="dialog-actions">
+        <button class="btn btn-primary" type="submit">حفظ</button>
+        <button class="btn btn-ghost" type="button" data-close>إلغاء</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="dialog" id="entryDialog" aria-labelledby="entryDialogTitle">
+    <form id="entryForm" novalidate autocomplete="off">
+      <h2 id="entryDialogTitle"></h2>
+      <p class="hint" id="entryHint"></p>
+      <div class="field">
+        <label for="enAmount">المبلغ</label>
+        <div class="input-group">
+          <input class="input num" id="enAmount" type="number" min="0" step="any" inputmode="decimal">
+          <button class="btn" type="button" id="fullAmountBtn">كامل الدين</button>
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label for="enDate">التاريخ</label>
+          <input class="input" id="enDate" type="date">
+        </div>
+        <div class="field">
+          <label for="enNote">ملاحظة <span class="per">(اختيارية)</span></label>
+          <input class="input" id="enNote" maxlength="200">
+        </div>
+      </div>
+      <p class="form-error" id="entryError" role="alert" hidden></p>
+      <div class="dialog-actions">
+        <button class="btn btn-primary" type="submit" id="entrySubmit">حفظ</button>
+        <button class="btn btn-ghost" type="button" data-close>إلغاء</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div class="toasts" id="toasts"></div>
+  <script type="module" src="/js/debts.js"></script>
+</body>
+</html>

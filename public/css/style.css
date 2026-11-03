@@ -220,6 +220,27 @@ h1, h2, h3 { line-height: 1.25; }
 .expense-total { padding: 16px 20px; background: var(--paper); border: 1px solid var(--line); border-radius: var(--r-m); }
 .ptable tr.is-editing td { background: var(--warn-soft); }
 
+/* Debts */
+.pay-type { grid-column: 1 / -1; justify-self: start; }
+.credit-box { grid-column: 1 / -1; display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 6px 12px; }
+.credit-box label { font-size: 14px; color: var(--ink-2); }
+.credit-note { grid-column: 1 / -1; margin: 0; font-size: 13px; color: var(--ink-2); }
+.credit-note.is-new { color: var(--focus); }
+.change.is-debt { color: var(--warn); }
+.badge.is-credit { background: #E7EEFC; color: #1F4FB0; text-decoration: none; }
+.badge.is-credit:hover { text-decoration: underline; }
+.debt-chip { flex: none; padding: 0 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+.debt-chip.owes { background: var(--stop-soft); color: var(--stop); }
+.debt-chip.credit { background: #E3F4EC; color: var(--go); }
+.debt-chip.clear { background: var(--paper-2); color: var(--muted); font-weight: 400; }
+.owes-text { color: var(--stop); }
+.credit-text { color: var(--go); }
+.clear-text { color: var(--muted); }
+.debt-total { display: inline-block; min-width: 260px; margin-bottom: 20px; padding: 16px 20px; background: var(--paper); border: 1px solid var(--line); border-radius: var(--r-m); }
+.rail-name .pcat { display: block; font-weight: 400; }
+.ledger .pcat { display: block; }
+.rail-empty { padding: 12px; font-size: 14px; color: var(--muted); }
+
 /* Camera scanner */
 .scanner-dialog { width: min(640px, calc(100vw - 32px)); }
 .scanner { padding: 22px 24px; }
@@ -475,7 +496,8 @@ h1, h2, h3 { line-height: 1.25; }
 
 @media (max-width: 760px) {
   .topbar { gap: 8px; padding: 0 12px; }
-  .nav a { padding: 0 10px; }
+  .nav { overflow-x: auto; scrollbar-width: none; }
+  .nav a { padding: 0 8px; white-space: nowrap; }
   .topbar-meta { display: none; }
   .catalog { grid-template-columns: 1fr; }
   .rail { border-inline-end: 0; border-bottom: 1px solid var(--line); }

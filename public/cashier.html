@@ -17,6 +17,7 @@
       <a href="/">المنتجات</a>
       <a href="/sales.html">المبيعات</a>
       <a href="/expenses.html">المصاريف</a>
+      <a href="/debts.html">الديون</a>
     </nav>
     <div class="topbar-meta" id="todayStats"></div>
   </header>
@@ -52,7 +53,17 @@
             <div class="sum-row grand"><dt>الإجمالي</dt><dd class="num" id="grandTotal">0</dd></div>
           </dl>
           <div class="pay">
-            <label for="paidInput">المدفوع</label>
+            <div class="segmented segmented-sm pay-type" role="group" aria-label="طريقة الدفع">
+              <button type="button" data-pay="cash" aria-pressed="true">نقدًا</button>
+              <button type="button" data-pay="credit" aria-pressed="false">بالدين</button>
+            </div>
+            <div class="credit-box" id="creditBox" hidden>
+              <label for="customerInput">الزبون</label>
+              <input id="customerInput" class="input" list="customerOptions" placeholder="اكتب اسم الزبون" autocomplete="off">
+              <datalist id="customerOptions"></datalist>
+              <p class="credit-note" id="creditNote" aria-live="polite"></p>
+            </div>
+            <label for="paidInput" id="paidLabel">المدفوع</label>
             <input id="paidInput" class="input pay-input num" type="number" min="0" step="any" inputmode="decimal" placeholder="المبلغ بالضبط">
             <div class="sum-row change" id="changeRow">
               <span id="changeLabel">الباقي للزبون</span>

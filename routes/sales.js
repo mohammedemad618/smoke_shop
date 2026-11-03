@@ -3,6 +3,8 @@ import mongoose from 'mongoose';
 import Product from '../models/Product.js';
 import Sale from '../models/Sale.js';
 import Expense from '../models/Expense.js';
+import Customer from '../models/Customer.js';
+import DebtEntry from '../models/DebtEntry.js';
 import { nextSequence } from '../models/Counter.js';
 import { httpError } from '../lib/errors.js';
 import { money, roundQty } from '../lib/util.js';
@@ -264,26 +266,65 @@ router.post('/', async (req, res) => {
 
   const total = money(items.reduce((sum, i) => sum + i.lineTotal, 0));
   const cost = money(items.reduce((sum, i) => sum + i.unitCost * i.quantity, 0));
+  // Cash: an empty paid means the exact amount. Credit: paid is the part paid now (often
+  // nothing) and the rest goes on the customer's account.
+  const paymentType = req.body.paymentType === 'credit' ? 'credit' : 'cash';
   const paidInput = req.body.paid;
-  const paid = paidInput === undefined || paidInput === null || paidInput === '' ? total : money(paidInput);
-  if (!Number.isFinite(paid) || paid < total) throw httpError(400, 'المبلغ المدفوع أقل من إجمالي الفاتورة');
+  const noPaid = paidInput === undefined || paidInput === null || paidInput === '';
+  let customer = null;
+  let paid;
+  let change = 0;
+  let debt = 0;
+  if (paymentType === 'credit') {
+    if (!mongoose.isObjectIdOrHexString(String(req.body.customerId ?? ''))) {
+      throw httpError(400, 'اختر الزبون الذي يُسجَّل عليه الدين');
+    }
+    customer = await Customer.findById(req.body.customerId).lean();
+    if (!customer) throw httpError(400, 'الزبون غير موجود');
+    paid = noPaid ? 0 : money(paidInput);
+    if (!Number.isFinite(paid) || paid < 0) throw httpError(400, 'المبلغ المدفوع غير صالح');
+    if (paid >= total) throw httpError(400, 'المبلغ مدفوع بالكامل، اختر الدفع نقدًا');
+    debt = money(total - paid);
+  } else {
+    paid = noPaid ? total : money(paidInput);
+    if (!Number.isFinite(paid) || paid < total) throw httpError(400, 'المبلغ المدفوع أقل من إجمالي الفاتورة');
+    change = money(paid - total);
+  }
 
   const taken = await takeFromStock(products, baseQuantities);
+  let sale;
   try {
-    const sale = await Sale.create({
+    sale = await Sale.create({
       number: await nextSequence('sale'),
       items,
       total,
       cost,
       profit: money(total - cost),
       paid,
-      change: money(paid - total),
+      change,
+      paymentType,
+      customer: customer?._id,
+      customerName: customer?.name,
+      debt,
     });
-    res.status(201).json(sale);
+    if (debt > 0) {
+      await DebtEntry.create({
+        customer: customer._id,
+        kind: 'sale',
+        amount: debt,
+        sale: sale._id,
+        saleNumber: sale.number,
+        date: sale.createdAt,
+      });
+    }
   } catch (err) {
+    // No invoice without its debt record, and no stock taken for nothing
+    if (sale) await Sale.deleteOne({ _id: sale._id });
     await putBackInStock(taken);
     throw err;
   }
+  const customerBalance = customer ? await DebtEntry.balanceOf(customer._id) : undefined;
+  res.status(201).json({ ...sale.toObject(), customerBalance });
 });
 
 /* Returns */
@@ -328,6 +369,14 @@ router.post('/:id/returns', async (req, res) => {
   };
   entry.amount = money(entry.items.reduce((sum, i) => sum + i.amount, 0));
 
+  // On a credit sale the refund first comes off the customer's debt, up to what was put
+  // on credit; anything beyond that is paid back in cash
+  entry.toAccount = 0;
+  if (sale.paymentType === 'credit' && sale.customer) {
+    const alreadyToAccount = sale.returns.reduce((sum, r) => sum + (r.toAccount ?? 0), 0);
+    entry.toAccount = money(Math.min(entry.amount, Math.max(0, (sale.debt ?? 0) - alreadyToAccount)));
+  }
+
   for (const { item, quantity } of lines) item.returnedQuantity = roundQty((item.returnedQuantity ?? 0) + quantity);
   sale.returns.push(entry);
   sale.returnedTotal = money((sale.returnedTotal ?? 0) + entry.amount);
@@ -337,7 +386,21 @@ router.post('/:id/returns', async (req, res) => {
 
   // Back on the shelf in pieces or kg: a returned box puts all its pieces back
   await putBackInStock(lines.map(({ item, quantity }) => [item.product, roundQty(quantity * (item.packSize ?? 1))]));
-  res.status(201).json({ sale, refunded: entry.amount });
+  if (entry.toAccount > 0) {
+    await DebtEntry.create({
+      customer: sale.customer,
+      kind: 'return',
+      amount: -entry.toAccount,
+      sale: sale._id,
+      saleNumber: sale.number,
+    });
+  }
+  res.status(201).json({
+    sale,
+    refunded: money(entry.amount - entry.toAccount), // cash back to the customer
+    toAccount: entry.toAccount,
+    customerName: sale.customerName,
+  });
 });
 
 export default router;

@@ -8,6 +8,10 @@ export const formatDateTime = (d) => dateTimeFormat.format(new Date(d));
 export const formatTime = (d) => timeFormat.format(new Date(d));
 export const roundMoney = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
 
+// For searching Arabic names: أ/إ/آ count as ا, ة as ه, ى as ي, and diacritics are ignored
+export const normalizeArabic = (s) =>
+  s.toLowerCase().replace(/[أإآ]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي').replace(/[ً-ْ]/g, '');
+
 // Calendar dates in this browser's time zone, keyed as YYYY-MM-DD and YYYY-MM
 const pad = (n) => String(n).padStart(2, '0');
 export const dayKey = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
@@ -66,6 +70,14 @@ export async function api(path, { method = 'GET', body } = {}) {
     throw Object.assign(new Error(data?.error || `تعذر إتمام الطلب (${res.status})`), { status: res.status });
   }
   return data;
+}
+
+// What happens to the money of a return: off a credit customer's debt, back in cash, or both
+export function refundMessage(cash, toAccount, customerName) {
+  const parts = [];
+  if (toAccount > 0) parts.push(`خُصم ${formatMoney(toAccount)} من دين ${customerName}`);
+  if (cash > 0) parts.push(`أعد للزبون ${formatMoney(cash)} نقدًا`);
+  return parts.join('، و') || 'لا يوجد مبلغ يُعاد';
 }
 
 export function toast(message, type = 'info') {

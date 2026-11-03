@@ -10,6 +10,7 @@ import {
   roundQty,
   arCount,
   packName,
+  refundMessage,
   INVOICES,
   dayQuery,
 } from './common.js';
@@ -29,6 +30,8 @@ const state = {
   cart: [],
   lastAdded: null,
   busy: false,
+  payType: 'cash',
+  customers: [],
 };
 
 const $ = (id) => document.getElementById(id);
@@ -54,6 +57,12 @@ const els = {
   newSale: $('newSaleBtn'),
   print: $('printBtn'),
   cancelSale: $('cancelSaleBtn'),
+  payButtons: document.querySelectorAll('[data-pay]'),
+  paidLabel: $('paidLabel'),
+  creditBox: $('creditBox'),
+  customerInput: $('customerInput'),
+  customerOptions: $('customerOptions'),
+  creditNote: $('creditNote'),
 };
 
 const focusScan = () => finePointer && els.scan.focus();
@@ -340,16 +349,93 @@ function renderCart() {
 function updatePayment() {
   const total = cartTotal();
   const raw = els.paid.value.trim();
+  els.clear.disabled = !state.cart.length || state.busy;
+
+  // Credit: what is not paid now goes on the customer's account
+  if (state.payType === 'credit') {
+    const paidNow = raw === '' ? 0 : Number(raw);
+    const debt = roundMoney(total - paidNow);
+    const invalid = !Number.isFinite(paidNow) || paidNow < 0 || (state.cart.length > 0 && debt <= 0);
+    els.changeRow.classList.toggle('is-short', invalid);
+    els.changeRow.classList.toggle('is-debt', !invalid);
+    els.changeLabel.textContent = invalid ? 'المبلغ كامل، اختر «نقدًا»' : 'يُسجَّل دينًا';
+    els.changeDue.textContent = formatMoney(Math.max(debt, 0));
+    els.checkout.disabled = !state.cart.length || invalid || !els.customerInput.value.trim() || state.busy;
+    updateCreditNote();
+    return;
+  }
+
   const paid = raw === '' ? total : Number(raw);
   const change = roundMoney(paid - total);
   const short = raw !== '' && (!Number.isFinite(paid) || change < 0);
 
+  els.changeRow.classList.remove('is-debt');
   els.changeRow.classList.toggle('is-short', short);
   els.changeLabel.textContent = short ? 'المبلغ ناقص' : 'الباقي للزبون';
   els.changeDue.textContent = formatMoney(Number.isFinite(change) ? Math.abs(change) : total);
   els.checkout.disabled = !state.cart.length || short || state.busy;
   els.clear.disabled = !state.cart.length || state.busy;
 }
+
+/* Credit */
+
+const customerLabel = (c) => (c.phone ? `${c.name} (${c.phone})` : c.name);
+
+async function loadCustomers() {
+  try {
+    state.customers = await api('/customers');
+    els.customerOptions.innerHTML = state.customers
+      .map(
+        (c) =>
+          `<option value="${escapeHtml(customerLabel(c))}" label="${c.balance > 0 ? `عليه ${formatMoney(c.balance)}` : 'لا دين'}"></option>`,
+      )
+      .join('');
+    updateCreditNote();
+  } catch {
+    // A name can still be typed; it is checked when the sale is completed
+  }
+}
+
+// The typed text names a customer by its exact label, or by a name only one customer has
+function typedCustomer() {
+  const text = els.customerInput.value.trim();
+  if (!text) return null;
+  const byLabel = state.customers.find((c) => customerLabel(c) === text);
+  if (byLabel) return byLabel;
+  const sameName = state.customers.filter((c) => normalize(c.name) === normalize(text));
+  return sameName.length === 1 ? sameName[0] : null;
+}
+
+function updateCreditNote() {
+  const text = els.customerInput.value.trim();
+  const customer = typedCustomer();
+  els.creditNote.classList.toggle('is-new', Boolean(text && !customer));
+  if (!text) els.creditNote.textContent = 'اختر زبونًا من القائمة أو اكتب اسمًا جديدًا';
+  else if (customer) {
+    els.creditNote.textContent = customer.balance > 0 ? `عليه حاليًا ${formatMoney(customer.balance)}` : 'لا دين عليه حاليًا';
+  } else els.creditNote.textContent = `«${text}» زبون جديد، يُضاف عند إتمام البيع`;
+}
+
+function setPayType(type) {
+  state.payType = type;
+  const credit = type === 'credit';
+  els.payButtons.forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.pay === type)));
+  els.creditBox.hidden = !credit;
+  els.paidLabel.textContent = credit ? 'المدفوع الآن' : 'المدفوع';
+  els.paid.placeholder = credit ? '0' : 'المبلغ بالضبط';
+  els.paid.value = '';
+  updatePayment();
+  if (credit) els.customerInput.focus();
+}
+
+els.payButtons.forEach((b) => b.addEventListener('click', () => setPayType(b.dataset.pay)));
+els.customerInput.addEventListener('input', updatePayment);
+els.customerInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    els.paid.focus();
+  }
+});
 
 /* Scanning */
 
@@ -530,6 +616,20 @@ els.checkout.addEventListener('click', checkout);
 async function checkout() {
   if (els.checkout.disabled) return;
   const raw = els.paid.value.trim();
+  const credit = state.payType === 'credit';
+  let customer = credit ? typedCustomer() : null;
+  // A name typed at the cashier that is not a customer yet is added on the spot
+  if (credit && !customer) {
+    const name = els.customerInput.value.trim();
+    if (!confirm(`«${name}» ليس في قائمة الزبائن. إضافته كزبون جديد وتسجيل الدين عليه؟`)) return;
+    try {
+      customer = await api('/customers', { method: 'POST', body: { name } });
+      state.customers.push(customer);
+    } catch (err) {
+      toast(err.message, 'error');
+      return;
+    }
+  }
   state.busy = true;
   updatePayment();
   try {
@@ -538,10 +638,16 @@ async function checkout() {
       body: {
         items: state.cart.map((l) => ({ productId: l.productId, quantity: l.qty, mode: l.mode })),
         paid: raw === '' ? undefined : Number(raw),
+        ...(credit ? { paymentType: 'credit', customerId: customer._id } : {}),
       },
     });
     state.cart = [];
     els.paid.value = '';
+    if (credit) {
+      els.customerInput.value = '';
+      setPayType('cash');
+      loadCustomers();
+    }
     renderCart();
     showReceipt(sale);
     loadToday();
@@ -584,8 +690,15 @@ function showReceipt(sale) {
     </table>
     <dl class="slip-sum">
       <div class="grand"><dt>الإجمالي</dt><dd class="num">${formatMoney(sale.total)}</dd></div>
-      <div><dt>المدفوع</dt><dd class="num">${formatMoney(sale.paid)}</dd></div>
-      <div><dt>الباقي</dt><dd class="num">${formatMoney(sale.change)}</dd></div>
+      ${
+        sale.paymentType === 'credit'
+          ? `<div><dt>بالدين على</dt><dd>${escapeHtml(sale.customerName)}</dd></div>
+            <div><dt>المدفوع الآن</dt><dd class="num">${formatMoney(sale.paid)}</dd></div>
+            <div><dt>أُضيف إلى الدين</dt><dd class="num">${formatMoney(sale.debt)}</dd></div>
+            <div><dt>مجموع دينه الآن</dt><dd class="num">${formatMoney(sale.customerBalance)}</dd></div>`
+          : `<div><dt>المدفوع</dt><dd class="num">${formatMoney(sale.paid)}</dd></div>
+            <div><dt>الباقي</dt><dd class="num">${formatMoney(sale.change)}</dd></div>`
+      }
     </dl>
     <p class="slip-foot">شكرًا لزيارتكم</p>
   </div>`;
@@ -597,12 +710,17 @@ els.newSale.addEventListener('click', () => els.saleDialog.close());
 els.print.addEventListener('click', () => window.print());
 els.cancelSale.addEventListener('click', async () => {
   const sale = state.lastSale;
-  if (!sale || !confirm(`إلغاء الفاتورة رقم ${sale.number} وإرجاع ${formatMoney(sale.total)} للزبون؟`)) return;
+  const question =
+    sale?.paymentType === 'credit'
+      ? `إلغاء الفاتورة رقم ${sale.number} وحذف ${formatMoney(sale.debt)} من دين ${sale.customerName}؟`
+      : `إلغاء الفاتورة رقم ${sale?.number} وإرجاع ${formatMoney(sale?.total)} للزبون؟`;
+  if (!sale || !confirm(question)) return;
   // Close first: toasts cannot show above an open modal
   els.saleDialog.close();
   try {
-    const { refunded } = await api(`/sales/${sale._id}/returns`, { method: 'POST', body: {} });
-    toast(`أُلغيت الفاتورة رقم ${sale.number}. أعد للزبون ${formatMoney(refunded)}`);
+    const { refunded, toAccount, customerName } = await api(`/sales/${sale._id}/returns`, { method: 'POST', body: {} });
+    toast(`أُلغيت الفاتورة رقم ${sale.number}. ${refundMessage(refunded, toAccount, customerName)}`);
+    if (toAccount) loadCustomers();
     loadToday();
     loadCatalog().catch(() => {}); // stock came back
   } catch (err) {
@@ -645,3 +763,4 @@ setInterval(tick, 30_000);
 
 loadCatalog().catch((err) => toast(err.message, 'error'));
 loadToday();
+loadCustomers();

@@ -39,6 +39,8 @@ const returnSchema = new Schema(
     ],
     amount: { type: Number, required: true },
     cost: { type: Number, required: true },
+    // Part of amount taken off the customer's debt instead of paid back in cash
+    toAccount: { type: Number, default: 0 },
   },
   { _id: false },
 );
@@ -55,6 +57,11 @@ const saleSchema = new Schema(
     profit: { type: Number, required: true },
     paid: { type: Number, required: true },
     change: { type: Number, required: true },
+    // Credit: `paid` is what was paid now and `debt` (total - paid) went on the customer's account
+    paymentType: { type: String, enum: ['cash', 'credit'], default: 'cash' },
+    customer: { type: Schema.Types.ObjectId, ref: 'Customer' },
+    customerName: String,
+    debt: { type: Number, default: 0 },
     // Totals above are as sold; reports subtract these to get net figures
     returns: { type: [returnSchema], default: [] },
     returnedTotal: { type: Number, default: 0 },

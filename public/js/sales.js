@@ -8,6 +8,7 @@ import {
   escapeHtml,
   arCount,
   qtyLabel,
+  refundMessage,
   dayKey,
   monthKey,
   parseKey,
@@ -53,6 +54,7 @@ const els = {
   returnDialog: $('returnDialog'),
   returnForm: $('returnForm'),
   returnTitle: $('returnTitle'),
+  returnHint: $('returnHint'),
   returnLines: $('returnLines'),
   returnAmount: $('returnAmount'),
   returnError: $('returnError'),
@@ -188,9 +190,13 @@ const netTotal = (sale) => sale.total - (sale.returnedTotal ?? 0);
 const netProfit = (sale) => sale.profit - ((sale.returnedTotal ?? 0) - (sale.returnedCost ?? 0));
 
 function statusBadge(sale) {
-  if (sale.returnStatus === 'full') return '<span class="badge is-cancelled">ملغاة</span>';
-  if (sale.returnStatus === 'partial') return '<span class="badge is-partial">مرتجع جزئي</span>';
-  return '';
+  const credit =
+    sale.paymentType === 'credit'
+      ? `<a class="badge is-credit" href="/debts.html?customer=${sale.customer}" title="فتح حساب الزبون">دين: ${escapeHtml(sale.customerName)}</a>`
+      : '';
+  if (sale.returnStatus === 'full') return `<span class="badge is-cancelled">ملغاة</span>${credit}`;
+  if (sale.returnStatus === 'partial') return `<span class="badge is-partial">مرتجع جزئي</span>${credit}`;
+  return credit;
 }
 
 function itemsDetail(sale) {
@@ -478,6 +484,10 @@ function updateReturnAmount() {
 function openReturn(sale) {
   returning = sale;
   els.returnTitle.textContent = `إرجاع من الفاتورة رقم ${sale.number}`;
+  els.returnHint.textContent =
+    sale.paymentType === 'credit'
+      ? `فاتورة بالدين على ${sale.customerName}: ثمن المرتجع يُخصم من دينه أولًا، وما زاد يُعاد نقدًا. الكمية تعود إلى المخزن.`
+      : 'حدّد الكمية التي أعادها الزبون من كل صنف. يُعاد ثمنها إليه وتعود الكمية إلى المخزن.';
   els.returnError.hidden = true;
   els.returnLines.innerHTML = sale.items
     .map((item, index) => {
@@ -528,9 +538,12 @@ els.returnForm.addEventListener('submit', async (e) => {
   const button = els.returnForm.querySelector('[type="submit"]');
   button.disabled = true;
   try {
-    const { refunded } = await api(`/sales/${returning._id}/returns`, { method: 'POST', body: { items } });
+    const { refunded, toAccount, customerName } = await api(`/sales/${returning._id}/returns`, {
+      method: 'POST',
+      body: { items },
+    });
     els.returnDialog.close();
-    toast(`تم الإرجاع. أعد للزبون ${formatMoney(refunded)}، والكمية عادت إلى المخزن`);
+    toast(`تم الإرجاع: ${refundMessage(refunded, toAccount, customerName)}. والكمية عادت إلى المخزن`);
     load();
   } catch (err) {
     showError(err.message);
