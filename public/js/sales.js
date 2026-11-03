@@ -165,7 +165,7 @@ function renderSummary(s, period) {
     <div>
       <div class="z-label">ديون لم تُحصَّل</div>
       <div class="z-value num ${s.credit > 0 ? 'owes-text' : ''}">${formatMoney(s.credit)}</div>
-      <a class="z-link" href="/debts.html">${s.credit ? 'من البيع بالدين في هذه الفترة' : 'حسابات الزبائن'}</a>
+      <a class="z-link" href="/debts.html">حسابات الزبائن</a>
     </div>
     <div>
       <div class="z-label">محصَّل من الديون</div>

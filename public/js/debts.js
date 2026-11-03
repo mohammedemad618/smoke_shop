@@ -176,7 +176,7 @@ function renderDetail() {
     <div class="table-wrap">
       <div class="debt-total">
         <div class="z-label">الرصيد</div>
-        <div class="z-value num ${balanceClass(c.balance)}-text">${balanceText(c.balance)}</div>
+        <div class="z-value ${balanceClass(c.balance)}-text">${balanceText(c.balance)}</div>
       </div>
       ${
         rows.length
