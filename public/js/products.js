@@ -668,7 +668,8 @@ els.area.addEventListener('click', async (e) => {
   }
 });
 
-const requestedFilter = new URLSearchParams(location.search).get('stock');
-state.stockFilter = Object.hasOwn(STOCK_FILTERS, requestedFilter ?? '') ? requestedFilter : '';
+// No ?stock= in the address means all products
+const requestedFilter = new URLSearchParams(location.search).get('stock') ?? '';
+state.stockFilter = Object.hasOwn(STOCK_FILTERS, requestedFilter) ? requestedFilter : '';
 state.sort = readSavedSort();
 refresh();
