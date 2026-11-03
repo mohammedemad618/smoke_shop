@@ -253,6 +253,57 @@ h1, h2, h3 { line-height: 1.25; }
 .debt-chip.owes { background: var(--stop-soft); color: var(--stop); }
 .debt-chip.credit { background: #E3F4EC; color: var(--go); }
 .debt-chip.clear { background: var(--paper-2); color: var(--muted); font-weight: 400; }
+
+/* Stock value on the products page */
+.worth { padding: 0 28px 16px; }
+.worth .zreport { margin-bottom: 8px; }
+.zreport.cols-3 { grid-template-columns: repeat(3, 1fr); }
+.worth-note { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 18px; margin: 0; font-size: 13px; color: var(--ink-2); }
+.worth-empty {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  padding: 16px 20px; background: var(--paper); border: 1px dashed var(--line); border-radius: var(--r-m);
+}
+.worth-empty strong { font-weight: 600; }
+.worth-empty p { margin: 2px 0 0; font-size: 14px; color: var(--ink-2); }
+.link-btn { padding: 0; border: 0; background: none; color: var(--focus); font: inherit; cursor: pointer; }
+.link-btn:hover { text-decoration: underline; }
+.muted { color: var(--muted); }
+
+/* Stocktake */
+.back-link { font-size: 13px; color: var(--ink-2); text-decoration: none; }
+.back-link::after { content: " /"; color: var(--muted); }
+.back-link:hover { color: var(--ink); text-decoration: underline; }
+.head-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.count-intro { padding: 20px 24px; background: var(--paper); border: 1px solid var(--line); border-radius: var(--r-m); }
+.count-intro h2 { margin: 0 0 10px; font-size: 18px; font-weight: 600; }
+.count-steps { display: grid; gap: 6px; margin: 0 0 8px; padding-inline-start: 22px; }
+.count-intro .hint { margin-bottom: 16px; }
+.progress { height: 6px; margin-top: 8px; overflow: hidden; border-radius: 999px; background: var(--paper-2); }
+.progress span { display: block; height: 100%; border-radius: inherit; background: var(--go); transition: width .2s ease-out; }
+.count-scan { margin-bottom: 12px; }
+.count-filters { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+.count-filters .chips { flex: 1 1 320px; min-width: 0; }
+.chip-count { font-size: 12px; opacity: .75; }
+.chip.is-done:not([aria-pressed="true"]) { border-color: var(--go); color: var(--go); }
+.count-table tbody tr { cursor: pointer; }
+.count-table tr.is-counted td { background: #F5FAF7; }
+.count-table tr.is-flash td { animation: line-in .9s ease-out; }
+.diff { font-weight: 600; }
+.diff.is-short { color: var(--stop); }
+.diff.is-over { color: var(--go); }
+.diff.is-same { font-weight: 400; color: var(--muted); }
+.diff.is-new { font-weight: 400; color: var(--focus); }
+.count-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: -12px 0 14px; font-size: 13px; color: var(--muted); }
+.count-facts { display: grid; gap: 6px; margin: 0 0 14px; padding: 10px 14px; border-radius: var(--r-s); background: var(--paper-2); }
+.count-facts div { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+.count-facts dt { font-size: 14px; color: var(--ink-2); }
+.count-facts dd { margin: 0; font-weight: 600; }
+.count-facts .link-btn { margin-inline-start: 8px; font-size: 13px; font-weight: 400; }
+.count-input { font-size: 22px; font-weight: 600; }
+.apply-list { display: grid; gap: 6px; margin: 0 0 12px; padding-inline-start: 20px; }
+.history-dialog { width: min(820px, calc(100vw - 32px)); }
+.history-body { padding: 22px 24px 8px; }
+.history-actions { padding: 8px 24px 20px; }
 .owes-text { color: var(--stop); }
 .credit-text { color: var(--go); }
 .clear-text { color: var(--muted); }
@@ -729,6 +780,29 @@ h1, h2, h3 { line-height: 1.25; }
   .ptable:not(.keep-table) td.cell-title { font-size: 15px; }
   .ptable:not(.keep-table) td[data-label]::before { font-size: 11px; }
   .ptable:not(.keep-table) .tag { font-size: 13px; }
+
+  /* Stock value and stocktake */
+  .worth { padding: 0 16px 12px; }
+  .zreport.cols-3 > :last-child { grid-column: 1 / -1; }
+  .worth-empty { flex-direction: column; align-items: stretch; padding: 14px 16px; }
+  .worth-note .link-btn { padding-block: 10px; }
+  .head-actions { width: 100%; }
+  .head-actions .btn { flex: 1; }
+  .count-intro { padding: 16px; }
+  .count-intro h2 { font-size: 16px; }
+  .count-filters .segmented { width: 100%; }
+  .count-filters .segmented button { flex: 1; }
+  /* Cards: tint the whole card, not its cells */
+  .count-table tr.is-counted { background: #F5FAF7; }
+  .count-table tr.is-counted td,
+  .count-table tr.is-flash td { background: none; animation: none; }
+  .count-table tr.is-flash { animation: line-in .9s ease-out; }
+  /* The count button sits in the card's corner, keeping cards short */
+  .count-table .row-actions { position: absolute; top: 10px; left: 12px; }
+  .ptable.count-table td.cell-title { padding-inline-end: 76px; }
+  .count-input { font-size: 20px; }
+  .history-body { padding: 18px 16px 8px; }
+  .history-actions { padding: 8px 16px calc(16px + env(safe-area-inset-bottom)); }
 }
 
 @media (max-width: 480px) {

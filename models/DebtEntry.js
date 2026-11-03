@@ -35,4 +35,19 @@ debtEntrySchema.statics.collectedBetween = async function collectedBetween(start
   return money(-(row?.total ?? 0));
 };
 
+// Across all customers: what they owe the shop, and what it owes those who paid ahead
+debtEntrySchema.statics.totals = async function totals() {
+  const [row] = await this.aggregate([
+    { $group: { _id: '$customer', balance: { $sum: '$amount' } } },
+    {
+      $group: {
+        _id: null,
+        owedToShop: { $sum: { $cond: [{ $gt: ['$balance', 0] }, '$balance', 0] } },
+        owedByShop: { $sum: { $cond: [{ $lt: ['$balance', 0] }, { $multiply: ['$balance', -1] }, 0] } },
+      },
+    },
+  ]);
+  return { owedToShop: money(row?.owedToShop ?? 0), owedByShop: money(row?.owedByShop ?? 0) };
+};
+
 export default model('DebtEntry', debtEntrySchema);

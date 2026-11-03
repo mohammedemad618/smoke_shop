@@ -8,6 +8,7 @@ import productsRouter from './routes/products.js';
 import salesRouter from './routes/sales.js';
 import expensesRouter from './routes/expenses.js';
 import customersRouter from './routes/customers.js';
+import stockCountsRouter from './routes/stockcounts.js';
 
 const app = express();
 
@@ -26,6 +27,7 @@ app.use('/api/products', productsRouter);
 app.use('/api/sales', salesRouter);
 app.use('/api/expenses', expensesRouter);
 app.use('/api/customers', customersRouter);
+app.use('/api/stockcounts', stockCountsRouter);
 app.use('/api', (req, res) => res.status(404).json({ error: 'المسار غير موجود' }));
 app.use(errorHandler);
 

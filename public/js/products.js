@@ -1,4 +1,4 @@
-import { api, toast, formatMoney, formatQty, escapeHtml, arCount, packName, PRODUCTS } from './common.js';
+import { api, toast, formatMoney, formatQty, formatDateTime, escapeHtml, arCount, packName, PRODUCTS } from './common.js';
 import { randomStoreBarcode } from './barcode.js';
 import { scanBarcode } from './scanner.js';
 
@@ -14,6 +14,9 @@ const state = {
   query: '',
   editingId: null,
   renamingId: null,
+  // Show only the products whose quantity is not tracked (from the stock value note)
+  onlyUntracked: false,
+  valuation: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -25,6 +28,7 @@ const els = {
   search: $('searchInput'),
   addProduct: $('addProductBtn'),
   area: $('productsArea'),
+  worth: $('worth'),
   dialog: $('productDialog'),
   form: $('productForm'),
   dialogTitle: $('productDialogTitle'),
@@ -86,10 +90,21 @@ async function loadProducts() {
   renderProducts();
 }
 
+let valuationRequest = 0;
+
+async function loadValuation() {
+  const request = ++valuationRequest;
+  const params = new URLSearchParams();
+  if (state.activeCategory) params.set('category', state.activeCategory);
+  const valuation = await api(`/products/valuation?${params}`);
+  if (request !== valuationRequest) return;
+  renderWorth(valuation);
+}
+
 async function refresh() {
   try {
     await loadCategories();
-    await loadProducts();
+    await Promise.all([loadProducts(), loadValuation()]);
   } catch (err) {
     toast(err.message, 'error');
   }
@@ -178,9 +193,80 @@ function profitCell(p) {
   return `<span class="num${profit < 0 ? ' loss' : ''}">${formatMoney(profit)}</span>${pct ? `<small class="pct num">${pct}</small>` : ''}`;
 }
 
+const zCell = (label, value, note, { tone = '', className = '' } = {}) => `<div class="${className}">
+    <span class="z-label">${label}</span>
+    <div class="z-value num ${tone}">${formatMoney(value)}</div>
+    ${note ? `<span class="z-note">${note}</span>` : ''}
+  </div>`;
+
+// The money tied up in goods (at cost), what they would sell for, and for the whole shop
+// its full capital: the goods plus what customers owe
+function renderWorth(valuation = state.valuation) {
+  state.valuation = valuation;
+  const v = valuation;
+  els.worth.hidden = !v?.products;
+  if (els.worth.hidden) return;
+
+  const untracked = v.products - v.tracked;
+  const filterButton = state.onlyUntracked
+    ? '<button class="link-btn" type="button" data-untracked>عرض كل المنتجات</button>'
+    : untracked
+      ? `<button class="link-btn" type="button" data-untracked>بلا كمية مسجّلة: <span class="num">${untracked}</span></button>`
+      : '';
+
+  if (!v.tracked) {
+    els.worth.innerHTML = `<div class="worth-empty">
+      <div>
+        <strong>رأس المال غير محسوب بعد</strong>
+        <p>لا توجد كميات مسجّلة لمنتجات${state.activeCategory ? ' هذا القسم' : 'ك'}. ابدأ جردًا: امسح كل منتج واكتب عدده، فيُحسب رأس مالك تلقائيًا.</p>
+      </div>
+      <a class="btn btn-primary" href="/stocktake.html">بدء الجرد</a>
+    </div>
+    ${state.onlyUntracked ? `<p class="worth-note">${filterButton}</p>` : ''}`;
+    return;
+  }
+
+  const profit = v.saleValue - v.capital;
+  const cells = [
+    zCell('رأس المال في البضاعة', v.capital, 'بسعر الشراء'),
+    zCell('قيمتها بسعر البيع', v.saleValue, 'لو بيعت كلها'),
+    zCell('الربح المتوقع', profit, v.capital > 0 ? `${Math.round((profit / v.capital) * 100)}% فوق رأس المال` : '', {
+      tone: profit < 0 ? 'is-loss' : 'is-profit',
+    }),
+  ];
+  if (v.debts) {
+    const { owedToShop, owedByShop } = v.debts;
+    const parts = [
+      owedToShop ? `البضاعة + ديون لك <span class="num">${formatMoney(owedToShop)}</span>` : 'البضاعة، ولا ديون لك حاليًا',
+    ];
+    if (owedByShop) parts.push(`− رصيد للزبائن <span class="num">${formatMoney(owedByShop)}</span>`);
+    cells.push(zCell('رأس مال المحل كاملًا', v.capital + owedToShop - owedByShop, parts.join(' '), { className: 'z-net' }));
+  }
+
+  const notes = [`<span>المنتجات المحسوبة: <span class="num">${v.tracked}</span></span>`];
+  if (filterButton) notes.push(filterButton);
+  if (v.belowZero) notes.push(`<span>كميتها بالسالب وتُحسب صفرًا: <span class="num">${v.belowZero}</span></span>`);
+  notes.push(
+    v.lastCountAt
+      ? `<a class="z-link" href="/stocktake.html">آخر جرد: ${formatDateTime(v.lastCountAt)}</a>`
+      : '<a class="z-link" href="/stocktake.html">لم يُجرَ جرد بعد</a>',
+  );
+  els.worth.innerHTML = `<div class="zreport${cells.length === 3 ? ' cols-3' : ''}">${cells.join('')}</div>
+    <p class="worth-note">${notes.join('')}</p>`;
+}
+
+els.worth.addEventListener('click', (e) => {
+  if (!e.target.closest('[data-untracked]')) return;
+  state.onlyUntracked = !state.onlyUntracked;
+  renderWorth();
+  renderProducts();
+});
+
 function renderProducts() {
-  const { products } = state;
-  els.count.textContent = products.length ? arCount(products.length, PRODUCTS) : '';
+  const products = state.onlyUntracked ? state.products.filter((p) => !p.trackStock) : state.products;
+  els.count.textContent = products.length
+    ? `${arCount(products.length, PRODUCTS)}${state.onlyUntracked ? ' بلا كمية مسجّلة' : ''}`
+    : '';
 
   if (!state.categories.length) {
     els.area.innerHTML = emptyState('ابدأ بإضافة قسم', 'أنشئ قسمًا من القائمة الجانبية، مثل «مشروبات» أو «منظفات»، ثم أضف منتجاته.');
@@ -189,7 +275,9 @@ function renderProducts() {
   if (!products.length) {
     els.area.innerHTML = state.query
       ? emptyState(`لا توجد نتائج لـ «${escapeHtml(state.query)}»`, 'جرّب جزءًا من الاسم أو آخر أرقام الباركود.')
-      : emptyState('لا توجد منتجات هنا بعد', 'أضف أول منتج، ويمكنك مسح الباركود مباشرة بالقارئ.', true);
+      : state.onlyUntracked
+        ? emptyState('كل المنتجات هنا كمياتها مسجّلة', 'لا يوجد منتج خارج حساب رأس المال.')
+        : emptyState('لا توجد منتجات هنا بعد', 'أضف أول منتج، ويمكنك مسح الباركود مباشرة بالقارئ.', true);
     return;
   }
 
@@ -258,7 +346,7 @@ els.categoryList.addEventListener('click', async (e) => {
     state.activeCategory = select.dataset.select;
     state.renamingId = null;
     renderCategories();
-    loadProducts().catch((err) => toast(err.message, 'error'));
+    Promise.all([loadProducts(), loadValuation()]).catch((err) => toast(err.message, 'error'));
   } else if (rename) {
     state.renamingId = rename.dataset.rename;
     renderCategories();

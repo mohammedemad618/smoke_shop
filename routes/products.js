@@ -2,6 +2,8 @@ import { Router } from 'express';
 import mongoose from 'mongoose';
 import Product from '../models/Product.js';
 import Category from '../models/Category.js';
+import DebtEntry from '../models/DebtEntry.js';
+import StockCount from '../models/StockCount.js';
 import { httpError } from '../lib/errors.js';
 import { escapeRegex } from '../lib/util.js';
 
@@ -64,6 +66,19 @@ router.get('/', async (req, res) => {
     .populate('category', 'name')
     .lean();
   res.json(products);
+});
+
+// What the stock is worth, for the products page. For the whole shop it also brings the
+// customers' debts, which are the shop's money too.
+router.get('/valuation', async (req, res) => {
+  const category = String(req.query.category ?? '');
+  if (category && !mongoose.isObjectIdOrHexString(category)) throw httpError(400, 'اختر القسم');
+  const [stock, debts, lastCount] = await Promise.all([
+    Product.valuation(category ? { category: new mongoose.Types.ObjectId(category) } : {}),
+    category ? null : DebtEntry.totals(),
+    StockCount.findOne({ status: 'applied' }).sort({ appliedAt: -1 }).select('appliedAt').lean(),
+  ]);
+  res.json({ ...stock, debts, lastCountAt: lastCount?.appliedAt ?? null });
 });
 
 router.get('/barcode/:code', async (req, res) => {

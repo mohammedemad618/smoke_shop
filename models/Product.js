@@ -1,4 +1,5 @@
 import { Schema, model } from 'mongoose';
+import { money } from '../lib/util.js';
 
 const productSchema = new Schema(
   {
@@ -49,5 +50,31 @@ const productSchema = new Schema(
 );
 
 productSchema.index({ name: 1 });
+
+// What the goods on the shelves are worth: at cost (the shop's money tied up in them) and
+// at retail. Only tracked products have a quantity; stock below zero counts as none.
+productSchema.statics.valuation = async function valuation(match = {}) {
+  const inStock = { $and: ['$trackStock', { $gt: ['$stock', 0] }] };
+  const [row] = await this.aggregate([
+    { $match: match },
+    {
+      $group: {
+        _id: null,
+        products: { $sum: 1 },
+        tracked: { $sum: { $cond: ['$trackStock', 1, 0] } },
+        belowZero: { $sum: { $cond: [{ $and: ['$trackStock', { $lt: ['$stock', 0] }] }, 1, 0] } },
+        capital: { $sum: { $cond: [inStock, { $multiply: ['$stock', '$purchasePrice'] }, 0] } },
+        saleValue: { $sum: { $cond: [inStock, { $multiply: ['$stock', '$salePrice'] }, 0] } },
+      },
+    },
+  ]);
+  return {
+    products: row?.products ?? 0,
+    tracked: row?.tracked ?? 0,
+    belowZero: row?.belowZero ?? 0,
+    capital: money(row?.capital ?? 0),
+    saleValue: money(row?.saleValue ?? 0),
+  };
+};
 
 export default model('Product', productSchema);
