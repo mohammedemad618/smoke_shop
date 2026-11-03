@@ -42,7 +42,7 @@ if (tool === 'mongodump') {
   const db = opt('db');
   const collections = state.databases[db] ?? {};
   fs.writeFileSync(opt('archive'), gzipSync(JSON.stringify({ db, collections })));
-  for (const [name, n] of Object.entries(collections)) process.stderr.write('2026-11-03T00:30:00.000+0000\tdone dumping ' + db + '.' + name + ' (' + n + ' documents)\n');
+  for (const [name, n] of Object.entries(collections)) process.stderr.write('2026-11-03T00:30:00.000+0000\tdone dumping \x60' + db + '.' + name + '\x60 (' + n + ' documents)\n');
 } else if (tool === 'mongorestore') {
   const archive = JSON.parse(gunzipSync(fs.readFileSync(opt('archive'))));
   const from = opt('nsFrom').replace(/\.\*$/, '');
@@ -675,6 +675,9 @@ test('retention: a deleted database keeps nothing after 400 days, its nightly ar
 test('mongodump counts are read from its own output', () => {
   const stderr = `2026-11-03T00:30:00.1+0000\twriting ${DB_A}.sales to archive 'x'\n2026-11-03T00:30:00.2+0000\tdone dumping ${DB_A}.sales (1520 documents)\n2026-11-03T00:30:00.3+0000\tdone dumping ${DB_A}.settings (1 document)\n2026-11-03T00:30:00.3+0000\tdone dumping other.sales (7 documents)`;
   assert.deepStrictEqual(dumpedCounts(stderr, DB_A), { sales: 1520, settings: 1 });
+  // mongodump 100.19.1, as it writes on the server: the namespace in backticks
+  const quoted = `2026-11-03T23:11:09.630+0000\tdone dumping \`${DB_A}.settings\` (1 document)\n2026-11-03T23:11:09.637+0000\tdone dumping \`${DB_A}.products\` (0 documents)\n2026-11-03T23:11:09.638+0000\tdone dumping \`other.sales\` (7 documents)`;
+  assert.deepStrictEqual(dumpedCounts(quoted, DB_A), { settings: 1, products: 0 });
 });
 
 test('monitor: thresholds, journal 5xx count, a problem logged once an hour', () => {

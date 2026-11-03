@@ -558,10 +558,11 @@ async function dropLeftoverVerifyDbs(config) {
 }
 
 // mongodump says on stderr how many documents it wrote for each collection:
-// "<time>\tdone dumping pos_t_x.sales (123 documents)"
+// "<time>\tdone dumping `pos_t_x.sales` (123 documents)" (100.19.1 on the server quotes the
+// namespace in backticks; older versions wrote it bare)
 export function dumpedCounts(stderr, dbName) {
   const counts = {};
-  for (const m of String(stderr).matchAll(/done dumping ([^\s.]+)\.(\S+) \((\d+) documents?\)/g)) {
+  for (const m of String(stderr).matchAll(/done dumping `?([^\s.`]+)\.([^\s`]+)`? \((\d+) documents?\)/g)) {
     if (m[1] === dbName) counts[m[2]] = Number(m[3]);
   }
   return counts;
