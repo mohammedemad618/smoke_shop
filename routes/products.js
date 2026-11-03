@@ -4,6 +4,7 @@ import Product from '../models/Product.js';
 import Category from '../models/Category.js';
 import DebtEntry from '../models/DebtEntry.js';
 import StockCount from '../models/StockCount.js';
+import Purchase from '../models/Purchase.js';
 import { httpError } from '../lib/errors.js';
 import { escapeRegex } from '../lib/util.js';
 
@@ -68,14 +69,20 @@ router.get('/', async (req, res) => {
   res.json(products);
 });
 
+// What the whole shop is owed and owes: customers' debts, and unpaid supplier invoices
+async function debtTotals() {
+  const [customers, owedToSuppliers] = await Promise.all([DebtEntry.totals(), Purchase.owedToSuppliers()]);
+  return { ...customers, owedToSuppliers };
+}
+
 // What the stock is worth, for the products page. For the whole shop it also brings the
-// customers' debts, which are the shop's money too.
+// debts both ways, which are part of the shop's capital.
 router.get('/valuation', async (req, res) => {
   const category = String(req.query.category ?? '');
   if (category && !mongoose.isObjectIdOrHexString(category)) throw httpError(400, 'اختر القسم');
   const [stock, debts, lastCount] = await Promise.all([
     Product.valuation(category ? { category: new mongoose.Types.ObjectId(category) } : {}),
-    category ? null : DebtEntry.totals(),
+    category ? null : debtTotals(),
     StockCount.findOne({ status: 'applied' }).sort({ appliedAt: -1 }).select('appliedAt').lean(),
   ]);
   res.json({ ...stock, debts, lastCountAt: lastCount?.appliedAt ?? null });

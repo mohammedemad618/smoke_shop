@@ -155,10 +155,10 @@ function historyTable() {
         const s = c.summary ?? {};
         return `<tr>
           <td>${formatDateTime(c.appliedAt)}</td>
-          <td class="end num">${s.counted ?? 0}</td>
+          <td class="end"><span class="num">${s.counted ?? 0}</span></td>
           <td class="end"><span class="num${s.shortValue ? ' loss' : ''}">${formatMoney(s.shortValue)}</span></td>
-          <td class="end num">${formatMoney(s.overValue)}</td>
-          <td class="end num">${formatMoney(s.capital)}</td>
+          <td class="end"><span class="num">${formatMoney(s.overValue)}</span></td>
+          <td class="end"><span class="num">${formatMoney(s.capital)}</span></td>
           <td class="row-actions"><button class="btn btn-sm" type="button" data-history="${c._id}">التفاصيل</button></td>
         </tr>`;
       })

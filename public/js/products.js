@@ -235,12 +235,17 @@ function renderWorth(valuation = state.valuation) {
     }),
   ];
   if (v.debts) {
-    const { owedToShop, owedByShop } = v.debts;
+    const { owedToShop, owedByShop, owedToSuppliers = 0 } = v.debts;
     const parts = [
       owedToShop ? `البضاعة + ديون لك <span class="num">${formatMoney(owedToShop)}</span>` : 'البضاعة، ولا ديون لك حاليًا',
     ];
     if (owedByShop) parts.push(`− رصيد للزبائن <span class="num">${formatMoney(owedByShop)}</span>`);
-    cells.push(zCell('رأس مال المحل كاملًا', v.capital + owedToShop - owedByShop, parts.join(' '), { className: 'z-net' }));
+    if (owedToSuppliers) parts.push(`− عليك للموردين <span class="num">${formatMoney(owedToSuppliers)}</span>`);
+    cells.push(
+      zCell('رأس مال المحل كاملًا', v.capital + owedToShop - owedByShop - owedToSuppliers, parts.join(' '), {
+        className: 'z-net',
+      }),
+    );
   }
 
   const notes = [`<span>المنتجات المحسوبة: <span class="num">${v.tracked}</span></span>`];

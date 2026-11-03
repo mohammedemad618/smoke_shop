@@ -304,6 +304,57 @@ h1, h2, h3 { line-height: 1.25; }
 .history-dialog { width: min(820px, calc(100vw - 32px)); }
 .history-body { padding: 22px 24px 8px; }
 .history-actions { padding: 8px 24px 20px; }
+
+/* Purchases */
+.combo-list.combo-down { top: calc(100% + 4px); bottom: auto; }
+.draft-banner {
+  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;
+  margin-bottom: 16px; padding: 10px 16px; border-radius: var(--r-m);
+  background: var(--warn-soft); color: var(--warn); font-weight: 500;
+}
+.supplier-debts { margin-bottom: 24px; }
+.purchases-table tr.is-cancelled td { color: var(--muted); }
+.composer-fields { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr) minmax(0, 1fr); gap: 0 12px; }
+.scan-hint { margin: 6px 0 14px; }
+.scan-hint a { color: var(--focus); }
+.lines-empty { padding: 28px 20px; text-align: center; color: var(--ink-2); background: var(--paper); border: 1px dashed var(--line); border-radius: var(--r-m); }
+.lines-empty strong { display: block; margin-bottom: 4px; font-weight: 600; color: var(--ink); }
+.lines-empty p { margin: 0; font-size: 14px; }
+.purchase-table td { vertical-align: top; }
+.purchase-table .input { padding: 6px 8px; }
+.purchase-table [data-field="quantity"] { width: 76px; }
+.purchase-table [data-field="price"],
+.purchase-table [data-field="salePrice"] { width: 112px; }
+.purchase-table [data-info="total"] { display: inline-block; padding-top: 7px; }
+.purchase-table tr.is-flash td { animation: line-in .9s ease-out; }
+.qty-field { display: flex; align-items: center; gap: 6px; }
+.qty-field select { width: auto; max-width: 170px; }
+.unit-word { font-size: 13px; color: var(--ink-2); }
+.line-hint { display: block; margin-top: 4px; font-size: 12px; color: var(--muted); }
+.line-hint.is-up { color: var(--stop); }
+.line-hint.is-down { color: var(--go); }
+.purchase-foot {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); align-items: start; gap: 16px 28px;
+  margin-top: 16px; padding: 18px 20px; background: var(--paper); border: 1px solid var(--line); border-radius: var(--r-m);
+}
+.purchase-total { display: grid; gap: 2px; }
+/* right, not start: the number is left-to-right */
+.purchase-total strong { font-size: 34px; font-weight: 600; line-height: 1.15; text-align: right; }
+.purchase-pay .segmented { margin-bottom: 10px; }
+.pay-amount { margin-bottom: 6px; }
+.purchase-note,
+.purchase-actions,
+.purchase-foot .form-error { grid-column: 1 / -1; }
+.purchase-actions .btn { width: 100%; }
+.purchase-actions .hint { text-align: center; }
+.purchase-totals { display: grid; gap: 4px; margin: 14px 0 0; padding: 10px 14px; border-radius: var(--r-s); background: var(--paper-2); }
+.purchase-totals div { display: flex; justify-content: space-between; gap: 12px; }
+.purchase-totals dd { margin: 0; font-weight: 600; }
+.purchase-totals .is-owed { color: var(--stop); }
+.detail-subtitle { margin: 16px 0 6px; font-size: 15px; font-weight: 600; }
+.payment-list { display: grid; margin: 0; padding: 0; list-style: none; font-size: 14px; }
+.payment-list li { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; border-bottom: 1px dashed var(--line-soft); }
+.pay-form { padding: 12px 24px 4px; border-top: 1px solid var(--line-soft); }
 .owes-text { color: var(--stop); }
 .credit-text { color: var(--go); }
 .clear-text { color: var(--muted); }
@@ -558,6 +609,16 @@ h1, h2, h3 { line-height: 1.25; }
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
 
+/* Narrower screens that still have the top menu: tighter links, and today's sales may
+   wrap to two lines instead of being pushed off the bar */
+@media (max-width: 1100px) {
+  .topbar { gap: 16px; }
+  .brand { flex: none; }
+  .nav a { padding: 0 10px; }
+  .topbar-meta { min-width: 0; font-size: 12.5px; line-height: 1.3; white-space: normal; text-align: end; }
+  .topbar-meta strong { font-size: 14px; }
+}
+
 /* Shown only on tablets and phones */
 .cart-bar, .sheet-head { display: none; }
 
@@ -635,7 +696,7 @@ h1, h2, h3 { line-height: 1.25; }
     position: fixed; inset: auto 0 0 0; z-index: 40;
     height: calc(var(--bottom-nav-h) + env(safe-area-inset-bottom));
     padding-bottom: env(safe-area-inset-bottom);
-    display: grid; grid-template-columns: repeat(5, 1fr);
+    display: grid; grid-template-columns: repeat(6, 1fr);
     background: var(--ink); box-shadow: 0 -1px 0 rgb(255 255 255 / .08);
   }
   .nav a { flex-direction: column; justify-content: center; gap: 3px; padding: 0; border: 0; font-size: 11.5px; }
@@ -647,6 +708,7 @@ h1, h2, h3 { line-height: 1.25; }
   .nav a[aria-current="page"] { color: var(--tag); }
   .nav a[href="/cashier.html"] { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 3h12v18l-3-2-3 2-3-2-3 2Z'/%3E%3Cpath d='M9 8h6M9 12h6M9 16h3'/%3E%3C/svg%3E"); }
   .nav a[href="/"] { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M21 8 12 3 3 8v8l9 5 9-5Z'/%3E%3Cpath d='m3 8 9 5 9-5M12 13v8'/%3E%3C/svg%3E"); }
+  .nav a[href="/purchases.html"] { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='9' cy='20' r='1.5'/%3E%3Ccircle cx='18' cy='20' r='1.5'/%3E%3Cpath d='M2 3h3l2.7 12.4a2 2 0 0 0 2 1.6h8.6a2 2 0 0 0 2-1.6L22 7H6'/%3E%3C/svg%3E"); }
   .nav a[href="/sales.html"] { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 20h16M7 16v-5M12 16V6M17 16v-8'/%3E%3C/svg%3E"); }
   .nav a[href="/expenses.html"] { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 7a2 2 0 0 1 2-2h12v4'/%3E%3Crect x='3' y='9' width='18' height='11' rx='2'/%3E%3Cpath d='M16 14.5h2'/%3E%3C/svg%3E"); }
   .nav a[href="/debts.html"] { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='9' cy='8' r='3.5'/%3E%3Cpath d='M2.5 20a6.5 6.5 0 0 1 13 0M16 4.6a3.5 3.5 0 0 1 0 6.8M18 14a6.5 6.5 0 0 1 3.5 6'/%3E%3C/svg%3E"); }
@@ -803,6 +865,25 @@ h1, h2, h3 { line-height: 1.25; }
   .count-input { font-size: 20px; }
   .history-body { padding: 18px 16px 8px; }
   .history-actions { padding: 8px 16px calc(16px + env(safe-area-inset-bottom)); }
+
+  /* Purchases */
+  .composer-fields { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .composer-fields .field:first-child { grid-column: 1 / -1; }
+  .purchase-foot { grid-template-columns: minmax(0, 1fr); padding: 14px 16px; }
+  .purchase-total strong { font-size: 26px; }
+  .purchase-pay .segmented { width: 100%; }
+  .purchase-pay .segmented button { flex: 1; }
+  .pay-form { padding: 12px 16px 4px; }
+  /* Invoice lines as cards: the fields in two columns under the product's name */
+  .ptable.purchase-table tr { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .purchase-table .row-actions { position: absolute; top: 6px; left: 6px; }
+  .ptable.purchase-table td.cell-title { padding-inline-end: 48px; }
+  /* The quantity with its box or piece choice gets a line of its own */
+  .ptable.purchase-table td:has(.qty-field) { grid-column: 1 / -1; }
+  .purchase-table [data-field="price"],
+  .purchase-table [data-field="salePrice"] { width: 100%; }
+  .purchase-table [data-field="quantity"] { width: 64px; flex: none; }
+  .qty-field select { flex: 1; min-width: 0; max-width: none; }
 }
 
 @media (max-width: 480px) {
