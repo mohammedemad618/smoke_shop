@@ -1,4 +1,4 @@
-import { Schema, model } from 'mongoose';
+import { Schema } from 'mongoose';
 
 // Someone who can buy on credit. What they owe is the sum of their DebtEntry records.
 const customerSchema = new Schema(
@@ -15,4 +15,4 @@ const customerSchema = new Schema(
   { timestamps: true },
 );
 
-export default model('Customer', customerSchema);
+export default customerSchema;

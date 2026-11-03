@@ -1,4 +1,4 @@
-import { Schema, model } from 'mongoose';
+import { Schema } from 'mongoose';
 
 // Money spent outside buying stock (food, rent, electricity...). Reports subtract it
 // from the profit on sales to give the net profit.
@@ -21,4 +21,4 @@ const expenseSchema = new Schema(
   { timestamps: true },
 );
 
-export default model('Expense', expenseSchema);
+export default expenseSchema;

@@ -1,11 +1,10 @@
 import { Router } from 'express';
-import Category from '../models/Category.js';
-import Product from '../models/Product.js';
 import { httpError } from '../lib/errors.js';
 
 const router = Router();
 
 router.get('/', async (req, res) => {
+  const { Category, Product } = req.models;
   const [categories, counts] = await Promise.all([
     Category.find().collation({ locale: 'ar' }).sort({ name: 1 }).lean(),
     Product.aggregate([{ $group: { _id: '$category', count: { $sum: 1 } } }]),
@@ -15,11 +14,13 @@ router.get('/', async (req, res) => {
 });
 
 router.post('/', async (req, res) => {
+  const { Category } = req.models;
   const category = await Category.create({ name: req.body.name });
   res.status(201).json({ ...category.toObject(), productCount: 0 });
 });
 
 router.put('/:id', async (req, res) => {
+  const { Category } = req.models;
   const category = await Category.findByIdAndUpdate(
     req.params.id,
     { name: req.body.name },
@@ -30,6 +31,7 @@ router.put('/:id', async (req, res) => {
 });
 
 router.delete('/:id', async (req, res) => {
+  const { Category, Product } = req.models;
   if (await Product.exists({ category: req.params.id })) {
     throw httpError(409, 'لا يمكن حذف قسم يحتوي على منتجات. انقل منتجاته أو احذفها أولًا');
   }

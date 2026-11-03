@@ -1,49 +1,49 @@
-import { fileURLToPath } from 'node:url';
-import express from 'express';
-import mongoose from 'mongoose';
-import { PORT, HOST, MONGODB_URI } from './lib/config.js';
-import { errorHandler } from './lib/errors.js';
-import categoriesRouter from './routes/categories.js';
-import productsRouter from './routes/products.js';
-import salesRouter from './routes/sales.js';
-import expensesRouter from './routes/expenses.js';
-import customersRouter from './routes/customers.js';
-import stockCountsRouter from './routes/stockcounts.js';
-import purchasesRouter from './routes/purchases.js';
+import { loadConfig, publicUrl } from './lib/config.js';
+import { openDatabases } from './lib/db.js';
+import { createRegistry } from './lib/registry.js';
+import { createApp } from './app.js';
 
-const app = express();
-
-app.use(express.json({ limit: '200kb' }));
-// Express 5 leaves req.body undefined when the request had no JSON body
-app.use((req, res, next) => {
-  req.body ??= {};
-  next();
-});
-app.use(express.static(fileURLToPath(new URL('./public', import.meta.url))));
-// Camera barcode decoder, loaded on demand by public/js/scanner.js (works offline)
-app.use('/vendor/zxing-wasm', express.static(fileURLToPath(new URL('./node_modules/zxing-wasm/dist', import.meta.url))));
-
-app.use('/api/categories', categoriesRouter);
-app.use('/api/products', productsRouter);
-app.use('/api/sales', salesRouter);
-app.use('/api/expenses', expensesRouter);
-app.use('/api/customers', customersRouter);
-app.use('/api/stockcounts', stockCountsRouter);
-app.use('/api/purchases', purchasesRouter);
-app.use('/api', (req, res) => res.status(404).json({ error: 'المسار غير موجود' }));
-app.use(errorHandler);
-
+let config;
 try {
-  await mongoose.connect(MONGODB_URI, { serverSelectionTimeoutMS: 5000 });
-  // Make sure unique indexes (barcode, category name, invoice number) exist before serving
-  await Promise.all(Object.values(mongoose.models).map((model) => model.init()));
+  config = loadConfig();
 } catch (err) {
-  console.error(`Could not connect to MongoDB at ${MONGODB_URI}`);
+  console.error(`Configuration error: ${err.message}`);
+  process.exit(1);
+}
+
+let db;
+let registry;
+try {
+  db = await openDatabases(config);
+  // Make sure the control indexes (unique address and database name...) exist before serving;
+  // each shop's indexes are built when it is first used
+  await db.initControl();
+  registry = createRegistry(db.controlModels);
+  await registry.start();
+} catch (err) {
+  console.error(`Could not connect to MongoDB at ${config.mongodbUri}`);
   console.error('Make sure the MongoDB service is running, or set MONGODB_URI in .env');
   console.error(err.message);
   process.exit(1);
 }
 
-app.listen(PORT, HOST, () => {
-  console.log(`POS running at http://${HOST ?? 'localhost'}:${PORT}`);
+const server = createApp({ db, registry, config }).listen(config.port, config.host, () => {
+  console.log(`POS running at http://${config.host}:${config.port}`);
+  console.log(`  admin: ${publicUrl(config, config.adminHost)}`);
+  const active = registry.tenants().filter((t) => t.status === 'active');
+  for (const tenant of active) {
+    const host = registry.hostsOf(tenant._id).find((h) => h.kind === 'primary');
+    if (host) console.log(`  ${tenant.slug}: ${publicUrl(config, host._id)}`);
+  }
+  if (!active.length) console.log('  no shops yet: npm run tenant:create -- --slug <address> --name <shop name>');
 });
+
+// Stop taking requests, let those running finish, then close the database
+function shutdown() {
+  registry.stop();
+  server.close(() => db.close().finally(() => process.exit(0)));
+  server.closeIdleConnections();
+  setTimeout(() => process.exit(0), 5000).unref();
+}
+process.once('SIGTERM', shutdown);
+process.once('SIGINT', shutdown);

@@ -1,4 +1,4 @@
-import { Schema, model } from 'mongoose';
+import { Schema } from 'mongoose';
 import { money } from '../lib/util.js';
 
 // Numbers like 1e400 parse to Infinity, which Mongoose would otherwise store
@@ -82,4 +82,4 @@ productSchema.statics.valuation = async function valuation(match = {}) {
   };
 };
 
-export default model('Product', productSchema);
+export default productSchema;

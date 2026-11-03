@@ -1,9 +1,5 @@
 import { Router } from 'express';
 import mongoose from 'mongoose';
-import Product from '../models/Product.js';
-import Purchase from '../models/Purchase.js';
-import StockCount from '../models/StockCount.js';
-import { nextSequence } from '../models/Counter.js';
 import { httpError } from '../lib/errors.js';
 import { money, precise, roundQty, stockChange } from '../lib/util.js';
 import { DAY_MS, requestedRange } from '../lib/range.js';
@@ -71,7 +67,7 @@ function buildItem(raw, product) {
 // Puts a line's goods into the stock and makes its prices the product's prices. A product
 // whose quantity was not tracked starts from what was bought; if another invoice started it
 // in the meantime, this one adds to it instead of overwriting it.
-async function receive(item) {
+async function receive(Product, item) {
   const set = { trackStock: true };
   if (item.priceUpdated) set.purchasePrice = item.unitCost;
   if (item.salePrice !== null) set.salePrice = item.salePrice;
@@ -90,7 +86,8 @@ async function receive(item) {
  * newer invoice still standing keeps its price. A product whose tracking this invoice
  * started goes back to untracked, unless a newer invoice or a stocktake has counted it since.
  */
-async function giveBack(purchase) {
+async function giveBack(m, purchase) {
+  const { Product, Purchase, StockCount } = m;
   const ids = purchase.items.map((i) => i.product);
   const [products, others, counts] = await Promise.all([
     Product.find({ _id: { $in: ids } }).lean(),
@@ -138,6 +135,7 @@ async function giveBack(purchase) {
 // Invoices of a period (?from=&to=), newest first, with the period's totals and what is
 // owed to suppliers over all invoices
 router.get('/', async (req, res) => {
+  const { Purchase } = req.models;
   const { start, end } = requestedRange(req.query, MAX_RANGE_MS);
   const [purchases, owedToSuppliers] = await Promise.all([
     Purchase.find({ date: { $gte: start, $lt: end } }).sort({ date: -1, number: -1 }).lean(),
@@ -151,6 +149,7 @@ router.get('/', async (req, res) => {
 
 // Suppliers bought from before, most recent first, with what is still owed to each
 router.get('/suppliers', async (req, res) => {
+  const { Purchase } = req.models;
   const rows = await Purchase.aggregate([
     { $match: { supplier: { $ne: '' } } },
     {
@@ -167,12 +166,14 @@ router.get('/suppliers', async (req, res) => {
 });
 
 router.get('/:id', async (req, res) => {
+  const { Purchase } = req.models;
   const purchase = await Purchase.findById(req.params.id).lean();
   if (!purchase) throw httpError(404, 'فاتورة الشراء غير موجودة');
   res.json(withRemaining(purchase));
 });
 
 router.post('/', async (req, res) => {
+  const { Product, Purchase, Counter } = req.models;
   const body = req.body;
   const rawItems = Array.isArray(body.items) ? body.items : [];
   if (!rawItems.length) throw httpError(400, 'أضف منتجًا واحدًا على الأقل إلى الفاتورة');
@@ -198,11 +199,11 @@ router.post('/', async (req, res) => {
   const received = [];
   try {
     for (const item of items) {
-      await receive(item);
+      await receive(Product, item);
       received.push(item);
     }
     const purchase = await Purchase.create({
-      number: await nextSequence('purchase'),
+      number: await Counter.next('purchase'),
       date,
       supplier: body.supplier ?? '',
       reference: body.reference ?? '',
@@ -215,13 +216,14 @@ router.post('/', async (req, res) => {
     res.status(201).json(withRemaining(purchase.toObject()));
   } catch (err) {
     // Nothing half done: the goods already put in come back out
-    await giveBack({ _id: new mongoose.Types.ObjectId(), createdAt: new Date(), items: received });
+    await giveBack(req.models, { _id: new mongoose.Types.ObjectId(), createdAt: new Date(), items: received });
     throw err;
   }
 });
 
 // Pays off part or all of what is owed on an invoice
 router.post('/:id/payments', async (req, res) => {
+  const { Purchase } = req.models;
   const purchase = await Purchase.findById(req.params.id);
   if (!purchase) throw httpError(404, 'فاتورة الشراء غير موجودة');
   if (purchase.status !== 'active') throw httpError(409, 'هذه الفاتورة ملغاة');
@@ -238,6 +240,7 @@ router.post('/:id/payments', async (req, res) => {
 // Cancels an invoice entered by mistake or returned to the supplier: its goods leave
 // the stock again. Money already paid is between the shop and the supplier.
 router.post('/:id/cancel', async (req, res) => {
+  const { Purchase } = req.models;
   const purchase = await Purchase.findOneAndUpdate(
     { _id: req.params.id, status: 'active' },
     { $set: { status: 'cancelled', cancelledAt: new Date() }, $inc: { __v: 1 } },
@@ -247,7 +250,7 @@ router.post('/:id/cancel', async (req, res) => {
     if (!(await Purchase.exists({ _id: req.params.id }))) throw httpError(404, 'فاتورة الشراء غير موجودة');
     throw httpError(409, 'هذه الفاتورة ملغاة من قبل');
   }
-  await giveBack(purchase);
+  await giveBack(req.models, purchase);
   res.json(withRemaining(purchase));
 });
 

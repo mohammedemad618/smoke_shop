@@ -1,5 +1,4 @@
 import { Router } from 'express';
-import Expense from '../models/Expense.js';
 import { httpError } from '../lib/errors.js';
 import { money } from '../lib/util.js';
 import { DAY_MS, requestedRange } from '../lib/range.js';
@@ -17,6 +16,7 @@ const pickEditable = (body) => {
 
 // Expenses of a period (?from=&to=), newest first, with totals per type
 router.get('/', async (req, res) => {
+  const { Expense } = req.models;
   const { start, end } = requestedRange(req.query, MAX_RANGE_MS);
   const expenses = await Expense.find({ date: { $gte: start, $lt: end } }).sort({ date: -1, createdAt: -1 }).lean();
   const byCategory = new Map();
@@ -35,6 +35,7 @@ router.get('/', async (req, res) => {
 
 // Types used before, most used first, to suggest in the form
 router.get('/categories', async (req, res) => {
+  const { Expense } = req.models;
   const rows = await Expense.aggregate([
     { $group: { _id: '$category', count: { $sum: 1 } } },
     { $sort: { count: -1 } },
@@ -44,11 +45,13 @@ router.get('/categories', async (req, res) => {
 });
 
 router.post('/', async (req, res) => {
+  const { Expense } = req.models;
   const expense = await Expense.create(pickEditable(req.body));
   res.status(201).json(expense);
 });
 
 router.put('/:id', async (req, res) => {
+  const { Expense } = req.models;
   const expense = await Expense.findByIdAndUpdate(req.params.id, pickEditable(req.body), {
     returnDocument: 'after',
     runValidators: true,
@@ -58,6 +61,7 @@ router.put('/:id', async (req, res) => {
 });
 
 router.delete('/:id', async (req, res) => {
+  const { Expense } = req.models;
   const deleted = await Expense.findByIdAndDelete(req.params.id);
   if (!deleted) throw httpError(404, 'المصروف غير موجود');
   res.status(204).end();

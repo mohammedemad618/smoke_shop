@@ -1,10 +1,5 @@
 import { Router } from 'express';
 import mongoose from 'mongoose';
-import Product from '../models/Product.js';
-import Category from '../models/Category.js';
-import DebtEntry from '../models/DebtEntry.js';
-import StockCount from '../models/StockCount.js';
-import Purchase from '../models/Purchase.js';
 import { httpError } from '../lib/errors.js';
 import { escapeRegex, roundQty } from '../lib/util.js';
 
@@ -50,7 +45,7 @@ function checkUnits(data, existing = {}) {
   }
 }
 
-async function assertCategoryExists(id) {
+async function assertCategoryExists(Category, id) {
   if (id === undefined) return;
   if (!mongoose.isObjectIdOrHexString(id) || !(await Category.exists({ _id: id }))) {
     throw httpError(400, 'اختر القسم');
@@ -58,6 +53,7 @@ async function assertCategoryExists(id) {
 }
 
 router.get('/', async (req, res) => {
+  const { Product } = req.models;
   const filter = {};
   if (req.query.category) filter.category = String(req.query.category);
   const q = String(req.query.q ?? '').trim().slice(0, 100);
@@ -74,7 +70,7 @@ router.get('/', async (req, res) => {
 });
 
 // What the whole shop is owed and owes: customers' debts, and unpaid supplier invoices
-async function debtTotals() {
+async function debtTotals({ DebtEntry, Purchase }) {
   const [customers, owedToSuppliers] = await Promise.all([DebtEntry.totals(), Purchase.owedToSuppliers()]);
   return { ...customers, owedToSuppliers };
 }
@@ -82,37 +78,41 @@ async function debtTotals() {
 // What the stock is worth, for the products page. For the whole shop it also brings the
 // debts both ways, which are part of the shop's capital.
 router.get('/valuation', async (req, res) => {
+  const { Product, StockCount } = req.models;
   const category = String(req.query.category ?? '');
   if (category && !mongoose.isObjectIdOrHexString(category)) throw httpError(400, 'اختر القسم');
   const [stock, debts, lastCount] = await Promise.all([
     Product.valuation(category ? { category: new mongoose.Types.ObjectId(category) } : {}),
-    category ? null : debtTotals(),
+    category ? null : debtTotals(req.models),
     StockCount.findOne({ status: 'applied' }).sort({ appliedAt: -1 }).select('appliedAt').lean(),
   ]);
   res.json({ ...stock, debts, lastCountAt: lastCount?.appliedAt ?? null });
 });
 
 router.get('/barcode/:code', async (req, res) => {
+  const { Product } = req.models;
   const product = await Product.findOne({ barcode: req.params.code.trim() }).populate('category', 'name').lean();
   if (!product) throw httpError(404, 'لا يوجد منتج بهذا الباركود');
   res.json(product);
 });
 
 router.post('/', async (req, res) => {
+  const { Product, Category } = req.models;
   const data = pickEditable(req.body);
   checkUnits(data);
-  await assertCategoryExists(data.category);
+  await assertCategoryExists(Category, data.category);
   const product = await Product.create(data);
   await product.populate('category', 'name');
   res.status(201).json(product);
 });
 
 router.put('/:id', async (req, res) => {
+  const { Product, Category } = req.models;
   const data = pickEditable(req.body);
   const existing = await Product.findById(req.params.id).lean();
   if (!existing) throw httpError(404, 'المنتج غير موجود');
   checkUnits(data, existing);
-  await assertCategoryExists(data.category);
+  await assertCategoryExists(Category, data.category);
   const product = await Product.findByIdAndUpdate(req.params.id, data, {
     returnDocument: 'after',
     runValidators: true,
@@ -122,6 +122,7 @@ router.put('/:id', async (req, res) => {
 });
 
 router.delete('/:id', async (req, res) => {
+  const { Product } = req.models;
   const deleted = await Product.findByIdAndDelete(req.params.id);
   if (!deleted) throw httpError(404, 'المنتج غير موجود');
   res.status(204).end();

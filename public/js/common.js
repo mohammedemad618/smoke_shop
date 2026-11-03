@@ -1,20 +1,13 @@
+// One rounding function for the screen and the server (lib/util.js imports it too), so
+// the screen shows exactly what the server saves
+import { roundTo } from './rounding.js';
+
 const moneyFormat = new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 });
 // Arabic wording with Latin digits, matching prices and barcodes
 const dateTimeFormat = new Intl.DateTimeFormat('ar-u-nu-latn', { dateStyle: 'medium', timeStyle: 'short' });
 const timeFormat = new Intl.DateTimeFormat('ar-u-nu-latn', { timeStyle: 'short' });
 
-// Rounds half away from zero on the number as written, not on its binary value (10.075 is
-// stored as 10.07499999...). The same function is in lib/util.js, so the screen shows
-// exactly what the server saves.
-export function roundTo(n, digits) {
-  const x = Number(n);
-  if (!Number.isFinite(x)) return x;
-  const written = Math.abs(x).toString();
-  const rounded = written.includes('e')
-    ? Math.round(Math.abs(x) * 10 ** digits) / 10 ** digits
-    : Number(`${Math.round(Number(`${written}e${digits}`))}e-${digits}`);
-  return Math.sign(x) * rounded || 0; // || 0: never -0
-}
+export { roundTo };
 export const roundMoney = (n) => roundTo(n, 2);
 
 // Rounded first, so a figure shows what is saved and never as "-0"
@@ -172,6 +165,35 @@ if (more) {
     }
   });
 }
+
+// The shop's name (from its settings, GET /api/shop) in the header and at the end of the tab
+// title, instead of «نقطة البيع». The last one seen is kept for this tab so pages do not
+// flash the default; pages that need the name or the receipt note await shopInfo.
+const SHOP_KEY = 'pos.shop';
+const DEFAULT_SHOP_NAME = 'نقطة البيع';
+function showShopName(name) {
+  const text = String(name ?? '').trim() || DEFAULT_SHOP_NAME;
+  for (const el of document.querySelectorAll('.brand-name')) el.textContent = text;
+  document.title = `${document.title.split(' | ')[0]} | ${text}`;
+}
+async function loadShop() {
+  let shop = null;
+  try {
+    shop = JSON.parse(sessionStorage.getItem(SHOP_KEY));
+  } catch {
+    // storage blocked or empty: the default name stays until the server answers
+  }
+  if (shop) showShopName(shop.shopName);
+  try {
+    shop = await api('/shop');
+    sessionStorage.setItem(SHOP_KEY, JSON.stringify(shop));
+  } catch {
+    // offline or storage blocked: keep what is shown
+  }
+  showShopName(shop?.shopName);
+  return { shopName: String(shop?.shopName ?? '').trim(), receiptNote: String(shop?.receiptNote ?? '').trim() };
+}
+export const shopInfo = loadShop();
 
 export const PRODUCTS = { one: 'منتج واحد', two: 'منتجان', few: 'منتجات', many: 'منتجًا', single: 'منتج' };
 export const INVOICES = { one: 'فاتورة واحدة', two: 'فاتورتان', few: 'فواتير', many: 'فاتورة', single: 'فاتورة' };

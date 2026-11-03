@@ -1,12 +1,7 @@
 import { Router } from 'express';
 import mongoose from 'mongoose';
-import Product from '../models/Product.js';
-import Sale from '../models/Sale.js';
-import Expense from '../models/Expense.js';
-import Customer from '../models/Customer.js';
-import DebtEntry from '../models/DebtEntry.js';
-import { nextSequence } from '../models/Counter.js';
 import { httpError } from '../lib/errors.js';
+import { REPORT_MS } from '../lib/limits.js';
 import { money, precise, roundQty, stockChange } from '../lib/util.js';
 import { DAY_MS, requestedRange, timeZoneParam } from '../lib/range.js';
 
@@ -23,7 +18,7 @@ const netProfitOf = ({ profit, credit }, expenses, collected) => money(profit - 
 
 /* Stock */
 
-async function putBackInStock(entries) {
+async function putBackInStock(Product, entries) {
   if (!entries.length) return;
   await Product.bulkWrite(
     entries.map(([id, quantity]) => ({
@@ -34,14 +29,14 @@ async function putBackInStock(entries) {
 
 // Takes sold quantities off tracked products. Products that block overselling only go
 // down when enough is left; on a shortfall everything taken so far is put back.
-async function takeFromStock(products, quantities) {
+async function takeFromStock(Product, products, quantities) {
   const taken = [];
   for (const p of products.filter((x) => x.trackStock)) {
     const quantity = quantities.get(String(p._id));
     const filter = p.blockWhenOut ? { _id: p._id, stock: { $gte: quantity } } : { _id: p._id };
     const { matchedCount } = await Product.updateOne(filter, stockChange(-quantity), { updatePipeline: true });
     if (!matchedCount) {
-      await putBackInStock(taken);
+      await putBackInStock(Product, taken);
       const fresh = await Product.findById(p._id, 'stock').lean();
       const left = Math.max(fresh?.stock ?? 0, 0);
       throw httpError(409, left ? `المتوفر من «${p.name}» ${left} فقط` : `نفدت كمية «${p.name}» من المخزن`);
@@ -76,8 +71,8 @@ const piecesIn = (lines) => ({
  * customer's account is replayed oldest first: payments settle the oldest open debts, and
  * a return settles its own invoice first.
  */
-async function collectedEvents(end) {
-  const entries = await DebtEntry.find({ date: { $lt: end } }).sort({ customer: 1, date: 1, createdAt: 1 }).lean();
+async function collectedEvents(DebtEntry, end) {
+  const entries = await DebtEntry.find({ date: { $lt: end } }).sort({ customer: 1, date: 1, createdAt: 1 }).maxTimeMS(REPORT_MS).lean();
   const events = [];
   let customer = null;
   let open = [];
@@ -113,7 +108,8 @@ async function collectedEvents(end) {
 
 // The figures of [start, end), in one row ('all') or one row per day or month of the shop's
 // time zone: invoices, pieces, sales, cost, profit, returns, credit, expenses, collected
-async function periodFigures(start, end, groupBy = null, timezone = 'UTC') {
+async function periodFigures(m, start, end, groupBy = null, timezone = 'UTC') {
+  const { Sale, Expense, DebtEntry } = m;
   const format = GROUP_FORMATS[groupBy];
   const keyOf = (date) => (format ? { $dateToString: { format, date, timezone } } : 'all');
   const inRange = { $gte: start, $lt: end };
@@ -147,7 +143,7 @@ async function periodFigures(start, end, groupBy = null, timezone = 'UTC') {
           credit: { $sum: { $ifNull: ['$debt', 0] } },
         },
       },
-    ]),
+    ]).option({ maxTimeMS: REPORT_MS }),
     Sale.aggregate([
       { $match: { 'returns.at': inRange } },
       { $unwind: '$returns' },
@@ -161,9 +157,9 @@ async function periodFigures(start, end, groupBy = null, timezone = 'UTC') {
           toAccount: { $sum: { $ifNull: ['$returns.toAccount', 0] } },
         },
       },
-    ]),
-    Expense.aggregate([{ $match: { date: inRange } }, { $group: { _id: keyOf('$date'), total: { $sum: '$amount' } } }]),
-    collectedEvents(end),
+    ]).option({ maxTimeMS: REPORT_MS }),
+    Expense.aggregate([{ $match: { date: inRange } }, { $group: { _id: keyOf('$date'), total: { $sum: '$amount' } } }]).option({ maxTimeMS: REPORT_MS }),
+    collectedEvents(DebtEntry, end),
   ]);
 
   const rows = new Map();
@@ -210,10 +206,11 @@ const sumFigures = (rows) => {
 
 // Invoices made in one day (or a short range), newest first, with the period's figures
 router.get('/', async (req, res) => {
+  const { Sale } = req.models;
   const { start, end } = requestedRange(req.query, MAX_LIST_RANGE_MS);
   const [sales, rows] = await Promise.all([
     Sale.find({ createdAt: { $gte: start, $lt: end } }).sort({ createdAt: -1 }).lean(),
-    periodFigures(start, end),
+    periodFigures(req.models, start, end),
   ]);
   const summary = { ...EMPTY_FIGURES, ...rows[0] };
   delete summary.key;
@@ -224,13 +221,14 @@ router.get('/', async (req, res) => {
 router.get('/report', async (req, res) => {
   const { start, end } = requestedRange(req.query, MAX_REPORT_RANGE_MS);
   const groupBy = req.query.groupBy === 'month' ? 'month' : 'day';
-  const periods = await periodFigures(start, end, groupBy, timeZoneParam(req.query.tz));
+  const periods = await periodFigures(req.models, start, end, groupBy, timeZoneParam(req.query.tz));
   res.json({ groupBy, summary: sumFigures(periods), periods });
 });
 
 // Per-product figures for a period, from the prices stored on each invoice at the time of
 // sale: what was sold in the period, less what was returned in it (like the period totals)
 router.get('/products', async (req, res) => {
+  const { Sale } = req.models;
   const { start, end } = requestedRange(req.query, MAX_REPORT_RANGE_MS);
   const inRange = { $gte: start, $lt: end };
   const baseQty = (line) => ({ $multiply: [`${line}.quantity`, { $ifNull: [`${line}.packSize`, 1] }] });
@@ -256,7 +254,7 @@ router.get('/products', async (req, res) => {
           cost: { $sum: { $multiply: ['$items.unitCost', '$items.quantity'] } },
         },
       },
-    ]),
+    ]).option({ maxTimeMS: REPORT_MS }),
     Sale.aggregate([
       { $match: { 'returns.at': inRange } },
       { $unwind: '$returns' },
@@ -303,7 +301,7 @@ router.get('/products', async (req, res) => {
           },
         },
       },
-    ]),
+    ]).option({ maxTimeMS: REPORT_MS }),
   ]);
 
   const rows = new Map();
@@ -343,6 +341,7 @@ router.get('/products', async (req, res) => {
 /* Selling */
 
 router.post('/', async (req, res) => {
+  const { Product, Sale, Customer, DebtEntry, Counter } = req.models;
   const lines = Array.isArray(req.body.items) ? req.body.items : [];
   if (lines.length === 0) throw httpError(400, 'أضف منتجًا واحدًا على الأقل إلى الفاتورة');
 
@@ -430,11 +429,11 @@ router.post('/', async (req, res) => {
     change = money(paid - total);
   }
 
-  const taken = await takeFromStock(products, baseQuantities);
+  const taken = await takeFromStock(Product, products, baseQuantities);
   let sale;
   try {
     sale = await Sale.create({
-      number: await nextSequence('sale'),
+      number: await Counter.next('sale'),
       items,
       total,
       cost,
@@ -459,7 +458,7 @@ router.post('/', async (req, res) => {
   } catch (err) {
     // No invoice without its debt record, and no stock taken for nothing
     if (sale) await Sale.deleteOne({ _id: sale._id });
-    await putBackInStock(taken);
+    await putBackInStock(Product, taken);
     throw err;
   }
   const customerBalance = customer ? await DebtEntry.balanceOf(customer._id) : undefined;
@@ -472,6 +471,7 @@ router.post('/', async (req, res) => {
 // each line's sold unit). Without items, everything not yet returned comes back: the
 // whole sale is cancelled.
 router.post('/:id/returns', async (req, res) => {
+  const { Product, Sale, DebtEntry } = req.models;
   const sale = await Sale.findById(req.params.id);
   if (!sale) throw httpError(404, 'الفاتورة غير موجودة');
 
@@ -552,7 +552,7 @@ router.post('/:id/returns', async (req, res) => {
   await sale.save();
 
   // Back on the shelf in pieces or kg: a returned box puts all its pieces back
-  await putBackInStock(lines.map(({ item, quantity }) => [item.product, roundQty(quantity * (item.packSize ?? 1))]));
+  await putBackInStock(Product, lines.map(({ item, quantity }) => [item.product, roundQty(quantity * (item.packSize ?? 1))]));
   if (entry.toAccount > 0) {
     await DebtEntry.create({
       customer: sale.customer,

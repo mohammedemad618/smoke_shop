@@ -1,4 +1,4 @@
-import { Schema, model } from 'mongoose';
+import { Schema } from 'mongoose';
 
 // One product as found on the shelf. `expected` is what the system had when it was
 // counted (null: its quantity was not tracked yet). Applying adds the difference rather
@@ -45,4 +45,4 @@ const stockCountSchema = new Schema(
 stockCountSchema.index({ status: 1 }, { unique: true, partialFilterExpression: { status: 'open' } });
 stockCountSchema.index({ appliedAt: -1 });
 
-export default model('StockCount', stockCountSchema);
+export default stockCountSchema;

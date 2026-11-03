@@ -1,4 +1,4 @@
-import { Schema, model } from 'mongoose';
+import { Schema } from 'mongoose';
 import { money } from '../lib/util.js';
 
 // One product received. It is bought by the piece or kilo (packSize 1), or by the box
@@ -63,4 +63,4 @@ purchaseSchema.statics.owedToSuppliers = async function owedToSuppliers() {
   return money(row?.owed ?? 0);
 };
 
-export default model('Purchase', purchaseSchema);
+export default purchaseSchema;

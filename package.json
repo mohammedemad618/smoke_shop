@@ -8,7 +8,9 @@
   "scripts": {
     "start": "node --env-file-if-exists=.env server.js",
     "dev": "node --watch --env-file-if-exists=.env server.js",
-    "seed": "node --env-file-if-exists=.env scripts/seed.js"
+    "seed": "node --env-file-if-exists=.env scripts/seed.js",
+    "tenant:create": "node --env-file-if-exists=.env scripts/tenant-create.js",
+    "test": "node --test --test-global-setup=test/support/global.js \"test/**/*.test.js\""
   },
   "dependencies": {
     "express": "^5.3.0",

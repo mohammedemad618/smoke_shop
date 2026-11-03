@@ -1,8 +1,8 @@
-// Adds a few sample categories and products to an empty database:  npm run seed
-import mongoose from 'mongoose';
-import { MONGODB_URI } from '../lib/config.js';
-import Category from '../models/Category.js';
-import Product from '../models/Product.js';
+// Adds a few sample categories and products to a shop that has no products yet:
+//   npm run seed -- --tenant <slug>
+import { parseArgs } from 'node:util';
+import { loadConfig } from '../lib/config.js';
+import { openDatabases } from '../lib/db.js';
 import { ean13 } from '../public/js/barcode.js';
 
 const SAMPLE = {
@@ -24,27 +24,41 @@ const SAMPLE = {
   ],
 };
 
-await mongoose.connect(MONGODB_URI, { serverSelectionTimeoutMS: 5000 });
-
-if ((await Category.countDocuments()) > 0 || (await Product.countDocuments()) > 0) {
-  console.log('Database already has data, sample data was not added.');
-} else {
-  let serial = 1;
-  let productCount = 0;
-  for (const [name, items] of Object.entries(SAMPLE)) {
-    const category = await Category.create({ name });
-    await Product.insertMany(
-      items.map(([productName, purchasePrice, salePrice]) => ({
-        name: productName,
-        barcode: ean13(`200000000${String(serial++).padStart(3, '0')}`),
-        purchasePrice,
-        salePrice,
-        category: category._id,
-      })),
-    );
-    productCount += items.length;
-  }
-  console.log(`Added ${Object.keys(SAMPLE).length} categories and ${productCount} products.`);
+const { values: args } = parseArgs({ options: { tenant: { type: 'string' } } });
+if (!args.tenant) {
+  console.log('Usage: npm run seed -- --tenant <slug>');
+  process.exit(1);
 }
 
-await mongoose.disconnect();
+const db = await openDatabases(loadConfig());
+try {
+  const tenant = await db.controlModels.Tenant.findOne({ slug: args.tenant }).lean();
+  if (!tenant) throw new Error(`No shop with the address "${args.tenant}" (npm run tenant:create first)`);
+  const { Category, Product } = await db.tenantModels(tenant);
+  // Every shop starts with the category «عام», so only products tell it is in use
+  if ((await Product.countDocuments()) > 0) {
+    console.log('This shop already has products, sample data was not added.');
+  } else {
+    let serial = 1;
+    let productCount = 0;
+    for (const [name, items] of Object.entries(SAMPLE)) {
+      const category = (await Category.findOne({ name })) ?? (await Category.create({ name }));
+      await Product.insertMany(
+        items.map(([productName, purchasePrice, salePrice]) => ({
+          name: productName,
+          barcode: ean13(`200000000${String(serial++).padStart(3, '0')}`),
+          purchasePrice,
+          salePrice,
+          category: category._id,
+        })),
+      );
+      productCount += items.length;
+    }
+    console.log(`Added ${Object.keys(SAMPLE).length} categories and ${productCount} products to ${tenant.slug}.`);
+  }
+} catch (err) {
+  console.error(err.message);
+  process.exitCode = 1;
+} finally {
+  await db.close();
+}

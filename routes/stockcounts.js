@@ -1,12 +1,10 @@
 import { Router } from 'express';
-import Product from '../models/Product.js';
-import StockCount from '../models/StockCount.js';
 import { httpError } from '../lib/errors.js';
 import { money, roundQty, stockChange } from '../lib/util.js';
 
 const router = Router();
 
-async function findOpenCount(id) {
+async function findOpenCount(StockCount, id) {
   const count = await StockCount.findById(id).lean();
   if (!count) throw httpError(404, 'الجرد غير موجود');
   if (count.status !== 'open') throw httpError(409, 'هذا الجرد اعتُمد من قبل');
@@ -15,28 +13,33 @@ async function findOpenCount(id) {
 
 // Past stocktakes, newest first, without their lines
 router.get('/', async (req, res) => {
+  const { StockCount } = req.models;
   res.json(await StockCount.find({ status: 'applied' }).sort({ appliedAt: -1 }).select('-lines').lean());
 });
 
 // The stocktake in progress, or null
 router.get('/current', async (req, res) => {
+  const { StockCount } = req.models;
   res.json(await StockCount.findOne({ status: 'open' }).lean());
 });
 
 router.get('/:id', async (req, res) => {
+  const { StockCount } = req.models;
   const count = await StockCount.findById(req.params.id).lean();
   if (!count) throw httpError(404, 'الجرد غير موجود');
   res.json(count);
 });
 
 router.post('/', async (req, res) => {
+  const { StockCount } = req.models;
   if (await StockCount.exists({ status: 'open' })) throw httpError(409, 'يوجد جرد مفتوح. أكمله أو ألغِه أولًا');
   res.status(201).json(await StockCount.create({}));
 });
 
 // Records how many of a product are on the shelf, replacing an earlier count of it
 router.put('/:id/lines/:productId', async (req, res) => {
-  const count = await findOpenCount(req.params.id);
+  const { Product, StockCount } = req.models;
+  const count = await findOpenCount(StockCount, req.params.id);
   const product = await Product.findById(req.params.productId).lean();
   if (!product) throw httpError(404, 'المنتج غير موجود');
   const raw = req.body.counted;
@@ -74,7 +77,8 @@ router.put('/:id/lines/:productId', async (req, res) => {
 });
 
 router.delete('/:id/lines/:productId', async (req, res) => {
-  const count = await findOpenCount(req.params.id);
+  const { StockCount } = req.models;
+  const count = await findOpenCount(StockCount, req.params.id);
   await StockCount.updateOne({ _id: count._id, status: 'open' }, { $pull: { lines: { product: req.params.productId } } });
   res.status(204).end();
 });
@@ -82,7 +86,8 @@ router.delete('/:id/lines/:productId', async (req, res) => {
 // Corrects the stock of every counted product and keeps the stocktake as a record.
 // Products that were not counted keep their quantities.
 router.post('/:id/apply', async (req, res) => {
-  const open = await findOpenCount(req.params.id);
+  const { Product, StockCount } = req.models;
+  const open = await findOpenCount(StockCount, req.params.id);
   if (!open.lines.length) throw httpError(400, 'لم يُعدّ أي منتج بعد');
   const count = await StockCount.findOneAndUpdate(
     { _id: open._id, status: 'open' },
@@ -137,8 +142,9 @@ router.post('/:id/apply', async (req, res) => {
 
 // Throws the stocktake away; nothing in the stock has changed yet
 router.delete('/:id', async (req, res) => {
+  const { StockCount } = req.models;
   const { deletedCount } = await StockCount.deleteOne({ _id: req.params.id, status: 'open' });
-  if (!deletedCount) await findOpenCount(req.params.id);
+  if (!deletedCount) await findOpenCount(StockCount, req.params.id);
   res.status(204).end();
 });
 

@@ -1,4 +1,4 @@
-import { Schema, model } from 'mongoose';
+import { Schema } from 'mongoose';
 
 // Items keep a snapshot of name and prices, so editing or deleting a product
 // later never changes past invoices.
@@ -76,4 +76,4 @@ saleSchema.index({ createdAt: -1 });
 // Reports book a return on the day it was made
 saleSchema.index({ 'returns.at': 1 });
 
-export default model('Sale', saleSchema);
+export default saleSchema;

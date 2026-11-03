@@ -15,6 +15,7 @@ import {
   refundMessage,
   INVOICES,
   dayQuery,
+  shopInfo,
 } from './common.js';
 import { scanBarcodes } from './scanner.js';
 
@@ -34,7 +35,12 @@ const state = {
   busy: false,
   payType: 'cash',
   customers: [],
+  // The shop's name and receipt note for the receipt (GET /api/shop)
+  shop: { shopName: '', receiptNote: '' },
 };
+shopInfo.then((shop) => {
+  state.shop = shop;
+});
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -763,7 +769,7 @@ function showReceipt(sale) {
   state.lastSale = sale;
   els.saleReceipt.innerHTML = `<div class="slip">
     <div class="slip-head">
-      <strong>نقطة البيع</strong>
+      <strong>${escapeHtml(state.shop.shopName || 'نقطة البيع')}</strong>
       <span>فاتورة رقم <span class="num">${sale.number}</span></span>
       <span>${formatDateTime(sale.createdAt)}</span>
     </div>
@@ -791,7 +797,7 @@ function showReceipt(sale) {
             <div><dt>الباقي</dt><dd class="num">${formatMoney(sale.change)}</dd></div>`
       }
     </dl>
-    <p class="slip-foot">شكرًا لزيارتكم</p>
+    <p class="slip-foot">${escapeHtml(state.shop.receiptNote || 'شكرًا لزيارتكم')}</p>
   </div>`;
   els.saleDialog.showModal();
   els.newSale.focus();

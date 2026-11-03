@@ -1,4 +1,4 @@
-import mongoose, { Schema, model } from 'mongoose';
+import mongoose, { Schema } from 'mongoose';
 import { money } from '../lib/util.js';
 
 // One line of a customer's account. amount is signed: + adds to what they owe,
@@ -41,4 +41,4 @@ debtEntrySchema.statics.totals = async function totals() {
   return { owedToShop: money(row?.owedToShop ?? 0), owedByShop: money(row?.owedByShop ?? 0) };
 };
 
-export default model('DebtEntry', debtEntrySchema);
+export default debtEntrySchema;
