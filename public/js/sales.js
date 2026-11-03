@@ -246,7 +246,7 @@ function renderInvoices(sales) {
         const pieces = keptPieces(sale);
         const cancelled = sale.returnStatus === 'full';
         return `<tr${cancelled ? ' class="is-quiet"' : ''}>
-          <td><span class="num">${sale.number}</span>${statusBadge(sale)}</td>
+          <td><span class="num invoice-no">${sale.number}</span>${statusBadge(sale)}</td>
           <td>${formatTime(sale.createdAt)}</td>
           <td>${pieces ? arCount(pieces, PIECES) : '–'}</td>
           <td class="end">

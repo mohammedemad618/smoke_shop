@@ -91,7 +91,7 @@ function renderSummary({ total, byCategory }) {
       <div class="z-value num">${formatMoney(total)}</div>
       <div class="z-note">${arCount(expenses.length, EXPENSES)}، تُطرح من الربح في صفحة المبيعات</div>
     </div>
-    <div class="table-scroll"><table class="ptable">
+    <div class="table-scroll"><table class="ptable keep-table">
       <thead><tr>
         <th scope="col">النوع</th>
         <th scope="col" class="end">المبلغ</th>

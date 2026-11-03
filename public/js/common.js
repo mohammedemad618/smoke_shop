@@ -98,6 +98,30 @@ export function arCount(n, forms) {
   return `${formatMoney(n)} ${noun}`;
 }
 
+// On phones, tables are shown as cards (see style.css): every cell gets its column name
+// as a label, and a row's first cell becomes the card's title. Tables are re-rendered
+// often, so this follows DOM changes instead of being called by each page.
+let labelQueued = false;
+function labelTableCells() {
+  labelQueued = false;
+  for (const table of document.querySelectorAll('table.ptable:not(.keep-table)')) {
+    const heads = [...table.querySelectorAll('thead th')].map((th) => th.textContent.trim());
+    for (const row of table.querySelectorAll('tbody tr, tfoot tr')) {
+      const cells = [...row.children];
+      if (cells.some((td) => td.colSpan > 1)) continue; // detail rows span the whole table
+      cells.forEach((td, i) => {
+        if (heads[i] && !td.dataset.label) td.dataset.label = heads[i];
+      });
+      cells.find((td) => !td.classList.contains('rank'))?.classList.add('cell-title');
+    }
+  }
+}
+new MutationObserver(() => {
+  if (labelQueued) return;
+  labelQueued = true;
+  requestAnimationFrame(labelTableCells);
+}).observe(document.body, { childList: true, subtree: true });
+
 export const PRODUCTS = { one: 'منتج واحد', two: 'منتجان', few: 'منتجات', many: 'منتجًا', single: 'منتج' };
 export const INVOICES = { one: 'فاتورة واحدة', two: 'فاتورتان', few: 'فواتير', many: 'فاتورة', single: 'فاتورة' };
 export const PIECES = { one: 'قطعة واحدة', two: 'قطعتان', few: 'قطع', many: 'قطعة', single: 'قطعة' };

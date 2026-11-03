@@ -20,6 +20,7 @@
   --r-s: 4px;
   --r-m: 8px;
   --topbar-h: 56px;
+  --bottom-nav-h: 0px;
   --font: "Readex Pro", "Segoe UI", Tahoma, system-ui, sans-serif;
   color-scheme: light;
 }
@@ -353,7 +354,7 @@ h1, h2, h3 { line-height: 1.25; }
 .tile:hover { border-color: var(--ink-2); }
 .tile:active { transform: translateY(1px); }
 .tile.is-added { animation: added .45s ease-out; }
-.tile-name { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-weight: 500; line-height: 1.35; }
+.tile-name { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-weight: 500; line-height: 1.5; }
 .tile-code { align-self: flex-start; font-size: 12px; color: var(--muted); }
 .tile .tag { margin-top: auto; align-self: flex-end; font-size: 16px; }
 
@@ -485,41 +486,171 @@ h1, h2, h3 { line-height: 1.25; }
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
 
+/* Shown only on tablets and phones */
+.cart-bar, .sheet-head { display: none; }
+
+/* Tablets and phones: the cashier's invoice becomes a panel that slides up from a bar
+   at the bottom showing the item count and total */
 @media (max-width: 900px) {
   .app-shell { height: auto; overflow: visible; }
-  .register { grid-template-columns: 1fr; }
-  .tiles { max-height: 48vh; }
-  .counter { border-inline-start: 0; border-top: 1px solid var(--line); }
-  .receipt-shadow { flex: none; }
-  .receipt-lines { max-height: 42vh; }
-}
-
-@media (max-width: 760px) {
-  .topbar { gap: 8px; padding: 0 12px; }
-  .nav { overflow-x: auto; scrollbar-width: none; }
-  .nav a { padding: 0 8px; white-space: nowrap; }
-  .topbar-meta { display: none; }
-  .catalog { grid-template-columns: 1fr; }
+  .topbar { position: sticky; top: 0; z-index: 40; }
+  /* Categories and customers move above the content, which gets the full width */
+  .catalog { grid-template-columns: minmax(0, 1fr); }
   .rail { border-inline-end: 0; border-bottom: 1px solid var(--line); }
   .rail-list { display: flex; gap: 4px; overflow-x: auto; }
   .rail-item { flex: none; }
+  .register { grid-template-columns: 1fr; }
+  .shelf { padding-bottom: 96px; }
+  .tiles { overflow: visible; }
+  .counter {
+    position: fixed; z-index: 35;
+    inset: var(--topbar-h) 0 calc(var(--bottom-nav-h) + env(safe-area-inset-bottom)) 0;
+    overflow-y: auto; border: 0;
+    visibility: hidden; transform: translateY(100%);
+    transition: transform .22s ease-out, visibility 0s linear .22s;
+  }
+  body.cart-open { overflow: hidden; }
+  body.cart-open .counter { visibility: visible; transform: none; transition: transform .22s ease-out; }
+  .receipt-shadow { flex: none; }
+  .receipt-lines { flex: none; max-height: none; overflow: visible; }
+  .sheet-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  .sheet-head strong { font-size: 18px; font-weight: 600; }
+  .cart-bar {
+    position: fixed; z-index: 30; inset-inline: 12px;
+    bottom: calc(var(--bottom-nav-h) + env(safe-area-inset-bottom) + 12px);
+    display: flex; align-items: center; gap: 12px;
+    min-height: 56px; padding: 8px 16px;
+    border: 0; border-radius: var(--r-m);
+    background: var(--go); color: #fff;
+    font: inherit; font-size: 16px; font-weight: 600; text-align: start;
+    box-shadow: 0 8px 24px rgb(28 37 48 / .3); cursor: pointer;
+  }
+  .cart-bar.is-empty { background: var(--ink-2); }
+  .cart-bar-count { display: grid; place-items: center; min-width: 28px; height: 28px; padding: 0 8px; border-radius: 999px; background: rgb(255 255 255 / .22); font-size: 14px; }
+  .cart-bar-total { margin-inline-start: auto; font-size: 19px; }
+  body.cart-open .cart-bar { display: none; }
+  .keys-hint { display: none; }
+}
+
+/* Phones: navigation moves to a bar at the bottom, tables become cards, controls are
+   finger-sized, and text fields use 16px so the phone does not zoom in on them */
+@media (max-width: 760px) {
+  :root { --bottom-nav-h: 60px; }
+  body { padding-bottom: calc(var(--bottom-nav-h) + env(safe-area-inset-bottom)); }
+  .topbar { gap: 12px; padding: 0 16px; }
+  .topbar-meta { font-size: 13px; }
+  .topbar-meta strong { font-size: 14px; }
+  .nav {
+    position: fixed; inset: auto 0 0 0; z-index: 40;
+    height: calc(var(--bottom-nav-h) + env(safe-area-inset-bottom));
+    padding-bottom: env(safe-area-inset-bottom);
+    display: grid; grid-template-columns: repeat(5, 1fr);
+    background: var(--ink); box-shadow: 0 -1px 0 rgb(255 255 255 / .08);
+  }
+  .nav a { flex-direction: column; justify-content: center; gap: 3px; padding: 0; border: 0; font-size: 11.5px; }
+  .nav a::before {
+    content: ""; width: 22px; height: 22px; background: currentColor;
+    -webkit-mask: var(--icon) center / contain no-repeat;
+    mask: var(--icon) center / contain no-repeat;
+  }
+  .nav a[aria-current="page"] { color: var(--tag); }
+  .nav a[href="/cashier.html"] { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 3h12v18l-3-2-3 2-3-2-3 2Z'/%3E%3Cpath d='M9 8h6M9 12h6M9 16h3'/%3E%3C/svg%3E"); }
+  .nav a[href="/"] { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M21 8 12 3 3 8v8l9 5 9-5Z'/%3E%3Cpath d='m3 8 9 5 9-5M12 13v8'/%3E%3C/svg%3E"); }
+  .nav a[href="/sales.html"] { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 20h16M7 16v-5M12 16V6M17 16v-8'/%3E%3C/svg%3E"); }
+  .nav a[href="/expenses.html"] { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 7a2 2 0 0 1 2-2h12v4'/%3E%3Crect x='3' y='9' width='18' height='11' rx='2'/%3E%3Cpath d='M16 14.5h2'/%3E%3C/svg%3E"); }
+  .nav a[href="/debts.html"] { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='9' cy='8' r='3.5'/%3E%3Cpath d='M2.5 20a6.5 6.5 0 0 1 13 0M16 4.6a3.5 3.5 0 0 1 0 6.8M18 14a6.5 6.5 0 0 1 3.5 6'/%3E%3C/svg%3E"); }
+  .toasts { top: calc(var(--topbar-h) + 10px); bottom: auto; }
+
   .catalog-head { padding: 16px; }
   .catalog-tools { width: 100%; }
   .search { flex: 1; width: auto; }
   .table-wrap { padding: 0 16px 16px; }
   .field-row { grid-template-columns: 1fr; }
+  .sales { padding: 16px 16px 32px; }
+  .sales-head .segmented { width: 100%; }
+  .sales-head .segmented button { flex: 1; }
+  /* Date on its own line first, the buttons sharing the line below */
+  .period-controls > .input,
+  .period-controls label { flex: 1 1 100%; }
+  .period-controls > .input { order: -1; }
+  .period-controls label .input { flex: 1; min-width: 0; }
+  .period-controls .btn { flex: 1; }
+  .presets { flex: 1 1 100%; margin: 0; }
+  .ptable:not(.keep-table) .invoice-no::before { content: "فاتورة رقم "; }
   .zreport { grid-template-columns: 1fr 1fr; }
   .zreport > div { padding: 12px 14px; }
   .z-value { font-size: 21px; }
-  /* Wide tables scroll sideways instead of widening the page */
   .table-scroll { overflow-x: auto; }
-  .expense-fields { grid-template-columns: 1fr 1fr; }
+  .expense-fields { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .expense-fields .field:first-child,
   .expense-fields .field-wide { grid-column: 1 / -1; }
   .expense-summary { grid-template-columns: 1fr; }
+  .debt-total { display: block; }
+
+  /* Dialogs become bottom sheets; in forms the buttons stay pinned at the bottom while
+     the fields scroll, so Save is always in reach */
+  .dialog {
+    width: 100%; max-width: 100%; max-height: calc(100dvh - 24px);
+    margin: auto 0 0; border-radius: 16px 16px 0 0;
+  }
+  .dialog form > .dialog-actions {
+    position: sticky; bottom: 0; z-index: 2;
+    margin: 8px -24px -22px; padding: 12px 24px calc(12px + env(safe-area-inset-bottom));
+    background: var(--paper); border-top: 1px solid var(--line-soft);
+  }
+  .sale-dialog .dialog-actions,
+  .scanner .dialog-actions { padding-bottom: calc(20px + env(safe-area-inset-bottom)); }
+
+  /* Finger-sized controls (40px and up) */
+  .input, .qty-input { font-size: 16px; }
+  .scan-input { font-size: 17px; }
+  .btn, .btn-sm { min-height: 40px; }
+  .btn-sm { padding: 6px 12px; }
+  .chip { min-height: 40px; padding: 8px 16px; }
+  .segmented button { min-height: 40px; }
+  .mode-switch button { min-height: 36px; padding: 4px 12px; }
+  .icon-btn, .line-remove, .qty-btn { width: 40px; height: 40px; }
+  .qty-input { width: 54px; height: 40px; }
+  .rail-link { min-height: 44px; }
+  .scan-camera { min-height: 40px; }
+  .brand { min-height: 40px; }
+  .z-link { display: inline-block; padding: 11px 0; }
+
+  /* Tables become cards: a title line, then each value under its column name */
+  .ptable:not(.keep-table) { border: 0; border-radius: 0; background: none; }
+  .ptable:not(.keep-table) thead { display: none; }
+  .ptable:not(.keep-table) tbody,
+  .ptable:not(.keep-table) tfoot { display: grid; gap: 10px; }
+  .ptable:not(.keep-table) tfoot { margin-top: 10px; }
+  .ptable:not(.keep-table) tr {
+    position: relative;
+    display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px 12px;
+    padding: 12px 14px;
+    background: var(--paper); border: 1px solid var(--line); border-radius: var(--r-m);
+  }
+  /* right, not start: number cells are left-to-right and would otherwise hug the left edge */
+  .ptable:not(.keep-table) td,
+  .ptable:not(.keep-table) .end { display: block; padding: 0; border: 0; background: none; text-align: right; }
+  .ptable:not(.keep-table) td:has(.barcode) { grid-column: span 2; }
+  .ptable:not(.keep-table) .pct { display: inline; margin-inline-start: 6px; }
+  .ptable:not(.keep-table) td[data-label]::before {
+    content: attr(data-label); display: block; margin-bottom: 2px;
+    font-size: 12px; font-weight: 400; color: var(--muted);
+  }
+  .ptable:not(.keep-table) td.cell-title { grid-column: 1 / -1; padding-inline-end: 36px; font-size: 16px; }
+  .ptable:not(.keep-table) td.cell-title::before,
+  .ptable:not(.keep-table) td.row-actions::before,
+  .ptable:not(.keep-table) td.rank::before { content: none; }
+  .ptable:not(.keep-table) .row-actions { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 8px; }
+  .ptable:not(.keep-table) .rank { position: absolute; top: 12px; inset-inline-end: 14px; }
+  .ptable:not(.keep-table) tbody tr:hover td { background: none; }
+  .ptable:not(.keep-table) tfoot tr { background: var(--paper-2); }
+  .ptable:not(.keep-table) tfoot td { font-weight: 600; }
+  .ptable:not(.keep-table) tr.sale-items { grid-template-columns: 1fr; margin-top: -10px; border-top-style: dashed; border-radius: 0 0 var(--r-m) var(--r-m); }
+  .breakdown tr.is-quiet { display: none; }
 }
 
 @media (max-width: 480px) {
-  .brand-name { display: none; }
   .input-group .btn-label,
   .scan-camera .btn-label { display: none; }
   .scan-input { padding-inline-end: 60px; }

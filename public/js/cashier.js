@@ -63,7 +63,19 @@ const els = {
   customerInput: $('customerInput'),
   customerOptions: $('customerOptions'),
   creditNote: $('creditNote'),
+  cartBar: $('cartBar'),
+  cartBarCount: $('cartBarCount'),
+  cartBarTotal: $('cartBarTotal'),
+  sheetClose: $('sheetClose'),
 };
+
+// Phones and tablets show the invoice as a panel over the products (see style.css)
+function openInvoiceSheet(open) {
+  document.body.classList.toggle('cart-open', open);
+  els.cartBar.setAttribute('aria-expanded', String(open));
+}
+els.cartBar.addEventListener('click', () => openInvoiceSheet(true));
+els.sheetClose.addEventListener('click', () => openInvoiceSheet(false));
 
 const focusScan = () => finePointer && els.scan.focus();
 
@@ -339,6 +351,9 @@ function renderCart() {
     state.cart.reduce((sum, l) => (l.unit === 'kg' ? sum : sum + l.qty * l.packSize), 0),
   );
   els.grandTotal.textContent = formatMoney(cartTotal());
+  els.cartBarCount.textContent = state.cart.length;
+  els.cartBarTotal.textContent = formatMoney(cartTotal());
+  els.cartBar.classList.toggle('is-empty', !hasItems);
   if (state.lastAdded) {
     els.cartLines.querySelector(`[data-key="${state.lastAdded}"]`)?.scrollIntoView({ block: 'nearest' });
     state.lastAdded = null;
@@ -649,6 +664,7 @@ async function checkout() {
       loadCustomers();
     }
     renderCart();
+    openInvoiceSheet(false);
     showReceipt(sale);
     loadToday();
     loadCatalog().catch(() => {}); // stock went down
@@ -734,6 +750,10 @@ els.saleDialog.addEventListener('close', focusScan);
 document.addEventListener('keydown', (e) => {
   // The receipt or camera window is open: leave keys to it
   if (document.querySelector('dialog[open]')) return;
+  if (e.key === 'Escape' && document.body.classList.contains('cart-open')) {
+    openInvoiceSheet(false);
+    return;
+  }
   if (e.key === 'F2') {
     e.preventDefault();
     if (state.cart.length) {
