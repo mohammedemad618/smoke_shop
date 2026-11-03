@@ -50,9 +50,13 @@ const purchaseSchema = new Schema(
     payments: { type: [paymentSchema], default: [] },
     status: { type: String, enum: ['active', 'cancelled'], default: 'active', index: true },
     cancelledAt: Date,
+    // The browser's id for this invoice: saved twice, it is still one (lib/idempotency.js)
+    clientId: String,
   },
   { timestamps: true, optimisticConcurrency: true },
 );
+
+purchaseSchema.index({ clientId: 1 }, { unique: true, sparse: true });
 
 // What the shop still owes its suppliers on the invoices that stand
 purchaseSchema.statics.owedToSuppliers = async function owedToSuppliers() {

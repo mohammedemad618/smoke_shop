@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import mongoose from 'mongoose';
 import { createTenant, transition } from '../services/tenants.js';
 import { auditHash } from '../control/models/AuditLog.js';
-import { startTestEnv } from './support/harness.js';
+import { startTestEnv, owner } from './support/harness.js';
 
 const GENESIS = '0'.repeat(64);
 
@@ -67,7 +67,7 @@ test('an entry goes after the true end of the chain when the newest by time and 
   assert.strictEqual(entry.prevHash, h2);
   assert.deepStrictEqual((await walkChain()).slice(-3).map((e) => e.actor), ['p1', 'p2', 'test']);
   // And a shop can still be created, with its entries
-  const { tenant } = await createTenant(env.ctx, { slug: 'after-same-ms', shopName: 'بعد' }, { actor: 'test' });
+  const { tenant } = await createTenant(env.ctx, { slug: 'after-same-ms', shopName: 'بعد', owner: owner() }, { actor: 'test' });
   assert.strictEqual(tenant.status, 'active');
   assert.strictEqual(await AuditLog.countDocuments({ tenantId: tenant._id }), 2);
 });
@@ -108,7 +108,7 @@ test('a status change whose audit entry cannot be written is undone', async () =
 
 test('an activation that cannot be logged fails the creation; running it again finishes it, logged', async () => {
   const { Tenant, Job, AuditLog } = control;
-  const input = { slug: 'unlogged', shopName: 'بلا سجل' };
+  const input = { slug: 'unlogged', shopName: 'بلا سجل', owner: owner() };
   const restore = breakRecord((entry) => entry.action === 'tenant.status');
   try {
     await assert.rejects(createTenant(env.ctx, input, { actor: 'test' }), /audit log unavailable/);
@@ -132,7 +132,7 @@ test('an activation that cannot be logged fails the creation; running it again f
 
 test("a shop's creation is logged once, also when the run that made it stopped before logging it", async () => {
   const { Tenant, AuditLog } = control;
-  const input = { slug: 'relogged', shopName: 'سجل لاحق' };
+  const input = { slug: 'relogged', shopName: 'سجل لاحق', owner: owner() };
   const restore = breakRecord((entry) => entry.action === 'tenant.create' && (entry.result ?? 'ok') === 'ok');
   try {
     await assert.rejects(createTenant(env.ctx, input, { actor: 'cli' }), /audit log unavailable/);

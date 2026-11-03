@@ -1,6 +1,7 @@
 // One rounding function for the screen and the server (lib/util.js imports it too), so
 // the screen shows exactly what the server saves
 import { roundTo } from './rounding.js';
+import { ApiError, request, fetchMe, hasCsrf, signIn, signOut, loginUrl } from './auth.js';
 
 const moneyFormat = new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 });
 // Arabic wording with Latin digits, matching prices and barcodes
@@ -75,23 +76,55 @@ export function dayQuery(date) {
 const ENTITIES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
 export const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ENTITIES[c]);
 
+export { ApiError };
+
+// The page cannot be used signed out: to the sign-in page, and back here afterwards
+function goToLogin() {
+  location.assign(loginUrl());
+  return new Promise(() => {}); // the page is leaving: whoever waits on this waits for ever
+}
+
+/*
+ * A request to the shop's API. Every write sends the session's CSRF token. A read that
+ * finds the session over (401) or the first password unchanged goes to the sign-in page;
+ * a write never leaves the page: it throws an ApiError whose code says why (AUTH_EXPIRED,
+ * TENANT_SUSPENDED, TENANT_MOVED...), so the page keeps what was typed and can sign in
+ * again in place (signInAgain) and send the same request again. A closed shop also shows
+ * a banner at the top of the page.
+ */
 export async function api(path, { method = 'GET', body } = {}) {
-  let res;
+  const write = method !== 'GET' && method !== 'HEAD';
+  if (write && !hasCsrf()) await session;
   try {
-    res = await fetch(`/api${path}`, {
-      method,
-      headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
-  } catch {
-    throw new Error('تعذر الاتصال بالخادم. تأكد أن التطبيق يعمل.');
+    const data = await sendOnce(path, method, body, write);
+    hideBanner();
+    return data;
+  } catch (err) {
+    if (err.code === 'TENANT_SUSPENDED' || err.code === 'TENANT_MOVED' || err.code === 'TENANT_DELETED') showBanner(err.message);
+    if (!write && (err.code === 'AUTH_EXPIRED' || err.code === 'PASSWORD_CHANGE_REQUIRED')) return goToLogin();
+    throw err;
   }
-  if (res.status === 204) return null;
-  const data = await res.json().catch(() => null);
-  if (!res.ok) {
-    throw Object.assign(new Error(data?.error || `تعذر إتمام الطلب (${res.status})`), { status: res.status });
+}
+
+// Signed in again in another tab, this one's token is stale: fetch the current one and send
+// the write once more (it was refused before doing anything)
+async function sendOnce(path, method, body, write) {
+  try {
+    return await request(path, { method, body });
+  } catch (err) {
+    if (!write || err.code !== 'CSRF_FAILED') throw err;
+    const fresh = await fetchMe().catch(() => null);
+    if (!fresh) throw err;
+    account = fresh;
+    return request(path, { method, body });
   }
-  return data;
+}
+
+// A random id for one sale, purchase or return, sent again with the same request so the
+// server records it once (lib/idempotency.js). From getRandomValues, which works on any
+// address, unlike randomUUID.
+export function newClientId() {
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 // What happens to the money of a return: off a credit customer's debt, back in cash, or both
@@ -166,6 +199,150 @@ if (more) {
   });
 }
 
+/* The signed-in account */
+
+// GET /api/auth/me: the account's name for the menu, its role, and the CSRF token
+let account = null;
+const EXPIRY_WARNING_MS = 8 * 60 * 60 * 1000;
+
+function showAccount() {
+  const name = account?.user?.displayName || account?.user?.username || '';
+  for (const el of document.querySelectorAll('[data-username]')) el.textContent = name;
+}
+
+async function loadSession() {
+  try {
+    account = await fetchMe();
+  } catch (err) {
+    if (err.code === 'AUTH_EXPIRED' || err.code === 'PASSWORD_CHANGE_REQUIRED') return goToLogin();
+    return null; // offline: the page works with what it has, and writes say so
+  }
+  showAccount();
+  // A session lasts 14 days at most: say so before it ends in the middle of a sale
+  if (new Date(account.expiresAt) - Date.now() < EXPIRY_WARNING_MS) {
+    setTimeout(() => toast('تنتهي جلستك بعد أقل من 8 ساعات. سجّل الخروج ثم الدخول لتبدأ جلسة جديدة'), 1500);
+  }
+  return account;
+}
+export const session = loadSession();
+
+// Signing out ends the shift on this tab: its cart and the rest it kept go with it
+for (const button of document.querySelectorAll('[data-logout]')) {
+  button.addEventListener('click', async () => {
+    button.disabled = true;
+    await signOut().catch(() => {});
+    try {
+      sessionStorage.clear();
+    } catch {
+      // storage blocked: nothing was kept
+    }
+    location.assign('/login.html');
+  });
+}
+
+// One line across the top while the shop is closed (suspended, moved), over the page,
+// which keeps everything as it was
+function showBanner(message) {
+  let banner = document.getElementById('statusBanner');
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'statusBanner';
+    banner.className = 'status-banner';
+    banner.setAttribute('role', 'alert');
+    document.body.prepend(banner);
+  }
+  banner.textContent = message;
+}
+function hideBanner() {
+  document.getElementById('statusBanner')?.remove();
+}
+
+/*
+ * Signing in again without leaving the page, when a write found the session over. Resolves
+ * true once signed in (the write can then be sent again, with the same id), false if
+ * cancelled. Several writes waiting at once share one window. Built with textContent only.
+ */
+let signingIn = null;
+export function signInAgain() {
+  signingIn ??= openSignIn().finally(() => {
+    signingIn = null;
+  });
+  return signingIn;
+}
+
+function openSignIn() {
+  return new Promise((resolve) => {
+    const make = (tag, props = {}) => Object.assign(document.createElement(tag), props);
+    const dialog = make('dialog', { className: 'dialog signin-dialog' });
+    dialog.setAttribute('aria-labelledby', 'signinTitle');
+    const form = make('form', { noValidate: true });
+    const title = make('h2', { id: 'signinTitle', textContent: 'انتهت الجلسة' });
+    const lead = make('p', { className: 'hint signin-lead', textContent: 'سجّل الدخول للمتابعة. ما في الصفحة باقٍ كما هو.' });
+    const error = make('p', { className: 'form-error', hidden: true });
+    error.setAttribute('role', 'alert');
+    const field = (id, label, input) => {
+      const wrap = make('div', { className: 'field' });
+      wrap.append(make('label', { htmlFor: id, textContent: label }), Object.assign(input, { id, className: 'input' }));
+      return wrap;
+    };
+    const username = make('input', { autocomplete: 'username', autocapitalize: 'none', spellcheck: false, maxLength: 64, dir: 'ltr', value: account?.user?.username ?? '' });
+    const password = make('input', { type: 'password', autocomplete: 'current-password', maxLength: 128 });
+    const submit = make('button', { type: 'submit', className: 'btn btn-primary', textContent: 'دخول' });
+    const cancel = make('button', { type: 'button', className: 'btn btn-ghost', textContent: 'إلغاء' });
+    const actions = make('div', { className: 'dialog-actions' });
+    actions.append(submit, cancel);
+    form.append(title, lead, error, field('signinUser', 'اسم المستخدم', username), field('signinPassword', 'كلمة المرور', password), actions);
+    dialog.append(form);
+
+    let signedIn = false;
+    const finish = () => {
+      dialog.remove();
+      resolve(signedIn);
+    };
+    dialog.addEventListener('close', finish, { once: true });
+    cancel.addEventListener('click', () => dialog.close());
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      if (!username.value.trim() || !password.value) {
+        Object.assign(error, { textContent: 'اكتب اسم المستخدم وكلمة المرور', hidden: false });
+        return;
+      }
+      submit.disabled = true;
+      try {
+        account = await signIn(username.value, password.value);
+        showAccount();
+        // A new first password from the admin: changed on the sign-in page (the cart is kept in this tab)
+        if (account.mustChangePassword) {
+          goToLogin();
+          return;
+        }
+        signedIn = true;
+        dialog.close();
+      } catch (err) {
+        Object.assign(error, { textContent: err.message, hidden: false });
+        password.select();
+      } finally {
+        submit.disabled = false;
+      }
+    });
+    document.body.append(dialog);
+    dialog.showModal();
+    (username.value ? password : username).focus();
+  });
+}
+
+// Runs a write; if the session had ended, signs in again in place and runs it once more
+// (with the same body and id, so it is still recorded once). Cancelling throws the error.
+export async function withSignIn(write) {
+  for (;;) {
+    try {
+      return await write();
+    } catch (err) {
+      if (err.code !== 'AUTH_EXPIRED' || !(await signInAgain())) throw err;
+    }
+  }
+}
+
 // The shop's name (from its settings, GET /api/shop) in the header and at the end of the tab
 // title, instead of «نقطة البيع». The last one seen is kept for this tab so pages do not
 // flash the default; pages that need the name or the receipt note await shopInfo.
@@ -191,9 +368,25 @@ async function loadShop() {
     // offline or storage blocked: keep what is shown
   }
   showShopName(shop?.shopName);
-  return { shopName: String(shop?.shopName ?? '').trim(), receiptNote: String(shop?.receiptNote ?? '').trim() };
+  return shopFields(shop);
 }
+const shopFields = (shop) => ({
+  shopName: String(shop?.shopName ?? '').trim(),
+  receiptNote: String(shop?.receiptNote ?? '').trim(),
+  phone: String(shop?.phone ?? '').trim(),
+  address: String(shop?.address ?? '').trim(),
+});
 export const shopInfo = loadShop();
+
+// After the settings page saves: the new name at once, here and in the next pages of this tab
+export function rememberShop(shop) {
+  try {
+    sessionStorage.setItem(SHOP_KEY, JSON.stringify(shopFields(shop)));
+  } catch {
+    // storage blocked: the next page asks the server
+  }
+  showShopName(shop.shopName);
+}
 
 export const PRODUCTS = { one: 'منتج واحد', two: 'منتجان', few: 'منتجات', many: 'منتجًا', single: 'منتج' };
 export const INVOICES = { one: 'فاتورة واحدة', two: 'فاتورتان', few: 'فواتير', many: 'فاتورة', single: 'فاتورة' };

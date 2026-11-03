@@ -16,6 +16,8 @@ import {
   INVOICES,
   dayQuery,
   shopInfo,
+  newClientId,
+  withSignIn,
 } from './common.js';
 import { scanBarcodes } from './scanner.js';
 
@@ -35,8 +37,11 @@ const state = {
   busy: false,
   payType: 'cash',
   customers: [],
-  // The shop's name and receipt note for the receipt (GET /api/shop)
-  shop: { shopName: '', receiptNote: '' },
+  // The shop's name, receipt note, phone and address for the receipt (GET /api/shop)
+  shop: { shopName: '', receiptNote: '', phone: '', address: '' },
+  // The id of the sale this cart becomes, made with its first item and sent with every try
+  // to complete it, so trying again after a lost answer never records it twice
+  clientSaleId: null,
 };
 shopInfo.then((shop) => {
   state.shop = shop;
@@ -254,6 +259,8 @@ function addToCart(product, qty = 1, mode = 'retail') {
   const next = Math.min(roundQty((line?.qty ?? 0) + qty), MAX_QTY);
   const problem = stockProblem(product, baseInCart(product._id, key) + next * fields.packSize);
   if (problem) return problem;
+  // A new cart is a new sale
+  if (!state.cart.length) state.clientSaleId = newClientId();
   if (line) line.qty = next;
   else state.cart.push({ key, productId: product._id, mode, qty: next, weightUnit: preferredWeightUnit(product._id), ...fields });
   state.lastAdded = key;
@@ -408,6 +415,47 @@ function updatePayment() {
   els.changeDue.textContent = formatMoney(Number.isFinite(change) ? Math.abs(change) : total);
   els.checkout.disabled = !state.cart.length || short || state.busy;
   els.clear.disabled = !state.cart.length || state.busy;
+  saveCart();
+}
+
+/* The cart kept in this tab */
+
+// In sessionStorage with its sale id, so a reload, a session that ended or the shop being
+// paused loses nothing; it goes once the sale is completed or the invoice cancelled
+const CART_KEY = 'pos.cart';
+
+function saveCart() {
+  try {
+    if (!state.cart.length) {
+      sessionStorage.removeItem(CART_KEY);
+      return;
+    }
+    sessionStorage.setItem(
+      CART_KEY,
+      JSON.stringify({ cart: state.cart, clientSaleId: state.clientSaleId, payType: state.payType, customer: els.customerInput.value, paid: els.paid.value }),
+    );
+  } catch {
+    // Storage blocked: the cart lives as long as the page
+  }
+}
+
+function restoreCart() {
+  let saved = null;
+  try {
+    saved = JSON.parse(sessionStorage.getItem(CART_KEY));
+  } catch {
+    return;
+  }
+  const lines = Array.isArray(saved?.cart) ? saved.cart.filter((l) => typeof l?.productId === 'string' && typeof l.key === 'string' && Number(l.qty) > 0) : [];
+  if (!lines.length) return;
+  state.cart = lines;
+  state.clientSaleId = typeof saved.clientSaleId === 'string' ? saved.clientSaleId : newClientId();
+  if (saved.payType === 'credit') {
+    setPayType('credit');
+    els.customerInput.value = String(saved.customer ?? '');
+  }
+  els.paid.value = String(saved.paid ?? '');
+  renderCart();
 }
 
 /* Credit */
@@ -691,6 +739,7 @@ els.cartLines.addEventListener('change', (e) => {
 els.clear.addEventListener('click', () => {
   if (!state.cart.length || !confirm('إلغاء الفاتورة الحالية وحذف كل أصنافها؟')) return;
   state.cart = [];
+  state.clientSaleId = null;
   els.paid.value = '';
   renderCart();
   focusScan();
@@ -719,7 +768,7 @@ async function checkout() {
     const name = els.customerInput.value.trim();
     if (!confirm(`«${name}» ليس في قائمة الزبائن. إضافته كزبون جديد وتسجيل الدين عليه؟`)) return;
     try {
-      customer = await api('/customers', { method: 'POST', body: { name } });
+      customer = await withSignIn(() => api('/customers', { method: 'POST', body: { name } }));
       state.customers.push(customer);
     } catch (err) {
       toast(err.message, 'error');
@@ -727,17 +776,20 @@ async function checkout() {
     }
   }
   state.busy = true;
+  state.clientSaleId ??= newClientId();
   updatePayment();
+  const body = {
+    items: state.cart.map((l) => ({ productId: l.productId, quantity: l.qty, mode: l.mode })),
+    paid: raw === '' ? undefined : roundMoney(parseNumber(raw)),
+    ...(credit ? { paymentType: 'credit', customerId: customer._id } : {}),
+    clientId: state.clientSaleId,
+  };
   try {
-    const sale = await api('/sales', {
-      method: 'POST',
-      body: {
-        items: state.cart.map((l) => ({ productId: l.productId, quantity: l.qty, mode: l.mode })),
-        paid: raw === '' ? undefined : roundMoney(parseNumber(raw)),
-        ...(credit ? { paymentType: 'credit', customerId: customer._id } : {}),
-      },
-    });
+    // A session that ended asks to sign in here, then the same sale is sent again: with the
+    // same id it is recorded once, whatever happened to the first try
+    const sale = await withSignIn(() => api('/sales', { method: 'POST', body }));
     state.cart = [];
+    state.clientSaleId = null;
     els.paid.value = '';
     if (credit) {
       els.customerInput.value = '';
@@ -750,8 +802,9 @@ async function checkout() {
     loadToday();
     loadCatalog().catch(() => {}); // stock went down
   } catch (err) {
-    toast(err.message, 'error');
-    loadCatalog().catch(() => {});
+    // The cart stays as it is, its id too, ready to be sent again
+    toast(err.code === 'TENANT_SUSPENDED' ? 'المتجر موقوف مؤقتًا، ولم يُسجَّل البيع. الفاتورة باقية كما هي' : err.message, 'error');
+    if (err.code !== 'TENANT_SUSPENDED' && err.code !== 'NETWORK') loadCatalog().catch(() => {});
   } finally {
     state.busy = false;
     updatePayment();
@@ -770,6 +823,8 @@ function showReceipt(sale) {
   els.saleReceipt.innerHTML = `<div class="slip">
     <div class="slip-head">
       <strong>${escapeHtml(state.shop.shopName || 'نقطة البيع')}</strong>
+      ${state.shop.address ? `<span>${escapeHtml(state.shop.address)}</span>` : ''}
+      ${state.shop.phone ? `<span class="num">${escapeHtml(state.shop.phone)}</span>` : ''}
       <span>فاتورة رقم <span class="num">${sale.number}</span></span>
       <span>${formatDateTime(sale.createdAt)}</span>
     </div>
@@ -816,8 +871,10 @@ els.cancelSale.addEventListener('click', async () => {
   if (!sale || !confirm(question)) return;
   // Close first: toasts cannot show above an open modal
   els.saleDialog.close();
+  // One id for this cancellation: sent again, it gives back the money once
+  const clientId = newClientId();
   try {
-    const { refunded, toAccount, customerName } = await api(`/sales/${sale._id}/returns`, { method: 'POST', body: {} });
+    const { refunded, toAccount, customerName } = await withSignIn(() => api(`/sales/${sale._id}/returns`, { method: 'POST', body: { clientId } }));
     toast(`أُلغيت الفاتورة رقم ${sale.number}. ${refundMessage(refunded, toAccount, customerName)}`);
     if (toAccount) loadCustomers();
     loadToday();
@@ -864,6 +921,7 @@ const tick = () => (els.clock.textContent = formatDateTime(new Date()));
 tick();
 setInterval(tick, 30_000);
 
+restoreCart();
 loadCatalog().catch((err) => toast(err.message, 'error'));
 loadToday();
 loadCustomers();

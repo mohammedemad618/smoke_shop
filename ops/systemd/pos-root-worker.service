@@ -1,0 +1,50 @@
+# /etc/systemd/system/pos-root-worker.service: certificates and backup jobs for the POS
+#
+# Started every minute by pos-root-worker.timer. Reads what the app asked for in
+# /var/lib/pos-spool (desired/, retire/, requests/), issues and renews certificates with
+# certbot (its own directories, /etc/letsencrypt-pos), runs mongodump / mongorestore / drop
+# jobs, and writes the results to /var/lib/pos-spool/state. A standalone script that imports
+# nothing from the app (ops/sbin/pos-root-worker.mjs, installed by hand after review).
+# Runs never overlap: systemd does not start a unit that is still running, and the script
+# takes its own lock (shared with pos-backup.service).
+
+[Unit]
+Description=POS root worker (certificates and backup jobs)
+Documentation=file:///srv/pos/current/docs/ops-runbook.md
+After=network-online.target mongod.service nginx.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/node /usr/local/sbin/pos-root-worker.mjs
+# mongosh keeps its settings and logs under $HOME: this folder, not /root
+Environment=HOME=/var/lib/pos-root-worker
+Environment=DO_NOT_TRACK=1
+Nice=5
+UMask=0077
+TimeoutStartSec=1h
+SyslogIdentifier=pos-root-worker
+
+# Hardening: root, but only the folders it manages are writable
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_FOWNER
+ProtectSystem=strict
+ReadWritePaths=/var/lib/pos-spool /var/lib/pos-root-worker /var/backups/pos /etc/nginx/pos-certs
+ReadWritePaths=/etc/letsencrypt-pos /var/lib/letsencrypt-pos /var/log/letsencrypt-pos /var/www/letsencrypt
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM

@@ -208,7 +208,7 @@ function updateOpen() {
   $('countSummary').innerHTML = `<div>
       <span class="z-label">المعدود</span>
       <div class="z-value num">${done} / ${total}</div>
-      <div class="progress" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100" aria-label="نسبة المعدود"><span style="width: ${pct}%"></span></div>
+      <div class="progress" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100" aria-label="نسبة المعدود"><span></span></div>
     </div>
     <div>
       <span class="z-label">النقص</span>
@@ -225,6 +225,8 @@ function updateOpen() {
       <div class="z-value num">${s.fresh}</div>
       <span class="z-note">منتجات لم تكن كميتها مسجّلة</span>
     </div>`;
+  // Through the DOM, not a style attribute, which the Content-Security-Policy would block
+  $('countSummary').querySelector('.progress span').style.width = `${pct}%`;
 
   renderChips();
   renderList();

@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#1C2530">
+  <meta name="referrer" content="same-origin">
+  <title>تسجيل الدخول | نقطة البيع</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Readex+Pro:wght@300..700&display=swap">
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body class="auth-page">
+  <main class="auth">
+    <div class="auth-card">
+      <div class="auth-brand"><span class="brand-mark" aria-hidden="true"></span><span id="shopName">نقطة البيع</span></div>
+
+      <form class="auth-form" id="loginForm" novalidate>
+        <h1>تسجيل الدخول</h1>
+        <p class="form-error" id="loginError" role="alert" hidden></p>
+        <div class="field">
+          <label for="username">اسم المستخدم</label>
+          <input id="username" class="input" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="64" dir="ltr" required>
+        </div>
+        <div class="field">
+          <label for="password">كلمة المرور</label>
+          <input id="password" class="input" name="password" type="password" autocomplete="current-password" maxlength="128" required>
+        </div>
+        <label class="check"><input type="checkbox" id="showPassword"> إظهار كلمة المرور</label>
+        <button class="btn btn-primary btn-xl auth-submit" type="submit">دخول</button>
+      </form>
+
+      <form class="auth-form" id="changeForm" novalidate hidden>
+        <h1>غيّر كلمة المرور المؤقتة</h1>
+        <p class="auth-lead">كلمة المرور الحالية مؤقتة، أعطتك إياها الإدارة. اختر كلمة مرور جديدة لا يعرفها غيرك، ثم تابع إلى المتجر.</p>
+        <p class="form-error" id="changeError" role="alert" hidden></p>
+        <!-- For password managers: which account the new password belongs to -->
+        <input type="text" id="changeUser" name="username" autocomplete="username" hidden>
+        <div class="field" id="currentField" hidden>
+          <label for="currentPassword">كلمة المرور المؤقتة</label>
+          <input id="currentPassword" class="input" type="password" autocomplete="current-password" maxlength="128">
+        </div>
+        <div class="field">
+          <label for="newPassword">كلمة المرور الجديدة</label>
+          <input id="newPassword" class="input" type="password" autocomplete="new-password" maxlength="128" aria-describedby="passwordRules">
+          <p class="hint" id="passwordRules">10 أحرف على الأقل، ويمكن أن تكون بالعربية. لا تستخدم اسم المستخدم ولا عنوان المتجر، ولا كلمة شائعة مثل 123456789.</p>
+        </div>
+        <div class="field">
+          <label for="confirmPassword">أعد كتابة كلمة المرور الجديدة</label>
+          <input id="confirmPassword" class="input" type="password" autocomplete="new-password" maxlength="128">
+        </div>
+        <button class="btn btn-go btn-xl auth-submit" type="submit">حفظ والمتابعة</button>
+        <button class="link-btn auth-other" id="otherAccount" type="button">الدخول بحساب آخر</button>
+      </form>
+    </div>
+  </main>
+  <script type="module" src="/js/login.js"></script>
+</body>
+</html>

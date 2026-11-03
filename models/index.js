@@ -11,6 +11,7 @@ import debtEntrySchema from './DebtEntry.js';
 import stockCountSchema from './StockCount.js';
 import purchaseSchema from './Purchase.js';
 import settingSchema from './Setting.js';
+import userSchema from './User.js';
 import { QUERY_MS } from '../lib/limits.js';
 
 // Every read gets QUERY_MS unless it set its own limit (the reports, see lib/limits.js)
@@ -37,6 +38,7 @@ export const SCHEMAS = Object.freeze({
   StockCount: stockCountSchema,
   Purchase: purchaseSchema,
   Setting: settingSchema,
+  User: userSchema,
 });
 for (const schema of Object.values(SCHEMAS)) limitQueryTime(schema);
 

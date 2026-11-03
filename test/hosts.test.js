@@ -49,18 +49,38 @@ test('normalizeHost lower-cases, takes off the port and a trailing dot, and refu
 
 test("a shop's address works with any case, a port and a trailing dot", async () => {
   for (const host of ['gate.pos.localhost', 'GATE.Pos.LocalHost:3000', 'gate.pos.localhost.', 'gate.pos.localhost.:8080']) {
-    const res = await env.client(host).request('GET', '/api/shop');
+    const res = await env.client(host).request('GET', '/api/auth/shop');
     assert.deepStrictEqual([res.status, res.data.shopName], [200, 'متجر gate'], host);
   }
 });
 
-test('the admin host answers 404 JSON until the admin panel exists', async () => {
-  for (const path of ['/', '/api/admin/tenants', '/js/common.js']) {
-    const res = await env.client(`admin.${BASE_DOMAIN}`).request('GET', path);
-    assert.strictEqual(res.status, 404, path);
-    assert.match(res.headers['content-type'], /json/);
-    assert.strictEqual(typeof res.data.error, 'string');
+test('the admin host serves the panel only: its API needs a session, and no shop is reached', async () => {
+  const admin = env.client(`admin.${BASE_DOMAIN}`);
+  const page = await admin.request('GET', '/');
+  assert.strictEqual(page.status, 200);
+  assert.match(page.text, /لوحة الإدارة/);
+  const api = await admin.request('GET', '/api/admin/tenants');
+  assert.deepStrictEqual([api.status, api.data.code], [401, 'AUTH_EXPIRED']);
+  // A shop's own routes and scripts are not there
+  for (const path of ['/api/products', '/api/auth/shop', '/js/common.js', '/cashier.html']) {
+    assert.strictEqual((await admin.request('GET', path)).status, 404, path);
   }
+});
+
+test('/healthz and /readyz answer for Host localhost only, and say nothing about the shops', async () => {
+  for (const host of ['localhost', '127.0.0.1:3401']) {
+    const healthz = await env.client(host).request('GET', '/healthz');
+    assert.deepStrictEqual([healthz.status, healthz.data], [200, { ok: true }], host);
+    const readyz = await env.client(host).request('GET', '/readyz');
+    assert.strictEqual(readyz.status, 200);
+    assert.strictEqual(readyz.data.ok, true);
+    assert.ok('sha' in readyz.data && Number.isInteger(readyz.data.eventLoopP99Ms));
+    assert.strictEqual(readyz.headers['cache-control'], 'no-store');
+  }
+  // On a shop's or the admin's address they are just unknown paths
+  assert.notStrictEqual((await shop.client.request('GET', '/healthz')).status, 200);
+  assert.strictEqual((await env.client(`admin.${BASE_DOMAIN}`).request('GET', '/readyz')).status, 404);
+  assert.strictEqual((await env.client('example.com').request('GET', '/healthz')).status, 404);
 });
 
 test('unknown and reserved hosts: 404, an Arabic page for pages and JSON for /api', async () => {
@@ -114,8 +134,10 @@ test('50 random and odd hosts create no database', async () => {
 
 test("a shop's status decides what its address answers", async () => {
   const { tenant } = shop;
-  const page = () => shop.client.request('GET', '/cashier.html');
-  const api = () => shop.client.request('GET', '/api/products');
+  // Signed out: the status decides before any session is looked at (the sessions themselves
+  // end when the shop is suspended, test/auth.test.js)
+  const page = () => shop.client.request('GET', '/login.html');
+  const api = () => shop.client.request('GET', '/api/auth/shop');
   assert.strictEqual((await api()).status, 200);
 
   await transition(env.ctx, tenant._id, 'active', 'suspended', { actor: 'test', reason: 'لم يُدفع الاشتراك' });

@@ -1,0 +1,43 @@
+# /etc/systemd/system/pos-monitor.service: POS health checks every 5 minutes
+#
+# Memory available, disk use, mongod and the app running, certificates close to expiry,
+# the last nightly backup and restore drill, the root worker's last good run, failed jobs,
+# backup file permissions and the app's recent 5xx answers (from the journal). Problems go
+# to the journal (priority err / warning, at most once an hour each while they last) and to
+# /var/lib/pos-spool/state/monitor.json, which the admin panel reads.
+
+[Unit]
+Description=POS health checks
+Documentation=file:///srv/pos/current/docs/ops-runbook.md
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/node /usr/local/sbin/pos-monitor.mjs
+Nice=10
+UMask=0022
+TimeoutStartSec=2min
+SyslogIdentifier=pos-monitor
+
+# Root to read the journal, the worker's own state and the backup folder; writes only the
+# spool state folder
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
+ProtectSystem=strict
+ReadWritePaths=/var/lib/pos-spool/state
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM

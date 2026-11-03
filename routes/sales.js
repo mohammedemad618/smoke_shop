@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import mongoose from 'mongoose';
 import { httpError } from '../lib/errors.js';
+import { clientIdOf, isDuplicateOf } from '../lib/idempotency.js';
 import { REPORT_MS } from '../lib/limits.js';
 import { money, precise, roundQty, stockChange } from '../lib/util.js';
 import { DAY_MS, requestedRange, timeZoneParam } from '../lib/range.js';
@@ -340,8 +341,18 @@ router.get('/products', async (req, res) => {
 
 /* Selling */
 
+// An invoice as the cashier shows it, with what its customer owes now
+const withBalance = async (DebtEntry, sale) => ({ ...sale, customerBalance: sale.customer ? await DebtEntry.balanceOf(sale.customer) : undefined });
+
 router.post('/', async (req, res) => {
   const { Product, Sale, Customer, DebtEntry, Counter } = req.models;
+  // Sent again after an answer that never arrived: the invoice as it was recorded, and
+  // nothing else happens (no second number, no stock taken again)
+  const clientId = clientIdOf(req.body);
+  if (clientId) {
+    const done = await Sale.findOne({ clientId }).lean();
+    if (done) return res.json(await withBalance(DebtEntry, done));
+  }
   const lines = Array.isArray(req.body.items) ? req.body.items : [];
   if (lines.length === 0) throw httpError(400, 'أضف منتجًا واحدًا على الأقل إلى الفاتورة');
 
@@ -444,6 +455,7 @@ router.post('/', async (req, res) => {
       customer: customer?._id,
       customerName: customer?.name,
       debt,
+      clientId: clientId ?? undefined,
     });
     if (debt > 0) {
       await DebtEntry.create({
@@ -459,10 +471,15 @@ router.post('/', async (req, res) => {
     // No invoice without its debt record, and no stock taken for nothing
     if (sale) await Sale.deleteOne({ _id: sale._id });
     await putBackInStock(Product, taken);
+    // The same sale sent twice at once: the other request recorded it, this one gave its
+    // stock back and answers with that invoice
+    if (clientId && isDuplicateOf(err, 'clientId')) {
+      const done = await Sale.findOne({ clientId }).lean();
+      if (done) return res.json(await withBalance(DebtEntry, done));
+    }
     throw err;
   }
-  const customerBalance = customer ? await DebtEntry.balanceOf(customer._id) : undefined;
-  res.status(201).json({ ...sale.toObject(), customerBalance });
+  res.status(201).json(await withBalance(DebtEntry, sale.toObject()));
 });
 
 /* Returns */
@@ -472,8 +489,15 @@ router.post('/', async (req, res) => {
 // whole sale is cancelled.
 router.post('/:id/returns', async (req, res) => {
   const { Product, Sale, DebtEntry } = req.models;
+  const clientId = clientIdOf(req.body);
   const sale = await Sale.findById(req.params.id);
   if (!sale) throw httpError(404, 'الفاتورة غير موجودة');
+  // A return sent again: what it gave back the first time, and nothing more
+  const replay = (s) => {
+    const done = clientId && s.returns.find((r) => r.clientId === clientId);
+    return done && res.json({ sale: s, refunded: money(done.amount - (done.toAccount ?? 0)), toAccount: done.toAccount ?? 0, customerName: s.customerName });
+  };
+  if (replay(sale)) return;
 
   const requested = Array.isArray(req.body.items) ? req.body.items : null;
   const lines = [];
@@ -518,6 +542,7 @@ router.post('/:id/returns', async (req, res) => {
     items,
     amount: money(items.reduce((sum, i) => sum + i.amount, 0)),
     cost: money(cost),
+    ...(clientId ? { clientId } : {}),
   };
   // The return that empties the invoice takes back exactly what is left of it, whatever
   // older returns rounded to
@@ -549,7 +574,15 @@ router.post('/:id/returns', async (req, res) => {
   sale.returnedTotal = money((sale.returnedTotal ?? 0) + entry.amount);
   sale.returnedCost = money((sale.returnedCost ?? 0) + entry.cost);
   sale.returnStatus = sale.items.every((i) => i.returnedQuantity >= i.quantity) ? 'full' : 'partial';
-  await sale.save();
+  try {
+    await sale.save();
+  } catch (err) {
+    // The same return sent twice at once: the first one saved, this one changed nothing
+    if (clientId && (err instanceof mongoose.Error.VersionError || isDuplicateOf(err, 'returns.clientId'))) {
+      if (replay(await Sale.findById(sale._id))) return;
+    }
+    throw err;
+  }
 
   // Back on the shelf in pieces or kg: a returned box puts all its pieces back
   await putBackInStock(Product, lines.map(({ item, quantity }) => [item.product, roundQty(quantity * (item.packSize ?? 1))]));
@@ -569,5 +602,9 @@ router.post('/:id/returns', async (req, res) => {
     customerName: sale.customerName,
   });
 });
+
+// The admin panel's and the owner's CSV exports use the same figures as the report
+// (services/exports.js), so a month's file adds up to the month on the sales page
+export { periodFigures, sumFigures };
 
 export default router;

@@ -41,6 +41,8 @@ const returnSchema = new Schema(
     cost: { type: Number, required: true },
     // Part of amount taken off the customer's debt instead of paid back in cash
     toAccount: { type: Number, default: 0 },
+    // The browser's id for this return: sent again, it is not made twice (lib/idempotency.js)
+    clientId: String,
   },
   { _id: false },
 );
@@ -67,6 +69,9 @@ const saleSchema = new Schema(
     returnedTotal: { type: Number, default: 0 },
     returnedCost: { type: Number, default: 0 },
     returnStatus: { type: String, enum: ['partial', 'full'] },
+    // The browser's id for this sale (one per cart): sent again after a lost answer, it
+    // finds this invoice instead of making a second one (lib/idempotency.js)
+    clientId: String,
   },
   // Two people returning from the same invoice at once: the second save fails instead of double-counting
   { timestamps: true, optimisticConcurrency: true },
@@ -75,5 +80,8 @@ const saleSchema = new Schema(
 saleSchema.index({ createdAt: -1 });
 // Reports book a return on the day it was made
 saleSchema.index({ 'returns.at': 1 });
+// Sparse: invoices and returns made without an id are not in these indexes
+saleSchema.index({ clientId: 1 }, { unique: true, sparse: true });
+saleSchema.index({ 'returns.clientId': 1 }, { unique: true, sparse: true });
 
 export default saleSchema;

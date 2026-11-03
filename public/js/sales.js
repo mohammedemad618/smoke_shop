@@ -16,6 +16,8 @@ import {
   addDays,
   addMonths,
   PIECES,
+  newClientId,
+  withSignIn,
 } from './common.js';
 
 const TIME_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -67,6 +69,7 @@ let mode = 'day';
 let request = 0;
 let daySales = [];
 let returning = null;
+let returningId = null;
 const productView = { rows: [], sort: 'profit', showAll: false };
 
 /* Dates (all in the browser's time zone) */
@@ -517,6 +520,8 @@ function updateReturnAmount() {
 
 function openReturn(sale) {
   returning = sale;
+  // One id for this return: sent twice, the money and the stock come back once
+  returningId = newClientId();
   els.returnTitle.textContent = `إرجاع من الفاتورة رقم ${sale.number}`;
   els.returnHint.textContent =
     sale.paymentType === 'credit'
@@ -572,10 +577,9 @@ els.returnForm.addEventListener('submit', async (e) => {
   const button = els.returnForm.querySelector('[type="submit"]');
   button.disabled = true;
   try {
-    const { refunded, toAccount, customerName } = await api(`/sales/${returning._id}/returns`, {
-      method: 'POST',
-      body: { items },
-    });
+    const { refunded, toAccount, customerName } = await withSignIn(() =>
+      api(`/sales/${returning._id}/returns`, { method: 'POST', body: { items, clientId: returningId } }),
+    );
     els.returnDialog.close();
     toast(`تم الإرجاع: ${refundMessage(refunded, toAccount, customerName)}. والكمية عادت إلى المخزن`);
     load();

@@ -1,0 +1,46 @@
+# /etc/systemd/system/pos-backup.service: the nightly POS backups
+#
+# mongodump of pos_control and of every shop database registered in it, into
+# /var/backups/pos/<database>/<UTC time>-nightly.archive.gz (root, 0700 folders, 0600
+# files), each archive checked (complete gzip, document counts recorded); then retention
+# (14 daily, 8 weekly, 6 monthly) and, once a week, a full restore drill of one shop into a
+# temporary database. Same script as the minute worker (--nightly), same lock: it waits for
+# a running minute job to finish, and minute runs skip while it works.
+
+[Unit]
+Description=POS nightly backups
+Documentation=file:///srv/pos/current/docs/ops-runbook.md
+After=mongod.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/node /usr/local/sbin/pos-root-worker.mjs --nightly
+Environment=HOME=/var/lib/pos-root-worker
+Environment=DO_NOT_TRACK=1
+Nice=10
+IOSchedulingClass=idle
+UMask=0077
+TimeoutStartSec=3h
+SyslogIdentifier=pos-backup
+
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_FOWNER
+ProtectSystem=strict
+ReadWritePaths=/var/lib/pos-spool /var/lib/pos-root-worker /var/backups/pos
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM

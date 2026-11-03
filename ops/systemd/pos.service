@@ -1,0 +1,70 @@
+# /etc/systemd/system/pos.service: the POS app (admin panel and every shop) on 127.0.0.1:3401
+#
+# Runs as the unprivileged user pos. The code (/srv/pos/releases/<sha>, root:pos 0750) and
+# the settings (/etc/pos/pos.env, root:pos 0640) are read-only to it; the only places it can
+# write are the three request folders of the spool, where it asks the root worker for
+# certificates and backup jobs. Deployed by /usr/local/sbin/pos-deploy (ops/deploy.sh).
+
+[Unit]
+Description=POS point of sale (admin panel and shops)
+Documentation=file:///srv/pos/current/docs/ops-runbook.md
+After=network.target mongod.service
+# Restart for ever, but wait longer each time (2 s up to a minute) while it keeps failing
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=pos
+Group=pos
+WorkingDirectory=/srv/pos/current
+# Also in pos.env (for the command line scripts); here it cannot be forgotten
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node --max-old-space-size=180 --env-file=/etc/pos/pos.env /srv/pos/current/server.js
+Restart=always
+RestartSec=2
+RestartSteps=5
+RestartMaxDelaySec=60
+# server.js stops taking requests on SIGTERM and lets those running finish (5 s at most)
+KillSignal=SIGTERM
+TimeoutStopSec=15
+SyslogIdentifier=pos
+
+# Memory: the server has 2 GB shared with MongoDB and four other sites. If this process
+# grows, it is the one slowed down (MemoryHigh) and then killed (MemoryMax, OOMScoreAdjust),
+# never mongod.
+MemoryHigh=220M
+MemoryMax=280M
+OOMScoreAdjust=800
+LimitNOFILE=4096
+TasksMax=64
+
+# Hardening
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ReadWritePaths=/var/lib/pos-spool/desired /var/lib/pos-spool/retire /var/lib/pos-spool/requests
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+SystemCallErrorNumber=EPERM
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

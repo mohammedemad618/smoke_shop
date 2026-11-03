@@ -1,0 +1,14 @@
+# /etc/systemd/system/pos-backup.timer: 03:30 Baghdad time = 00:30 UTC (the server runs in
+# UTC; hishin-backup runs at 03:30 UTC, three hours later). Persistent: a night missed while
+# the server was off is made up at the next boot.
+
+[Unit]
+Description=POS nightly backups at 03:30 Asia/Baghdad
+
+[Timer]
+OnCalendar=*-*-* 00:30:00 UTC
+RandomizedDelaySec=5m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

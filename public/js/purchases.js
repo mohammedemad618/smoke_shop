@@ -15,6 +15,8 @@ import {
   parseKey,
   addMonths,
   packName,
+  newClientId,
+  withSignIn,
 } from './common.js';
 import { scanBarcodes } from './scanner.js';
 
@@ -479,6 +481,7 @@ function saveDraft() {
         note: els.note.value,
         payMode: d.payMode,
         paid: els.paid.value,
+        clientId: d.clientId,
         lines: d.lines.map((l) => ({
           product: l.product._id,
           mode: l.mode,
@@ -498,7 +501,8 @@ async function openComposer() {
   els.composer.hidden = false;
   window.scrollTo(0, 0);
   clearError();
-  state.draft = { lines: [], payMode: 'full' };
+  // One id per invoice, kept with the draft: saving it twice still makes one invoice
+  state.draft = { lines: [], payMode: 'full', clientId: newClientId() };
   els.supplier.value = '';
   els.reference.value = '';
   els.note.value = '';
@@ -528,6 +532,7 @@ function restoreDraft() {
   els.note.value = saved.note ?? '';
   els.paid.value = saved.paid ?? '';
   state.draft.payMode = ['full', 'part', 'credit'].includes(saved.payMode) ? saved.payMode : 'full';
+  if (typeof saved.clientId === 'string') state.draft.clientId = saved.clientId;
   let missing = 0;
   for (const l of saved.lines) {
     const product = byId.get(l.product);
@@ -930,6 +935,7 @@ els.save.addEventListener('click', async () => {
     reference: els.reference.value.trim(),
     note: els.note.value.trim(),
     paid,
+    clientId: d.clientId,
     items: d.lines.map((l) => ({
       product: l.product._id,
       mode: l.mode,
@@ -940,7 +946,7 @@ els.save.addEventListener('click', async () => {
   };
   els.save.disabled = true;
   try {
-    const purchase = await api('/purchases', { method: 'POST', body });
+    const purchase = await withSignIn(() => api('/purchases', { method: 'POST', body }));
     clearDraft();
     toast(`حُفظت فاتورة الشراء رقم ${purchase.number}، وأُضيفت الكميات إلى المخزن`);
     els.month.value = els.date.value.slice(0, 7);

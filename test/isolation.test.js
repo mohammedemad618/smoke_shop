@@ -33,8 +33,8 @@ async function product(shop, { barcode, name, salePrice, stock = 0 }) {
 }
 
 test('each shop starts with its own settings and the category «عام»', async () => {
-  assert.deepStrictEqual(await ok(a, 'GET', '/shop'), { shopName: 'متجر shop-a', receiptNote: '' });
-  assert.deepStrictEqual(await ok(b, 'GET', '/shop'), { shopName: 'متجر shop-b', receiptNote: '' });
+  assert.deepStrictEqual(await ok(a, 'GET', '/shop'), { shopName: 'متجر shop-a', receiptNote: '', phone: '', address: '' });
+  assert.deepStrictEqual(await ok(b, 'GET', '/shop'), { shopName: 'متجر shop-b', receiptNote: '', phone: '', address: '' });
   assert.deepStrictEqual((await ok(a, 'GET', '/categories')).map((c) => c.name), ['عام']);
   assert.deepStrictEqual((await ok(b, 'GET', '/categories')).map((c) => c.name), ['عام']);
 });

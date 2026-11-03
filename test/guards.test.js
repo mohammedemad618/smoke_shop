@@ -118,13 +118,14 @@ test("1000 requests to a shop whose database cannot be prepared add no connectio
 
   const views = env.db.base.otherDbs.length;
   const cached = Object.keys(env.db.base.relatedDbs).length;
-  const first = await client.request('GET', '/api/shop');
+  // The public endpoint opens the database; without a session nothing else would
+  const first = await client.request('GET', '/api/auth/shop');
   assert.strictEqual(first.status, 503);
   assert.match(first.data.error, /تعذّر فتح بيانات المتجر/);
   const afterFirst = env.db.base.otherDbs.length;
   assert.strictEqual(afterFirst, views + 1, 'one view on the database, once');
   for (let i = 0; i < 1000; i++) {
-    const res = await client.request('GET', '/api/products');
+    const res = await client.request('GET', '/api/auth/shop');
     assert.strictEqual(res.status, 503);
   }
   assert.strictEqual(env.db.base.otherDbs.length, afterFirst);
@@ -133,7 +134,7 @@ test("1000 requests to a shop whose database cannot be prepared add no connectio
   // Once the data is fixed, the next try after the wait succeeds on the same connection
   await products.deleteOne({ name: 'y' });
   await sleep(450);
-  const fixed = await client.request('GET', '/api/products');
+  const fixed = await client.request('GET', '/api/auth/shop');
   assert.strictEqual(fixed.status, 200);
   assert.strictEqual(env.db.base.otherDbs.length, afterFirst);
 });

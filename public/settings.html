@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#1C2530">
+  <title>الإعدادات | نقطة البيع</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Readex+Pro:wght@300..700&display=swap">
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/cashier.html"><span class="brand-mark" aria-hidden="true"></span><span class="brand-name">نقطة البيع</span></a>
+    <nav class="nav" aria-label="التنقل الرئيسي">
+      <a href="/cashier.html">الكاشير</a>
+      <a href="/">المنتجات</a>
+      <a href="/purchases.html">المشتريات</a>
+      <a href="/summary.html">الملخص</a>
+      <div class="nav-more">
+        <button class="nav-more-btn" type="button" aria-expanded="false" aria-controls="moreMenu">المزيد</button>
+        <div class="more-menu" id="moreMenu" hidden>
+          <a href="/sales.html">المبيعات</a>
+          <a href="/expenses.html">المصاريف</a>
+          <a href="/debts.html">الديون</a>
+          <a href="/stocktake.html">الجرد</a>
+          <a href="/settings.html" aria-current="page">الإعدادات</a>
+          <button class="more-logout" type="button" data-logout>تسجيل الخروج<span class="more-user" data-username></span></button>
+        </div>
+      </div>
+    </nav>
+  </header>
+
+  <main class="sales settings">
+    <div class="sales-head">
+      <h1>الإعدادات</h1>
+    </div>
+
+    <section class="settings-card" aria-labelledby="shopTitle">
+      <h2 id="shopTitle">المتجر</h2>
+      <form id="shopForm" novalidate>
+        <p class="form-error" id="shopError" role="alert" hidden></p>
+        <div class="field-row">
+          <div class="field">
+            <label for="shopName">اسم المتجر</label>
+            <input id="shopName" class="input" maxlength="60" required>
+            <p class="hint">يظهر في أعلى الصفحات وعلى الإيصال</p>
+          </div>
+          <div class="field">
+            <label for="phone">الهاتف</label>
+            <input id="phone" class="input" type="tel" inputmode="tel" maxlength="30" dir="ltr" autocomplete="off">
+            <p class="hint">يظهر على الإيصال إن كتبته</p>
+          </div>
+        </div>
+        <div class="field">
+          <label for="address">عنوان المحل</label>
+          <input id="address" class="input" maxlength="120" placeholder="مثل: بغداد، الكرادة، قرب ساحة الحرية">
+        </div>
+        <div class="field">
+          <label for="receiptNote">ملاحظة الإيصال</label>
+          <input id="receiptNote" class="input" maxlength="120" placeholder="شكرًا لزيارتكم">
+          <p class="hint">سطر في آخر الإيصال مكان «شكرًا لزيارتكم»، مثل: البضاعة المباعة لا ترد بعد 3 أيام</p>
+        </div>
+        <div class="field">
+          <label for="timeZone">المنطقة الزمنية</label>
+          <select id="timeZone" class="input"></select>
+          <p class="hint">قيمة افتراضية للمتجر. أيام التقارير تبدأ عند منتصف الليل بساعة هذا الجهاز.</p>
+        </div>
+        <div class="dialog-actions">
+          <button class="btn btn-primary" type="submit">حفظ إعدادات المتجر</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="settings-card" aria-labelledby="exportTitle">
+      <h2 id="exportTitle">تصدير البيانات</h2>
+      <p class="hint">ملفات CSV تفتح في Excel بالعربية: المنتجات بأسعارها وكمياتها، ومبيعات شهر يومًا بيوم (بنفس أرقام صفحة المبيعات)، وديون الزبائن.</p>
+      <div class="export-row">
+        <a class="btn" id="exportProducts" href="/api/export/products.csv" download>المنتجات</a>
+        <label class="export-month">مبيعات شهر <input id="exportMonth" class="input" type="month"></label>
+        <a class="btn" id="exportSales" href="/api/export/sales.csv" download>المبيعات حسب اليوم</a>
+        <a class="btn" id="exportDebts" href="/api/export/debts.csv" download>الديون</a>
+      </div>
+    </section>
+
+    <section class="settings-card" aria-labelledby="accountTitle">
+      <h2 id="accountTitle">حسابك</h2>
+      <p class="account-line">تسجّل الدخول باسم <strong class="num" data-username></strong></p>
+      <form id="passwordForm" novalidate>
+        <h3>تغيير كلمة المرور</h3>
+        <p class="form-error" id="passwordError" role="alert" hidden></p>
+        <input type="text" name="username" autocomplete="username" data-username-field hidden>
+        <div class="field">
+          <label for="currentPassword">كلمة المرور الحالية</label>
+          <input id="currentPassword" class="input" type="password" autocomplete="current-password" maxlength="128">
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label for="newPassword">كلمة المرور الجديدة</label>
+            <input id="newPassword" class="input" type="password" autocomplete="new-password" maxlength="128" aria-describedby="passwordRules">
+          </div>
+          <div class="field">
+            <label for="confirmPassword">أعد كتابتها</label>
+            <input id="confirmPassword" class="input" type="password" autocomplete="new-password" maxlength="128">
+          </div>
+        </div>
+        <p class="hint" id="passwordRules">10 أحرف على الأقل، ويمكن أن تكون بالعربية. لا تستخدم اسم المستخدم ولا عنوان المتجر. بعد التغيير تخرج الأجهزة الأخرى وتحتاج الدخول بالكلمة الجديدة.</p>
+        <div class="dialog-actions">
+          <button class="btn btn-primary" type="submit">تغيير كلمة المرور</button>
+        </div>
+      </form>
+      <div class="settings-danger">
+        <p>نسيت الخروج من جهاز آخر، أو تظن أن أحدًا عرف كلمة المرور؟</p>
+        <button class="btn danger" id="logoutAll" type="button">الخروج من كل الأجهزة</button>
+      </div>
+    </section>
+  </main>
+
+  <div class="toasts" id="toasts"></div>
+  <script type="module" src="/js/settings.js"></script>
+</body>
+</html>

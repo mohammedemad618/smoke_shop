@@ -15,8 +15,10 @@ const tenantSchema = new Schema(
     // The owner of the system's own name for the shop (the shop owner never sees it)
     label: { type: String, trim: true, maxlength: 80, default: '' },
     dbName: { type: String, required: true, unique: true },
-    // Kept after a restore until they can be dropped
-    previousDbNames: [{ _id: false, name: String, dropAfter: Date }],
+    // dbName changes only through a restore (switchDb in services/lifecycle.js); the one before
+    // is kept 7 days, with the verified backup taken of it just before, which the root
+    // worker needs before it drops a database
+    previousDbNames: [{ _id: false, name: String, dropAfter: Date, archive: String }],
     status: { type: String, enum: TENANT_STATUSES, default: 'provisioning' },
     statusReason: { type: String, trim: true, maxlength: 200, default: '' },
     statusChangedAt: Date,
@@ -28,6 +30,8 @@ const tenantSchema = new Schema(
     usage: { salesCount: Number, productsCount: Number, dataBytes: Number, lastSaleAt: Date, measuredAt: Date },
     lastActivityAt: Date,
     schemaVersion: { type: Number, default: 1 },
+    // A deletion asked for from the admin panel: the verified backup taken first, and the day
+    // the database goes (30 days later); cancelling it clears this
     deletion: { requestedAt: Date, requestedBy: String, purgeAfter: Date, backupFile: String },
     rev: { type: Number, required: true, index: true },
     // Repeating a create request with the same id makes one shop, not two

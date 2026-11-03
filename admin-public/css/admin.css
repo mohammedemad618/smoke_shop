@@ -1,0 +1,136 @@
+/* The admin panel, on top of the shops' style.css (its tokens, buttons, fields, tables,
+   chips, dialogs and toasts). Only what the panel adds is here. */
+
+body.admin { --bottom-nav-h: 0px; }
+.admin-main { width: 100%; max-width: 1120px; margin: 0 auto; padding: 24px 20px 48px; }
+body.auth-page .admin-main { flex: none; max-width: none; padding: 0; }
+
+/* Top bar: two links and the account, kept in the bar on phones too */
+.admin-nav { display: flex; height: 100%; }
+.admin-nav a {
+  display: flex; align-items: center; padding: 0 14px; height: 100%;
+  color: rgb(255 255 255 / .72); text-decoration: none; font-weight: 500;
+  border-bottom: 3px solid transparent;
+}
+.admin-nav a:hover { color: #fff; }
+.admin-nav a[aria-current="true"] { color: #fff; border-bottom-color: var(--tag); }
+.admin-user { display: flex; align-items: center; gap: 10px; margin-inline-start: auto; color: rgb(255 255 255 / .8); font-size: 14px; }
+.admin-logout { background: transparent; border-color: rgb(255 255 255 / .35); color: #fff; }
+.admin-logout:hover { border-color: #fff; }
+
+.admin-page .sales-head h1 { margin: 2px 0 0; }
+.admin-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 14px; }
+.admin-tools .chips { flex: 1 1 360px; min-width: 0; }
+.admin-tools .search { width: 280px; }
+.audit-filters .input { width: auto; min-width: 200px; }
+.catalog-count { display: block; margin: -8px 0 12px; }
+.admin-notice { margin: 0 0 12px; padding: 10px 14px; border-radius: var(--r-m); background: #E7EEFC; color: #1F4FB0; font-size: 14px; }
+.admin-notice.is-warn { background: var(--warn-soft); color: var(--warn); }
+.admin-notice.is-stop { background: var(--stop-soft); color: var(--stop); }
+.admin-notice a { color: inherit; font-weight: 600; }
+.table-scroll { overflow-x: auto; }
+.ptable tr.is-link { cursor: pointer; }
+.ptable tr.is-link:focus-visible td { background: var(--paper-2); }
+.host-name { direction: ltr; unicode-bidi: isolate; font-size: 14px; color: var(--ink-2); overflow-wrap: anywhere; }
+.admin .ptable .pcat { display: block; }
+a.host-name { color: var(--focus); }
+.ua { display: block; max-width: 320px; font-size: 12.5px; color: var(--ink-2); direction: ltr; unicode-bidi: isolate; overflow-wrap: anywhere; }
+.plain-list { margin: 0; padding: 0; list-style: none; }
+
+/* Status chips */
+.state { display: inline-block; padding: 1px 10px; border-radius: 999px; font-size: 12.5px; font-weight: 500; white-space: nowrap; background: var(--paper-2); color: var(--ink-2); }
+.state.is-active, .state.is-cert-issued { background: #E3F4EC; color: var(--go); }
+.state.is-provisioning, .state.is-cert-pending { background: #E7EEFC; color: #1F4FB0; }
+.state.is-suspended { background: var(--warn-soft); color: var(--warn); }
+.state.is-pending_deletion, .state.is-cert-failed { background: var(--stop-soft); color: var(--stop); }
+.state.is-deleted, .state.is-cert-none, .state.is-cert-retired { background: var(--paper-2); color: var(--muted); }
+td .state + .pcat, dd .state + .pcat { display: block; margin-top: 2px; }
+.audit-table .state { margin-inline-start: 6px; }
+.audit-table tr.is-failed td { background: #FFF8F6; }
+.audit-details { display: block; max-width: 420px; overflow-wrap: anywhere; font-size: 13.5px; }
+
+/* The new shop's address: the slug, then the fixed domain, left to right */
+.slug-field { display: flex; direction: ltr; }
+.slug-field .input { border-start-end-radius: 0; border-end-end-radius: 0; min-width: 0; }
+.slug-suffix {
+  display: flex; align-items: center; padding: 0 10px; white-space: nowrap;
+  border: 1px solid var(--line); border-inline-start: 0; border-radius: 0 var(--r-s) var(--r-s) 0;
+  background: var(--paper-2); color: var(--muted); font-size: 14px;
+}
+.slug-status { min-height: 1.55em; margin: 6px 0 0; font-size: 13px; color: var(--muted); }
+.slug-status.is-ok { color: var(--go); font-weight: 500; }
+.slug-status.is-bad { color: var(--stop); }
+.password-out { font-size: 17px; font-weight: 600; letter-spacing: .04em; }
+.code-input { font-size: 22px; letter-spacing: .2em; text-align: center; }
+textarea.input { resize: vertical; }
+
+/* A job's steps */
+.steps { display: grid; gap: 0; margin: 4px 0 0; padding: 0; list-style: none; }
+.step { display: flex; align-items: flex-start; gap: 12px; padding: 10px 0; border-bottom: 1px dashed var(--line-soft); }
+.step:last-child { border-bottom: 0; }
+.step-icon { flex: none; width: 22px; height: 22px; margin-top: 1px; border-radius: 50%; border: 2px solid var(--line); background: var(--paper); position: relative; }
+.step.is-done .step-icon { border-color: var(--go); background: var(--go); }
+.step.is-done .step-icon::after { content: ""; position: absolute; inset: 4px 6px 7px 5px; border: solid #fff; border-width: 0 0 2px 2px; transform: rotate(-45deg); }
+.step.is-skipped .step-icon { border-style: dashed; }
+.step.is-running .step-icon { border-color: #1F4FB0; border-top-color: transparent; animation: spin 1s linear infinite; }
+.step.is-failed .step-icon { border-color: var(--stop); background: var(--stop); }
+.step.is-failed .step-icon::after { content: "!"; position: absolute; inset: 0; color: #fff; font-size: 13px; font-weight: 700; line-height: 18px; text-align: center; }
+.step-text { display: grid; gap: 2px; min-width: 0; }
+.step-text small { font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
+.step.is-pending strong, .step.is-skipped strong { font-weight: 400; color: var(--muted); }
+.step.is-failed strong, .step.is-failed small { color: var(--stop); }
+.job-shop { margin: 0 0 8px; }
+.settings-card.is-failed { border-color: var(--stop); }
+.ready-card { border-color: var(--go); background: #F4FBF7; }
+.ready-card h2 { color: var(--go); }
+
+/* A shop's page */
+.shop-detail { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0 20px; align-items: start; }
+.shop-detail > .admin-notice,
+.shop-detail > .settings-card:first-of-type,
+.shop-detail > .danger-zone { grid-column: 1 / -1; }
+.shop-detail .settings-card { min-width: 0; }
+.facts { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px 20px; margin: 0; }
+.facts dt { font-size: 12.5px; color: var(--muted); }
+.facts dd { margin: 2px 0 0; font-weight: 500; overflow-wrap: anywhere; }
+.notes-form { margin-top: 18px; padding-top: 14px; border-top: 1px dashed var(--line); }
+.month-input { width: auto; }
+.danger-zone { border-color: #E3B5AC; }
+.danger-zone h2 { color: var(--stop); }
+.danger-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 0; border-top: 1px dashed var(--line-soft); }
+.danger-row:first-of-type { border-top: 0; }
+.danger-row p { flex: 1 1 320px; margin: 0; font-size: 14px; color: var(--ink-2); }
+.btn.danger-fill { background: var(--stop); border-color: var(--stop); color: #fff; }
+.btn.danger-fill:hover:not(:disabled) { background: #9C3020; border-color: #9C3020; }
+.dialog-lead { margin: -8px 0 14px; font-size: 14px; color: var(--ink-2); }
+.warn-list { display: grid; gap: 6px; margin: 0 0 14px; padding-inline-start: 20px; font-size: 14px; color: var(--ink-2); }
+.pager { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 16px; }
+
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .step.is-running .step-icon { animation: none; } }
+
+@media (max-width: 900px) {
+  .shop-detail { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* Phones: the bar keeps its two links, tables become cards (style.css), fields stack */
+@media (max-width: 760px) {
+  body.admin { padding-bottom: env(safe-area-inset-bottom); }
+  .admin .topbar { gap: 8px; padding: 0 12px; }
+  .admin .brand-label { display: none; }
+  .admin-nav a { padding: 0 10px; font-size: 14px; }
+  .admin-user .num { display: none; }
+  .admin-main { padding: 16px 16px 32px; }
+  .admin-tools .search, .audit-filters .input { flex: 1 1 100%; width: 100%; min-width: 0; }
+  .admin-page .sales-head .btn { width: 100%; }
+  .admin-page .head-actions { width: 100%; }
+  .ua { max-width: none; }
+  /* Cards: the address, the device and an audit entry's details get a line of their own */
+  .ptable:not(.keep-table) td.host-cell,
+  .ptable:not(.keep-table) td.ua-cell,
+  .ptable:not(.keep-table) td.details-cell { grid-column: 1 / -1; }
+  .audit-details { max-width: none; }
+  .facts { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .danger-row .btn { width: 100%; }
+  .slug-suffix { font-size: 12px; padding: 0 6px; }
+}

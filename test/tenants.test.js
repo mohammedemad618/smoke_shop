@@ -6,9 +6,9 @@ import assert from 'node:assert/strict';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { createTenant, transition, primaryHost } from '../services/tenants.js';
 import { auditHash } from '../control/models/AuditLog.js';
-import { startTestEnv, BASE_DOMAIN } from './support/harness.js';
+import { startTestEnv, BASE_DOMAIN, owner, signInAsOwner } from './support/harness.js';
 
-const MAX = 6;
+const MAX = 7;
 let env;
 let control;
 before(async () => {
@@ -19,7 +19,8 @@ after(async () => {
   await env?.close();
 });
 
-const create = (input, by = { actor: 'test' }) => createTenant(env.ctx, input, by);
+// With an owner account unless the test says otherwise
+const create = (input, by = { actor: 'test' }) => createTenant(env.ctx, { owner: owner(), ...input }, by);
 const status = async (promise) => {
   try {
     await promise;
@@ -30,7 +31,7 @@ const status = async (promise) => {
 };
 
 test('a new shop: its record, address, database, settings, «عام», first invoice number, then active', async () => {
-  const { tenant, host, url } = await create({
+  const { tenant, host, url, owner: made } = await create({
     slug: 'Amal', // the address is lower-cased
     shopName: 'متجر الأمل',
     label: 'الأمل (تجربة)',
@@ -42,9 +43,11 @@ test('a new shop: its record, address, database, settings, «عام», first inv
   assert.match(tenant.dbName, new RegExp(`^${env.config.tenantDbPrefix}[0-9a-f]{24}$`));
   assert.strictEqual(host, `amal.${BASE_DOMAIN}`);
   assert.strictEqual(url, `http://amal.${BASE_DOMAIN}:3000`);
+  assert.deepStrictEqual(made, { username: 'owner', created: true });
 
   const hostDoc = await control.Host.findById(host).lean();
-  assert.deepStrictEqual([String(hostDoc.tenantId), hostDoc.kind, hostDoc.cert.status], [String(tenant._id), 'primary', 'none']);
+  // Development has no root worker: the certificate counts as issued at once
+  assert.deepStrictEqual([String(hostDoc.tenantId), hostDoc.kind, hostDoc.cert.status], [String(tenant._id), 'primary', 'issued']);
 
   const models = await env.db.tenantModels(tenant);
   const settings = await models.Setting.findById('shop').lean();
@@ -57,20 +60,29 @@ test('a new shop: its record, address, database, settings, «عام», first inv
   const indexes = await models.Product.collection.indexes();
   assert.ok(indexes.some((i) => i.key.barcode === 1 && i.unique));
 
-  // Through its address: the name for the header and the receipt, and invoice 500 first
+  // The owner's account: the first password's hash only, to be changed at the first sign-in
+  const account = await models.User.findOne().select('+passwordHash').lean();
+  assert.deepStrictEqual([account.usernameLower, account.role, account.mustChangePassword, account.authVersion], ['owner', 'owner', true, 1]);
+  assert.match(account.passwordHash, /^\$scrypt\$ln=14,r=8,p=5\$/);
+  assert.ok(!JSON.stringify(account).includes(owner().password));
+
+  // Through its address, signed in: the name for the header and the receipt, and invoice 500 first
   const client = env.client(`${host}:${env.app.port}`);
-  assert.deepStrictEqual((await client.request('GET', '/api/shop')).data, { shopName: 'متجر الأمل', receiptNote: 'البضاعة المباعة لا ترد بعد 3 أيام' });
+  await signInAsOwner(client, owner(), 'amal');
+  assert.deepStrictEqual((await client.request('GET', '/api/shop')).data, { shopName: 'متجر الأمل', receiptNote: 'البضاعة المباعة لا ترد بعد 3 أيام', phone: '0770 000 0000', address: '' });
   const general = (await client.request('GET', '/api/categories')).data[0];
   const product = (await client.request('POST', '/api/products', { name: 'ماء', barcode: 'W1', category: general._id, purchasePrice: 100, salePrice: 250 })).data;
   const sale = await client.request('POST', '/api/sales', { items: [{ productId: product._id, quantity: 1 }] });
   assert.deepStrictEqual([sale.status, sale.data.number], [201, 500]);
 
-  // The job's steps, the not-yet-built ones skipped
+  // The job's steps; the DNS check is for the server only, and the job keeps no password hash
   const job = await control.Job.findOne({ tenantId: tenant._id }).lean();
   assert.deepStrictEqual([job.type, job.status, job.active], ['provision', 'done', false]);
   assert.deepStrictEqual(job.steps.map((s) => [s.key, s.status]), [
-    ['host', 'done'], ['database', 'done'], ['settings', 'done'], ['owner', 'skipped'], ['certificate', 'skipped'], ['activate', 'done'],
+    ['host', 'done'], ['database', 'done'], ['indexes', 'done'], ['settings', 'done'], ['owner', 'done'], ['dns', 'skipped'], ['certificate', 'done'], ['activate', 'done'],
   ]);
+  assert.strictEqual(job.params.owner.passwordHash, undefined);
+  assert.deepStrictEqual(job.result.owner, { username: 'owner', created: true });
 });
 
 test('the registry knows a new shop at once, without waiting for a poll', async () => {
@@ -92,6 +104,12 @@ test('nothing is written when the request is refused', async () => {
     [{ slug: 'badzone', shopName: 'x', timeZone: 'Mars/Olympus' }, 400, /المنطقة الزمنية/],
     [{ slug: 'badfirst', shopName: 'x', firstInvoiceNumber: '0' }, 400, /أول فاتورة/],
     [{ slug: 'badfirst', shopName: 'x', firstInvoiceNumber: '12.5' }, 400, /أول فاتورة/],
+    [{ slug: 'noowner', shopName: 'x', owner: undefined }, 400, /اسم مستخدم صاحب المتجر/],
+    [{ slug: 'badowner', shopName: 'x', owner: owner('A b') }, 400, /اسم المستخدم/],
+    [{ slug: 'weakowner', shopName: 'x', owner: owner('ahmed', 'short') }, 400, /10 أحرف/],
+    [{ slug: 'weakowner', shopName: 'x', owner: owner('ahmed', 'password123') }, 400, /شائعة/],
+    [{ slug: 'weakowner', shopName: 'x', owner: owner('ahmed', 'ahmed-kq7mt4vr9') }, 400, /اسم المستخدم/],
+    [{ slug: 'weakowner', shopName: 'x', owner: owner('ahmed', 'Kq7m-weakowner') }, 400, /عنوان المتجر/],
   ];
   for (const [input, code, message] of cases) {
     const [got, text] = await status(create(input));
@@ -130,13 +148,13 @@ test('a creation stopped half way is finished by running it again', async () => 
 
   const [code] = await status(create({ slug: 'halfway', shopName: 'نصف الطريق' }));
   assert.strictEqual(code, 503);
-  let job = await control.Job.findOne({ type: 'provision', active: true, steps: { $elemMatch: { key: 'database', status: 'failed' } } }).lean();
+  let job = await control.Job.findOne({ type: 'provision', active: true, steps: { $elemMatch: { key: 'indexes', status: 'failed' } } }).lean();
   assert.ok(job, 'the failed step is recorded');
   assert.deepStrictEqual([job.status, job.steps[0].status], ['failed', 'done']);
   const failure = await control.AuditLog.findOne({ tenantSlug: 'halfway', result: 'failed' }).lean();
-  assert.strictEqual(failure.details.step, 'database');
+  assert.strictEqual(failure.details.step, 'indexes');
   // The address answers "being set up" meanwhile
-  assert.strictEqual((await env.client(`halfway.${BASE_DOMAIN}`).request('GET', '/api/shop')).status, 503);
+  assert.strictEqual((await env.client(`halfway.${BASE_DOMAIN}`).request('GET', '/api/auth/shop')).status, 503);
 
   await products.deleteOne({});
   await sleep(250);
@@ -144,7 +162,7 @@ test('a creation stopped half way is finished by running it again', async () => 
   assert.deepStrictEqual([tenant.status, tenant.dbName], ['active', dbName]);
   job = await control.Job.findById(job._id).lean();
   assert.deepStrictEqual([job.status, job.active, job.attempts], ['done', false, 2]);
-  assert.strictEqual((await env.client(`halfway.${BASE_DOMAIN}`).request('GET', '/api/shop')).data.shopName, 'نصف الطريق');
+  assert.strictEqual((await env.client(`halfway.${BASE_DOMAIN}`).request('GET', '/api/auth/shop')).data.shopName, 'نصف الطريق');
 });
 
 test('every action is in the audit log, each entry chained to the one before', async () => {
@@ -163,12 +181,12 @@ test('every action is in the audit log, each entry chained to the one before', a
 test('the registry picks up changes written elsewhere by polling, and on a full reload', async () => {
   const { tenant, host } = await create({ slug: 'elsewhere', shopName: 'من بعيد' });
   const client = env.client(host);
-  assert.strictEqual((await client.request('GET', '/api/shop')).status, 200);
+  assert.strictEqual((await client.request('GET', '/api/auth/shop')).status, 200);
   // As another process would: straight to the database, with the next rev
   await control.Tenant.updateOne({ _id: tenant._id }, { $set: { status: 'suspended', rev: await control.Counter.next('rev') } });
-  assert.strictEqual((await client.request('GET', '/api/shop')).status, 200, 'not seen before the poll');
+  assert.strictEqual((await client.request('GET', '/api/auth/shop')).status, 200, 'not seen before the poll');
   await env.registry.poll();
-  assert.strictEqual((await client.request('GET', '/api/shop')).status, 423);
+  assert.strictEqual((await client.request('GET', '/api/auth/shop')).status, 423);
   // A change with an older rev written late (two writers out of order) is still found
   const late = await control.Counter.next('rev');
   await control.Counter.next('rev');
@@ -176,12 +194,24 @@ test('the registry picks up changes written elsewhere by polling, and on a full 
   await env.registry.poll();
   await control.Tenant.updateOne({ _id: tenant._id }, { $set: { statusReason: 'late', rev: late } });
   await env.registry.poll();
-  assert.strictEqual((await client.request('GET', '/api/shop')).status, 200);
+  assert.strictEqual((await client.request('GET', '/api/auth/shop')).status, 200);
   await control.Tenant.updateOne({ _id: tenant._id }, { $set: { status: 'suspended' } }); // no rev: only a reload sees it
   await env.registry.poll();
-  assert.strictEqual((await client.request('GET', '/api/shop')).status, 200);
+  assert.strictEqual((await client.request('GET', '/api/auth/shop')).status, 200);
   await env.registry.load();
-  assert.strictEqual((await client.request('GET', '/api/shop')).status, 423);
+  assert.strictEqual((await client.request('GET', '/api/auth/shop')).status, 423);
+});
+
+test('a creation that stopped after the shop became active but before its job was closed finishes cleanly when run again', async () => {
+  const { tenant } = await create({ slug: 'almost', shopName: 'تقريبًا' });
+  // What a crash between the last step and closing the job leaves: an active shop, an open job
+  await control.Job.updateOne({ tenantId: tenant._id, type: 'provision' }, { $set: { active: true, status: 'running', leaseUntil: null } });
+  const again = await create({ slug: 'almost', shopName: 'تقريبًا' });
+  assert.deepStrictEqual([String(again.tenant._id), again.tenant.status, again.owner.username], [String(tenant._id), 'active', 'owner']);
+  const job = await control.Job.findOne({ tenantId: tenant._id, type: 'provision' }).lean();
+  assert.deepStrictEqual([job.status, job.active], ['done', false]);
+  // Once closed, the same address from the command line is taken again, as before
+  assert.deepStrictEqual(await status(create({ slug: 'almost', shopName: 'x' })), [409, 'هذا العنوان مستخدم']);
 });
 
 test(`no more than MAX_TENANTS shops (${MAX} here); deleted ones do not count`, async () => {

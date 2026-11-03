@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import mongoose from 'mongoose';
 import { httpError } from '../lib/errors.js';
+import { clientIdOf, isDuplicateOf } from '../lib/idempotency.js';
 import { money, precise, roundQty, stockChange } from '../lib/util.js';
 import { DAY_MS, requestedRange } from '../lib/range.js';
 
@@ -175,6 +176,13 @@ router.get('/:id', async (req, res) => {
 router.post('/', async (req, res) => {
   const { Product, Purchase, Counter } = req.models;
   const body = req.body;
+  // Saved again after an answer that never arrived: the invoice as it was saved, and its
+  // goods are not added a second time
+  const clientId = clientIdOf(body);
+  if (clientId) {
+    const done = await Purchase.findOne({ clientId }).lean();
+    if (done) return res.json(withRemaining(done));
+  }
   const rawItems = Array.isArray(body.items) ? body.items : [];
   if (!rawItems.length) throw httpError(400, 'أضف منتجًا واحدًا على الأقل إلى الفاتورة');
   if (rawItems.length > MAX_ITEMS) throw httpError(400, `الفاتورة تتسع لـ ${MAX_ITEMS} صنف كحد أقصى`);
@@ -212,11 +220,17 @@ router.post('/', async (req, res) => {
       total,
       paid,
       payments: paid > 0 ? [{ amount: paid, date }] : [],
+      clientId: clientId ?? undefined,
     });
     res.status(201).json(withRemaining(purchase.toObject()));
   } catch (err) {
     // Nothing half done: the goods already put in come back out
     await giveBack(req.models, { _id: new mongoose.Types.ObjectId(), createdAt: new Date(), items: received });
+    // Saved twice at once: the other request saved it
+    if (clientId && isDuplicateOf(err, 'clientId')) {
+      const done = await Purchase.findOne({ clientId }).lean();
+      if (done) return res.json(withRemaining(done));
+    }
     throw err;
   }
 });

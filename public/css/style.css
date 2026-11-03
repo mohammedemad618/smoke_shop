@@ -94,6 +94,15 @@ h1, h2, h3 { line-height: 1.25; }
 }
 .more-menu a:hover { background: var(--paper-2); }
 .more-menu a[aria-current="page"] { background: var(--counter); box-shadow: inset -3px 0 0 var(--tag); }
+/* Signing out, last in the menu, with the account's name */
+.more-logout {
+  display: flex; align-items: center; gap: 12px; width: 100%; min-height: 40px;
+  margin-top: 4px; padding: 8px 12px; border: 0; border-top: 1px solid var(--line-soft); border-radius: 0 0 var(--r-s) var(--r-s);
+  background: none; color: var(--stop); font: inherit; font-weight: 500; text-align: start; cursor: pointer;
+}
+.more-logout:hover { background: var(--stop-soft); }
+.more-logout:disabled { opacity: .6; cursor: progress; }
+.more-user { margin-inline-start: auto; font-size: 12.5px; font-weight: 400; color: var(--muted); direction: ltr; unicode-bidi: isolate; }
 .topbar-meta { margin-inline-start: auto; font-size: 14px; color: rgb(255 255 255 / .72); white-space: nowrap; }
 .topbar-meta strong { color: #fff; font-weight: 600; font-size: 16px; }
 
@@ -425,6 +434,46 @@ a.ledger-row:hover { background: var(--paper-2); }
 .rail-name .pcat { display: block; font-weight: 400; }
 .ledger .pcat { display: block; }
 .rail-empty { padding: 12px; font-size: 14px; color: var(--muted); }
+
+/* Sign-in page: one card on the counter colour, the shop's name on top */
+.auth-page { justify-content: center; }
+.auth { flex: none; width: 100%; max-width: 420px; margin: 0 auto; padding: 32px 16px; }
+.auth-card { overflow: hidden; background: var(--paper); border: 1px solid var(--line); border-radius: var(--r-m); box-shadow: 0 12px 28px rgb(28 37 48 / .12); }
+.auth-brand { display: flex; align-items: center; gap: 10px; padding: 14px 24px; background: var(--ink); color: #fff; font-size: 17px; font-weight: 600; }
+.auth-form { padding: 22px 24px 24px; }
+.auth-form h1 { margin: 0 0 16px; font-size: 21px; font-weight: 600; }
+.auth-lead { margin: -6px 0 16px; font-size: 14px; color: var(--ink-2); }
+.auth-submit { width: 100%; margin-top: 6px; }
+.auth-other { display: block; margin: 14px auto 0; font-size: 14px; }
+
+/* The shop closed while the page was open (suspended, moved): over the page, under the bar */
+.status-banner {
+  position: fixed; top: var(--topbar-h); inset-inline: 0; z-index: 45;
+  padding: 10px 16px; background: var(--stop); color: #fff; font-weight: 500; text-align: center;
+  box-shadow: 0 6px 18px rgb(28 37 48 / .25);
+}
+
+/* Signing in again without leaving the page */
+.signin-dialog { width: min(420px, calc(100vw - 32px)); }
+.signin-dialog h2 { margin-bottom: 6px; }
+.signin-lead { margin: 0 0 16px; font-size: 13.5px; }
+
+/* Settings */
+.settings { max-width: 760px; }
+.settings-card { margin-bottom: 20px; padding: 18px 20px 20px; background: var(--paper); border: 1px solid var(--line); border-radius: var(--r-m); }
+.settings-card h2 { margin: 0 0 14px; font-size: 17px; font-weight: 600; }
+.settings-card h3 { margin: 18px 0 10px; font-size: 15px; font-weight: 600; }
+.settings-card .dialog-actions { margin-top: 14px; }
+.account-line { margin: 0; color: var(--ink-2); }
+.settings-danger {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px;
+  margin-top: 20px; padding-top: 16px; border-top: 1px dashed var(--line); font-size: 14px; color: var(--ink-2);
+}
+.settings-danger p { margin: 0; }
+select.input { padding-block: 7px; }
+.export-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.export-month { display: flex; align-items: center; gap: 6px; font-size: 14px; color: var(--ink-2); }
+.export-month .input { width: auto; }
 
 /* Camera scanner */
 .scanner-dialog { width: min(640px, calc(100vw - 32px)); }
@@ -767,7 +816,8 @@ a.ledger-row:hover { background: var(--paper-2); }
   .nav-more-btn { flex-direction: column; justify-content: center; gap: 3px; padding: 0; border: 0; font-size: 11.5px; }
   .nav > a::before,
   .nav-more-btn::before,
-  .more-menu a::before {
+  .more-menu a::before,
+  .more-logout::before {
     content: ""; flex: none; width: 22px; height: 22px; background: currentColor;
     -webkit-mask: var(--icon) center / contain no-repeat;
     mask: var(--icon) center / contain no-repeat;
@@ -783,7 +833,7 @@ a.ledger-row:hover { background: var(--paper-2); }
     position: fixed; inset: auto 8px calc(var(--bottom-nav-h) + env(safe-area-inset-bottom) + 8px) 8px;
     min-width: 0; padding: 8px;
   }
-  .more-menu a { min-height: 48px; font-size: 15px; }
+  .more-menu a, .more-logout { min-height: 48px; font-size: 15px; }
   .nav-more-btn { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='black'%3E%3Ccircle cx='5' cy='12' r='2'/%3E%3Ccircle cx='12' cy='12' r='2'/%3E%3Ccircle cx='19' cy='12' r='2'/%3E%3C/svg%3E"); }
   .nav a[href="/summary.html"] { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M21 12a9 9 0 1 1-9-9v9Z'/%3E%3Cpath d='M15 3.5A9 9 0 0 1 20.5 9H15Z'/%3E%3C/svg%3E"); }
   .nav a[href="/stocktake.html"] { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='5' y='4' width='14' height='17' rx='2'/%3E%3Cpath d='M9 4V2.5h6V4M9 12.5l2 2 4-4'/%3E%3C/svg%3E"); }
@@ -792,8 +842,11 @@ a.ledger-row:hover { background: var(--paper-2); }
   .nav a[href="/purchases.html"] { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='9' cy='20' r='1.5'/%3E%3Ccircle cx='18' cy='20' r='1.5'/%3E%3Cpath d='M2 3h3l2.7 12.4a2 2 0 0 0 2 1.6h8.6a2 2 0 0 0 2-1.6L22 7H6'/%3E%3C/svg%3E"); }
   .nav a[href="/sales.html"] { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 20h16M7 16v-5M12 16V6M17 16v-8'/%3E%3C/svg%3E"); }
   .nav a[href="/expenses.html"] { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 7a2 2 0 0 1 2-2h12v4'/%3E%3Crect x='3' y='9' width='18' height='11' rx='2'/%3E%3Cpath d='M16 14.5h2'/%3E%3C/svg%3E"); }
+  .nav a[href="/settings.html"] { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1'/%3E%3Ccircle cx='15' cy='6' r='2'/%3E%3Ccircle cx='9' cy='12' r='2'/%3E%3Ccircle cx='17' cy='18' r='2'/%3E%3C/svg%3E"); }
+  .nav .more-logout { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4'/%3E%3Cpath d='M9 16l-4-4 4-4M5 12h10'/%3E%3C/svg%3E"); }
   .nav a[href="/debts.html"] { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='9' cy='8' r='3.5'/%3E%3Cpath d='M2.5 20a6.5 6.5 0 0 1 13 0M16 4.6a3.5 3.5 0 0 1 0 6.8M18 14a6.5 6.5 0 0 1 3.5 6'/%3E%3C/svg%3E"); }
   .toasts { top: calc(var(--topbar-h) + 10px); bottom: auto; }
+  body:has(.status-banner) .toasts { top: calc(var(--topbar-h) + 64px); }
 
   .catalog-head { padding: 16px; }
   .catalog-tools { width: 100%; }
@@ -822,6 +875,8 @@ a.ledger-row:hover { background: var(--paper-2); }
   .expense-fields .field:first-child,
   .expense-fields .field-wide { grid-column: 1 / -1; }
   .debt-total { display: block; }
+  .export-row .btn, .export-month { flex: 1 1 100%; }
+  .export-month .input { flex: 1; }
 
   /* Dialogs become bottom sheets; in forms the buttons stay pinned at the bottom while
      the fields scroll, so Save is always in reach */
