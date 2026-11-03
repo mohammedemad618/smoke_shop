@@ -493,13 +493,16 @@ h1, h2, h3 { line-height: 1.25; }
    at the bottom showing the item count and total */
 @media (max-width: 900px) {
   .app-shell { height: auto; overflow: visible; }
+  /* Safety net: nothing may widen the page past the screen (phones would zoom out) */
+  body { overflow-x: clip; }
   .topbar { position: sticky; top: 0; z-index: 40; }
   /* Categories and customers move above the content, which gets the full width */
   .catalog { grid-template-columns: minmax(0, 1fr); }
   .rail { border-inline-end: 0; border-bottom: 1px solid var(--line); }
   .rail-list { display: flex; gap: 4px; overflow-x: auto; }
   .rail-item { flex: none; }
-  .register { grid-template-columns: 1fr; }
+  /* minmax(0, …): a plain 1fr would grow to the width of the categories row */
+  .register { grid-template-columns: minmax(0, 1fr); }
   .shelf { padding-bottom: 96px; }
   .tiles { overflow: visible; }
   .counter {
@@ -538,8 +541,14 @@ h1, h2, h3 { line-height: 1.25; }
   :root { --bottom-nav-h: 60px; }
   body { padding-bottom: calc(var(--bottom-nav-h) + env(safe-area-inset-bottom)); }
   .topbar { gap: 12px; padding: 0 16px; }
-  .topbar-meta { font-size: 13px; }
+  .brand { flex: none; }
+  /* Today's sales wraps to two lines rather than pushing the bar wider than the screen */
+  .topbar-meta { min-width: 0; font-size: 12.5px; line-height: 1.3; white-space: normal; text-align: end; }
   .topbar-meta strong { font-size: 14px; }
+  /* Two columns of products even on 320px phones */
+  .shelf { padding-inline: 12px; }
+  .tiles { grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 8px; }
+  .tile { padding: 10px; }
   .nav {
     position: fixed; inset: auto 0 0 0; z-index: 40;
     height: calc(var(--bottom-nav-h) + env(safe-area-inset-bottom));
