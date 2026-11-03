@@ -444,7 +444,7 @@ h1, h2, h3 { line-height: 1.25; }
 .period-title { margin: 0 0 10px; font-size: 17px; font-weight: 500; color: var(--ink-2); }
 /* Hairline grid: the gap shows the container's background between the cells */
 .zreport {
-  display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px;
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px;
   margin-bottom: 16px; overflow: hidden;
   background: var(--line-soft); border: 1px solid var(--line); border-radius: var(--r-m);
 }

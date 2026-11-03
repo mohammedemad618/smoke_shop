@@ -162,10 +162,20 @@ function renderSummary(s, period) {
       <div class="z-value num">${formatMoney(s.expenses)}</div>
       <a class="z-link" href="${expensesLink}">${s.expenses ? 'تفاصيل المصاريف' : 'إضافة مصروف'}</a>
     </div>
+    <div>
+      <div class="z-label">ديون لم تُحصَّل</div>
+      <div class="z-value num ${s.credit > 0 ? 'owes-text' : ''}">${formatMoney(s.credit)}</div>
+      <a class="z-link" href="/debts.html">${s.credit ? 'من البيع بالدين في هذه الفترة' : 'حسابات الزبائن'}</a>
+    </div>
+    <div>
+      <div class="z-label">محصَّل من الديون</div>
+      <div class="z-value num ${s.collected > 0 ? 'is-profit' : ''}">${formatMoney(s.collected)}</div>
+      <div class="z-note">تسديدات الزبائن في هذه الفترة</div>
+    </div>
     <div class="z-net">
       <div class="z-label">صافي الربح</div>
       <div class="z-value num ${s.netProfit < 0 ? 'is-loss' : 'is-profit'}">${formatMoney(s.netProfit)}</div>
-      <div class="z-note">ربح المبيعات بعد طرح المصاريف</div>
+      <div class="z-note">ربح المبيعات − المصاريف − الديون + المحصَّل</div>
     </div>`;
 }
 
@@ -268,19 +278,18 @@ function periodKeys(period, groupBy) {
 }
 
 function renderBreakdown(period, { groupBy, summary, periods }) {
-  if (!summary.count && !summary.expenses) {
+  if (!summary.count && !summary.expenses && !summary.collected) {
     emptyState('لا توجد مبيعات أو مصاريف في هذه الفترة');
     return;
   }
   const byKey = new Map(periods.map((p) => [p.key, p]));
-  const empty = { count: 0, pieces: 0, total: 0, profit: 0, expenses: 0, netProfit: 0 };
+  const empty = { count: 0, total: 0, profit: 0, expenses: 0, credit: 0, collected: 0, netProfit: 0 };
   const byMonth = groupBy === 'month';
-  const pieces = periods.reduce((sum, p) => sum + p.pieces, 0);
   const amount = (value, shown) => (shown ? formatMoney(value) : '–');
 
   const rows = periodKeys(period, groupBy).map((key) => {
     const row = byKey.get(key) ?? empty;
-    const active = row.count || row.expenses;
+    const active = row.count || row.expenses || row.credit || row.collected;
     const label = byMonth ? monthName.format(parseKey(key)) : rowDay.format(parseKey(key));
     return `<tr${active ? '' : ' class="is-quiet"'}>
       <td>${
@@ -289,11 +298,11 @@ function renderBreakdown(period, { groupBy, summary, periods }) {
           : label
       }</td>
       <td class="num">${row.count || '–'}</td>
-      <td class="num">${row.pieces || '–'}</td>
       <td class="end num">${amount(row.total, row.count)}</td>
       <td class="end num${profitClass(row.profit)}">${amount(row.profit, row.count)}</td>
-      <td class="end num">${marginOf(row) || '–'}</td>
       <td class="end num">${amount(row.expenses, row.expenses)}</td>
+      <td class="end num owes-text">${amount(row.credit, row.credit)}</td>
+      <td class="end num credit-text">${amount(row.collected, row.collected)}</td>
       <td class="end num net${profitClass(row.netProfit)}">${amount(row.netProfit, active)}</td>
     </tr>`;
   });
@@ -303,22 +312,22 @@ function renderBreakdown(period, { groupBy, summary, periods }) {
     <thead><tr>
       <th scope="col">${byMonth ? 'الشهر' : 'اليوم'}</th>
       <th scope="col">الفواتير</th>
-      <th scope="col">القطع</th>
       <th scope="col" class="end">المبيعات</th>
       <th scope="col" class="end">ربح المبيعات</th>
-      <th scope="col" class="end">نسبة الربح</th>
       <th scope="col" class="end">المصاريف</th>
+      <th scope="col" class="end">دين جديد</th>
+      <th scope="col" class="end">تحصيل</th>
       <th scope="col" class="end">صافي الربح</th>
     </tr></thead>
     <tbody>${rows.join('')}</tbody>
     <tfoot><tr>
       <td>الإجمالي</td>
       <td class="num">${formatMoney(summary.count)}</td>
-      <td class="num">${formatMoney(pieces)}</td>
       <td class="end num">${formatMoney(summary.total)}</td>
       <td class="end num${profitClass(summary.profit)}">${formatMoney(summary.profit)}</td>
-      <td class="end num">${marginOf(summary) || '–'}</td>
       <td class="end num">${formatMoney(summary.expenses)}</td>
+      <td class="end num owes-text">${formatMoney(summary.credit)}</td>
+      <td class="end num credit-text">${formatMoney(summary.collected)}</td>
       <td class="end num net${profitClass(summary.netProfit)}">${formatMoney(summary.netProfit)}</td>
     </tr></tfoot>
   </table></div>`;

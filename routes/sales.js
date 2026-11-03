@@ -23,6 +23,10 @@ const ITEM_KEPT_QTY = { $subtract: ['$items.quantity', { $ifNull: ['$items.retur
 // In pieces or kg: a wholesale box of 10 sold twice is 20 pieces
 const ITEM_KEPT_BASE = { $multiply: [ITEM_KEPT_QTY, { $ifNull: ['$items.packSize', 1] }] };
 
+// Of what a credit sale put on the customer's account, the part not taken back by returns
+const CREDIT_LEFT = { $subtract: [{ $ifNull: ['$debt', 0] }, { $sum: '$returns.toAccount' }] };
+const creditLeft = (sale) => (sale.debt ?? 0) - (sale.returns ?? []).reduce((sum, r) => sum + (r.toAccount ?? 0), 0);
+
 // What an invoice still counts for after its returns
 function netOf(sale) {
   const returnedTotal = sale.returnedTotal ?? 0;
@@ -33,6 +37,7 @@ function netOf(sale) {
     cost: sale.cost - returnedCost,
     profit: sale.profit - (returnedTotal - returnedCost),
     returns: returnedTotal,
+    credit: creditLeft(sale),
   };
 }
 
@@ -44,15 +49,20 @@ const summarize = (rows) =>
       cost: money(acc.cost + row.cost),
       profit: money(acc.profit + row.profit),
       returns: money(acc.returns + row.returns),
+      credit: money(acc.credit + row.credit),
     }),
-    { count: 0, total: 0, cost: 0, profit: 0, returns: 0 },
+    { count: 0, total: 0, cost: 0, profit: 0, returns: 0, credit: 0 },
   );
 
-// Net profit: profit on sales minus the period's expenses (food, rent...)
-const withExpenses = (summary, expenses) => ({
+// Net profit counts only money that came in: profit on sales, minus expenses, minus what
+// was sold on credit and is still owed, plus debt payments collected in the period.
+// Over time it adds up to the profit on sales minus expenses.
+const netProfitOf = ({ profit, credit }, expenses, collected) => money(profit - expenses - credit + collected);
+const withNet = (summary, expenses, collected) => ({
   ...summary,
   expenses: money(expenses),
-  netProfit: money(summary.profit - expenses),
+  collected: money(collected),
+  netProfit: netProfitOf(summary, expenses, collected),
 });
 
 /* Stock */
@@ -90,11 +100,12 @@ async function takeFromStock(products, quantities) {
 // Invoices of one day (or a short range), newest first
 router.get('/', async (req, res) => {
   const { start, end } = requestedRange(req.query, MAX_LIST_RANGE_MS);
-  const [sales, expenses] = await Promise.all([
+  const [sales, expenses, collected] = await Promise.all([
     Sale.find({ createdAt: { $gte: start, $lt: end } }).sort({ createdAt: -1 }).lean(),
     Expense.totalBetween(start, end),
+    DebtEntry.collectedBetween(start, end),
   ]);
-  res.json({ summary: withExpenses(summarize(sales.map(netOf)), expenses), sales });
+  res.json({ summary: withNet(summarize(sales.map(netOf)), expenses, collected), sales });
 });
 
 // Totals for a month or any period, broken down by day or by month
@@ -136,6 +147,7 @@ router.get('/report', async (req, res) => {
         cost: { $sum: { $subtract: ['$cost', RETURNED_COST] } },
         profit: { $sum: { $subtract: ['$profit', { $subtract: [RETURNED_TOTAL, RETURNED_COST] }] } },
         returns: { $sum: RETURNED_TOTAL },
+        credit: { $sum: CREDIT_LEFT },
       },
     },
   ]);
@@ -143,29 +155,37 @@ router.get('/report', async (req, res) => {
     { $match: { date: { $gte: start, $lt: end } } },
     { $group: { _id: { $dateToString: { format, date: '$date', timezone } }, expenses: { $sum: '$amount' } } },
   ]);
+  const collectedRows = DebtEntry.aggregate([
+    { $match: { kind: 'payment', date: { $gte: start, $lt: end } } },
+    { $group: { _id: { $dateToString: { format, date: '$date', timezone } }, paid: { $sum: '$amount' } } },
+  ]);
 
-  // One row per day or month that had sales, expenses or both
+  // One row per day or month that had sales, expenses, debt payments or any mix
   const byKey = new Map();
   const periodFor = (key) => {
-    if (!byKey.has(key)) byKey.set(key, { key, count: 0, pieces: 0, total: 0, cost: 0, profit: 0, returns: 0, expenses: 0 });
+    if (!byKey.has(key)) {
+      byKey.set(key, { key, count: 0, pieces: 0, total: 0, cost: 0, profit: 0, returns: 0, credit: 0, expenses: 0, collected: 0 });
+    }
     return byKey.get(key);
   };
-  const [salesData, expenseData] = await Promise.all([salesRows, expenseRows]);
-  for (const { _id, total, cost, profit, returns, ...rest } of salesData) {
+  const [salesData, expenseData, collectedData] = await Promise.all([salesRows, expenseRows, collectedRows]);
+  for (const { _id, total, cost, profit, returns, credit, ...rest } of salesData) {
     Object.assign(periodFor(_id), rest, {
       total: money(total),
       cost: money(cost),
       profit: money(profit),
       returns: money(returns),
+      credit: money(credit),
     });
   }
   for (const { _id, expenses } of expenseData) periodFor(_id).expenses = money(expenses);
+  for (const { _id, paid } of collectedData) periodFor(_id).collected = money(-paid);
 
   const periods = [...byKey.values()]
     .sort((a, b) => a.key.localeCompare(b.key))
-    .map((p) => ({ ...p, netProfit: money(p.profit - p.expenses) }));
-  const expenses = periods.reduce((sum, p) => sum + p.expenses, 0);
-  res.json({ groupBy, summary: withExpenses(summarize(periods), expenses), periods });
+    .map((p) => ({ ...p, netProfit: netProfitOf(p, p.expenses, p.collected) }));
+  const sum = (field) => periods.reduce((total, p) => total + p[field], 0);
+  res.json({ groupBy, summary: withNet(summarize(periods), sum('expenses'), sum('collected')), periods });
 });
 
 // Per-product totals for a period, from the prices stored on each invoice at the time of sale

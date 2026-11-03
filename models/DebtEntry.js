@@ -26,4 +26,13 @@ debtEntrySchema.statics.balanceOf = async function balanceOf(customerId) {
   return money(row?.balance ?? 0);
 };
 
+// Money customers paid towards their debts in [start, end)
+debtEntrySchema.statics.collectedBetween = async function collectedBetween(start, end) {
+  const [row] = await this.aggregate([
+    { $match: { kind: 'payment', date: { $gte: start, $lt: end } } },
+    { $group: { _id: null, total: { $sum: '$amount' } } },
+  ]);
+  return money(-(row?.total ?? 0));
+};
+
 export default model('DebtEntry', debtEntrySchema);
