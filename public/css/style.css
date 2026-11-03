@@ -227,6 +227,23 @@ h1, h2, h3 { line-height: 1.25; }
 .pay-type { grid-column: 1 / -1; justify-self: start; }
 .credit-box { grid-column: 1 / -1; display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 6px 12px; }
 .credit-box label { font-size: 14px; color: var(--ink-2); }
+/* Customer suggestions open upwards: the receipt's torn-edge mask clips anything past
+   its bottom, and on phones the keyboard covers that area */
+.combo { position: relative; min-width: 0; }
+.combo-list {
+  position: absolute; z-index: 20; inset-inline: 0; bottom: calc(100% + 4px);
+  max-height: 220px; overflow-y: auto; margin: 0; padding: 4px; list-style: none;
+  background: var(--paper); border: 1px solid var(--line); border-radius: var(--r-m);
+  box-shadow: 0 10px 24px rgb(28 37 48 / .18);
+}
+.combo-option {
+  display: flex; justify-content: space-between; align-items: center; gap: 8px;
+  width: 100%; min-height: 44px; padding: 6px 10px;
+  border: 0; border-radius: var(--r-s); background: none; color: var(--ink);
+  font: inherit; text-align: start; cursor: pointer;
+}
+.combo-option:hover, .combo-option.is-active { background: var(--paper-2); }
+.combo-option small { display: block; font-size: 12px; color: var(--muted); text-align: right; }
 .credit-note { grid-column: 1 / -1; margin: 0; font-size: 13px; color: var(--ink-2); }
 .credit-note.is-new { color: var(--focus); }
 .change.is-debt { color: var(--warn); }

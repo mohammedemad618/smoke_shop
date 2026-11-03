@@ -61,7 +61,7 @@ const els = {
   paidLabel: $('paidLabel'),
   creditBox: $('creditBox'),
   customerInput: $('customerInput'),
-  customerOptions: $('customerOptions'),
+  customerSuggest: $('customerSuggest'),
   creditNote: $('creditNote'),
   cartBar: $('cartBar'),
   cartBarCount: $('cartBarCount'),
@@ -399,12 +399,7 @@ const customerLabel = (c) => (c.phone ? `${c.name} (${c.phone})` : c.name);
 async function loadCustomers() {
   try {
     state.customers = await api('/customers');
-    els.customerOptions.innerHTML = state.customers
-      .map(
-        (c) =>
-          `<option value="${escapeHtml(customerLabel(c))}" label="${c.balance > 0 ? `عليه ${formatMoney(c.balance)}` : 'لا دين'}"></option>`,
-      )
-      .join('');
+    if (document.activeElement === els.customerInput) renderSuggestions();
     updateCreditNote();
   } catch {
     // A name can still be typed; it is checked when the sale is completed
@@ -444,11 +439,79 @@ function setPayType(type) {
 }
 
 els.payButtons.forEach((b) => b.addEventListener('click', () => setPayType(b.dataset.pay)));
-els.customerInput.addEventListener('input', updatePayment);
+// Our own suggestion list: a <datalist> barely works on Android, where names did not
+// show while typing
+const suggest = { matches: [], active: -1 };
+
+function renderSuggestions() {
+  const text = els.customerInput.value.trim();
+  // Coming back to an already picked customer shows everyone again, to switch easily
+  const q = state.customers.some((c) => customerLabel(c) === text) ? '' : normalize(text);
+  const pool = [...state.customers].sort((a, b) => b.balance - a.balance || a.name.localeCompare(b.name, 'ar'));
+  suggest.matches = (q ? pool.filter((c) => normalize(c.name).includes(q) || (c.phone ?? '').includes(q)) : pool).slice(0, 8);
+  suggest.active = -1;
+  const open = suggest.matches.length > 0;
+  els.customerSuggest.hidden = !open;
+  els.customerInput.setAttribute('aria-expanded', String(open));
+  els.customerInput.removeAttribute('aria-activedescendant');
+  els.customerSuggest.innerHTML = suggest.matches
+    .map(
+      (c, i) => `<li role="option" id="customer-option-${i}">
+        <button type="button" class="combo-option" data-index="${i}" tabindex="-1">
+          <span>${escapeHtml(c.name)}${c.phone ? `<small class="num">${escapeHtml(c.phone)}</small>` : ''}</span>
+          <span class="debt-chip ${c.balance > 0 ? 'owes' : 'clear'} num">${c.balance > 0 ? formatMoney(c.balance) : 'لا دين'}</span>
+        </button>
+      </li>`,
+    )
+    .join('');
+}
+
+function closeSuggestions() {
+  els.customerSuggest.hidden = true;
+  els.customerInput.setAttribute('aria-expanded', 'false');
+}
+
+function highlightSuggestion(index) {
+  suggest.active = index;
+  els.customerSuggest.querySelectorAll('.combo-option').forEach((b, i) => b.classList.toggle('is-active', i === index));
+  els.customerInput.setAttribute('aria-activedescendant', `customer-option-${index}`);
+  els.customerSuggest.children[index]?.scrollIntoView({ block: 'nearest' });
+}
+
+function chooseCustomer(customer) {
+  els.customerInput.value = customerLabel(customer);
+  closeSuggestions();
+  updatePayment();
+  // On phones drop the keyboard instead, so the sale button is in sight
+  if (finePointer) els.paid.focus();
+  else els.customerInput.blur();
+}
+
+els.customerInput.addEventListener('focus', renderSuggestions);
+els.customerInput.addEventListener('input', () => {
+  renderSuggestions();
+  updatePayment();
+});
+// Let a tap on a suggestion land before the list closes
+els.customerInput.addEventListener('blur', () => setTimeout(closeSuggestions, 150));
+els.customerSuggest.addEventListener('pointerdown', (e) => e.preventDefault());
+els.customerSuggest.addEventListener('click', (e) => {
+  const option = e.target.closest('[data-index]');
+  if (option) chooseCustomer(suggest.matches[Number(option.dataset.index)]);
+});
 els.customerInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') {
+  const open = !els.customerSuggest.hidden;
+  if (open && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
     e.preventDefault();
-    els.paid.focus();
+    const step = e.key === 'ArrowDown' ? 1 : -1;
+    highlightSuggestion((suggest.active + step + suggest.matches.length) % suggest.matches.length);
+  } else if (e.key === 'Enter') {
+    e.preventDefault();
+    if (open && suggest.active >= 0) chooseCustomer(suggest.matches[suggest.active]);
+    else els.paid.focus();
+  } else if (e.key === 'Escape' && open) {
+    e.stopPropagation(); // close the list, not the invoice panel
+    closeSuggestions();
   }
 });
 

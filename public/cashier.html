@@ -64,8 +64,10 @@
             </div>
             <div class="credit-box" id="creditBox" hidden>
               <label for="customerInput">الزبون</label>
-              <input id="customerInput" class="input" list="customerOptions" placeholder="اكتب اسم الزبون" autocomplete="off">
-              <datalist id="customerOptions"></datalist>
+              <div class="combo">
+                <input id="customerInput" class="input" placeholder="اكتب اسم الزبون" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="customerSuggest">
+                <ul class="combo-list" id="customerSuggest" role="listbox" aria-label="الزبائن" hidden></ul>
+              </div>
               <p class="credit-note" id="creditNote" aria-live="polite"></p>
             </div>
             <label for="paidInput" id="paidLabel">المدفوع</label>
