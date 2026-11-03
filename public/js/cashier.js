@@ -7,6 +7,8 @@ import {
   formatDateTime,
   escapeHtml,
   roundMoney,
+  parseNumber,
+  latinDigits,
   roundQty,
   arCount,
   packName,
@@ -114,11 +116,12 @@ async function loadToday() {
 }
 
 function parseScan(raw) {
-  const text = raw.trim();
+  // Arabic-Indic digits count too: "٣*code" adds 3
+  const text = latinDigits(raw).trim();
   // "3*code" adds 3; "0.5*code" half a kilo; "250غ*code" or "250g*code" 250 grams
   const match = /^(\d{1,5}(?:\.\d{1,3})?)\s*(g|غ|غم|غرام)?\s*[*xX×]\s*(.+)$/i.exec(text);
   if (!match) return { qty: 1, term: text };
-  return { qty: match[2] ? Number(match[1]) / 1000 : Number(match[1]), term: match[3].trim() };
+  return { qty: roundQty(match[2] ? Number(match[1]) / 1000 : Number(match[1])), term: match[3].trim() };
 }
 
 function matchProducts(term) {
@@ -232,10 +235,13 @@ function lineFields(product, mode) {
 const baseInCart = (productId, exceptKey) =>
   state.cart.reduce((sum, l) => (l.productId === productId && l.key !== exceptKey ? sum + l.qty * l.packSize : sum), 0);
 
-const cartTotal = () => roundMoney(state.cart.reduce((sum, l) => sum + l.price * l.qty, 0));
+// Line by line, like the server: each line is rounded to the cent before adding up
+const lineTotal = (l) => roundMoney(l.price * l.qty);
+const cartTotal = () => roundMoney(state.cart.reduce((sum, l) => sum + lineTotal(l), 0));
 
 // Returns an error message instead of adding when the stock does not allow it
 function addToCart(product, qty = 1, mode = 'retail') {
+  if (!(qty > 0)) return 'الكمية يجب أن تكون أكبر من صفر';
   const key = lineKey(product._id, mode);
   const line = state.cart.find((l) => l.key === key);
   const fields = lineFields(product, mode);
@@ -325,7 +331,7 @@ function lineHtml(l) {
   return `<li class="line${l.key === state.lastAdded ? ' is-new' : ''}" data-key="${l.key}">
     <div class="line-main">
       <span class="line-name">${name}${pack ? ` <small class="line-pack">${pack}</small>` : ''}</span>
-      <span class="line-total num">${formatMoney(l.price * l.qty)}</span>
+      <span class="line-total num">${formatMoney(lineTotal(l))}</span>
     </div>
     <div class="line-sub">
       <div class="qty" role="group" aria-label="كمية ${name}">
@@ -364,29 +370,35 @@ function renderCart() {
 function updatePayment() {
   const total = cartTotal();
   const raw = els.paid.value.trim();
+  // Arabic digits and separators ("١٬٠٠٠", "1,000") still read; anything else is invalid, never 0
+  const typed = raw === '' ? null : roundMoney(parseNumber(raw));
   els.clear.disabled = !state.cart.length || state.busy;
 
   // Credit: what is not paid now goes on the customer's account
   if (state.payType === 'credit') {
-    const paidNow = raw === '' ? 0 : Number(raw);
+    const paidNow = typed ?? 0;
     const debt = roundMoney(total - paidNow);
     const invalid = !Number.isFinite(paidNow) || paidNow < 0 || (state.cart.length > 0 && debt <= 0);
     els.changeRow.classList.toggle('is-short', invalid);
     els.changeRow.classList.toggle('is-debt', !invalid);
-    els.changeLabel.textContent = invalid ? 'المبلغ كامل، اختر «نقدًا»' : 'يُسجَّل دينًا';
-    els.changeDue.textContent = formatMoney(Math.max(debt, 0));
+    els.changeLabel.textContent = !Number.isFinite(paidNow)
+      ? 'اكتب المبلغ بالأرقام'
+      : invalid
+        ? 'المبلغ كامل، اختر «نقدًا»'
+        : 'يُسجَّل دينًا';
+    els.changeDue.textContent = formatMoney(Number.isFinite(debt) ? Math.max(debt, 0) : total);
     els.checkout.disabled = !state.cart.length || invalid || !els.customerInput.value.trim() || state.busy;
     updateCreditNote();
     return;
   }
 
-  const paid = raw === '' ? total : Number(raw);
+  const paid = typed ?? total;
   const change = roundMoney(paid - total);
   const short = raw !== '' && (!Number.isFinite(paid) || change < 0);
 
   els.changeRow.classList.remove('is-debt');
   els.changeRow.classList.toggle('is-short', short);
-  els.changeLabel.textContent = short ? 'المبلغ ناقص' : 'الباقي للزبون';
+  els.changeLabel.textContent = !Number.isFinite(paid) ? 'اكتب المبلغ بالأرقام' : short ? 'المبلغ ناقص' : 'الباقي للزبون';
   els.changeDue.textContent = formatMoney(Number.isFinite(change) ? Math.abs(change) : total);
   els.checkout.disabled = !state.cart.length || short || state.busy;
   els.clear.disabled = !state.cart.length || state.busy;
@@ -715,7 +727,7 @@ async function checkout() {
       method: 'POST',
       body: {
         items: state.cart.map((l) => ({ productId: l.productId, quantity: l.qty, mode: l.mode })),
-        paid: raw === '' ? undefined : Number(raw),
+        paid: raw === '' ? undefined : roundMoney(parseNumber(raw)),
         ...(credit ? { paymentType: 'credit', customerId: customer._id } : {}),
       },
     });
@@ -791,7 +803,9 @@ els.cancelSale.addEventListener('click', async () => {
   const sale = state.lastSale;
   const question =
     sale?.paymentType === 'credit'
-      ? `إلغاء الفاتورة رقم ${sale.number} وحذف ${formatMoney(sale.debt)} من دين ${sale.customerName}؟`
+      ? `إلغاء الفاتورة رقم ${sale.number}؟ يُخصم حتى ${formatMoney(sale.debt)} مما على ${sale.customerName}${
+          sale.paid > 0 ? `، ويُعاد الباقي من ${formatMoney(sale.total)} نقدًا` : ''
+        }، بحسب ما عليه الآن.`
       : `إلغاء الفاتورة رقم ${sale?.number} وإرجاع ${formatMoney(sale?.total)} للزبون؟`;
   if (!sale || !confirm(question)) return;
   // Close first: toasts cannot show above an open modal

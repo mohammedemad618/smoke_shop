@@ -72,7 +72,7 @@ router.post('/:id/entries', async (req, res) => {
   const sign = MANUAL_KINDS[req.body.kind];
   if (!sign) throw httpError(400, 'نوع السجل غير صالح');
   const amount = money(req.body.amount);
-  if (!(amount > 0)) throw httpError(400, 'المبلغ يجب أن يكون أكبر من صفر');
+  if (!Number.isFinite(amount) || amount <= 0) throw httpError(400, 'المبلغ يجب أن يكون أكبر من صفر');
   const entry = await DebtEntry.create({
     customer: customer._id,
     kind: req.body.kind,

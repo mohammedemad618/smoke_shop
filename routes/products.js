@@ -6,7 +6,7 @@ import DebtEntry from '../models/DebtEntry.js';
 import StockCount from '../models/StockCount.js';
 import Purchase from '../models/Purchase.js';
 import { httpError } from '../lib/errors.js';
-import { escapeRegex } from '../lib/util.js';
+import { escapeRegex, roundQty } from '../lib/util.js';
 
 const router = Router();
 const EDITABLE = [
@@ -29,17 +29,21 @@ const pickEditable = (body) =>
   Object.fromEntries(EDITABLE.filter((key) => body[key] !== undefined).map((key) => [key, body[key]]));
 
 // Rules that span fields: products sold by the piece count in whole pieces; a wholesale
-// price needs its box size (pieces) or weight (kg).
-function checkUnits(data) {
-  const byPiece = (data.unit ?? 'piece') === 'piece';
+// price needs its box size (pieces) or weight (kg). An edit is checked together with what
+// the product already has, so changing one field cannot break another.
+function checkUnits(data, existing = {}) {
+  const merged = { ...existing, ...data };
+  const byPiece = (merged.unit ?? 'piece') === 'piece';
   const wholePieces = (value, message) => {
     if (byPiece && value !== undefined && !Number.isInteger(Number(value))) throw httpError(400, message);
   };
-  wholePieces(data.stock, 'كمية المخزن يجب أن تكون عددًا صحيحًا من القطع');
-  wholePieces(data.lowStockAlert, 'حد التنبيه يجب أن يكون عددًا صحيحًا من القطع');
-  if (data.hasWholesale) {
-    const size = Number(data.wholesaleQty);
-    const price = Number(data.wholesalePrice);
+  wholePieces(merged.stock, 'كمية المخزن يجب أن تكون عددًا صحيحًا من القطع');
+  wholePieces(merged.lowStockAlert, 'حد التنبيه يجب أن يكون عددًا صحيحًا من القطع');
+  // Weights are kept to the gram, like every stock change
+  if (data.stock !== undefined && data.stock !== null && data.stock !== '') data.stock = roundQty(data.stock);
+  if (merged.hasWholesale) {
+    const size = Number(merged.wholesaleQty);
+    const price = Number(merged.wholesalePrice);
     if (byPiece && !(Number.isInteger(size) && size >= 2)) throw httpError(400, 'عدد القطع في العلبة يجب أن يكون 2 أو أكثر');
     if (!byPiece && !(size > 0)) throw httpError(400, 'أدخل وزن الجملة بالكيلوغرام');
     if (!Number.isFinite(price) || price < 0) throw httpError(400, 'أدخل سعر بيع الجملة');
@@ -105,7 +109,9 @@ router.post('/', async (req, res) => {
 
 router.put('/:id', async (req, res) => {
   const data = pickEditable(req.body);
-  checkUnits(data);
+  const existing = await Product.findById(req.params.id).lean();
+  if (!existing) throw httpError(404, 'المنتج غير موجود');
+  checkUnits(data, existing);
   await assertCategoryExists(data.category);
   const product = await Product.findByIdAndUpdate(req.params.id, data, {
     returnDocument: 'after',

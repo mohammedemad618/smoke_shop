@@ -73,5 +73,7 @@ const saleSchema = new Schema(
 );
 
 saleSchema.index({ createdAt: -1 });
+// Reports book a return on the day it was made
+saleSchema.index({ 'returns.at': 1 });
 
 export default model('Sale', saleSchema);

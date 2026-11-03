@@ -65,7 +65,7 @@ function salesBlock(today, month, now) {
       ${salesCard({ title: 'اليوم', href: '/sales.html', s: today })}
       ${salesCard({ title: `هذا الشهر (${monthName.format(now)})`, href: `/sales.html?month=${monthKey(now)}`, s: month })}
     </div>
-    <p class="hint">صافي الربح = ربح المبيعات − المصاريف − ما بيع بالدين ولم يُحصَّل + ما حُصِّل من الديون.</p>
+    <p class="hint">صافي الربح = ربح المبيعات − المصاريف − ما بيع بالدين + ما حُصِّل من الديون.</p>
   </section>`;
 }
 

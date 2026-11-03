@@ -97,7 +97,7 @@ function renderSummary({ total, byCategory }) {
           (c) => `<tr>
           <td>${escapeHtml(c.category)} <small class="pcat">${arCount(c.count, EXPENSES)}</small></td>
           <td class="end"><span class="num">${formatMoney(c.total)}</span></td>
-          <td class="end"><span class="num">${Math.round((c.total / total) * 100)}%</span></td>
+          <td class="end"><span class="num">${total > 0 ? `${Math.round((c.total / total) * 100)}%` : "—"}</span></td>
         </tr>`,
         )
         .join('')}</tbody>

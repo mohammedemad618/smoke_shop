@@ -2,6 +2,7 @@ import {
   api,
   toast,
   formatMoney,
+  roundMoney,
   formatQty,
   formatWeight,
   formatTime,
@@ -139,7 +140,8 @@ function syncLimits() {
 /* Rendering */
 
 const marginOf = (row) => (row.total > 0 ? `${Math.round((row.profit / row.total) * 100)}%` : '');
-const profitClass = (value) => (value < 0 ? ' loss' : '');
+// Rounded first: a few thousandths of a cent below zero shows as 0, not as a loss
+const profitClass = (value) => (roundMoney(value) < 0 ? ' loss' : '');
 
 function renderSummary(s, period) {
   const margin = marginOf(s);
@@ -163,8 +165,9 @@ function renderSummary(s, period) {
       <a class="z-link" href="${expensesLink}">${s.expenses ? 'تفاصيل المصاريف' : 'إضافة مصروف'}</a>
     </div>
     <div>
-      <div class="z-label">ديون لم تُحصَّل</div>
+      <div class="z-label">بيع بالدين</div>
       <div class="z-value num ${s.credit > 0 ? 'owes-text' : ''}">${formatMoney(s.credit)}</div>
+      <div class="z-note">ما بيع بالدين في هذه الفترة، بعد المرتجعات</div>
       <a class="z-link" href="/debts.html">حسابات الزبائن</a>
     </div>
     <div>
@@ -175,7 +178,7 @@ function renderSummary(s, period) {
     <div class="z-net">
       <div class="z-label">صافي الربح</div>
       <div class="z-value num ${s.netProfit < 0 ? 'is-loss' : 'is-profit'}">${formatMoney(s.netProfit)}</div>
-      <div class="z-note">ربح المبيعات − المصاريف − الديون + المحصَّل</div>
+      <div class="z-note">ربح المبيعات − المصاريف − البيع بالدين + المحصَّل</div>
     </div>`;
 }
 
@@ -227,7 +230,7 @@ function itemsDetail(sale) {
 function renderInvoices(sales) {
   daySales = sales;
   if (!sales.length) {
-    emptyState('لا توجد مبيعات في هذا اليوم');
+    emptyState('لا توجد فواتير في هذا اليوم');
     return;
   }
   els.area.innerHTML = `<div class="section-head"><h2>الفواتير</h2></div>
@@ -278,28 +281,44 @@ function periodKeys(period, groupBy) {
 }
 
 function renderBreakdown(period, { groupBy, summary, periods }) {
-  if (!summary.count && !summary.expenses && !summary.collected) {
+  // A day with only a refund (of an older invoice) still has figures to show
+  const hasFigures = (row) => row.count || row.returns || row.expenses || row.credit || row.collected;
+  if (!hasFigures(summary)) {
     emptyState('لا توجد مبيعات أو مصاريف في هذه الفترة');
     return;
   }
   const byKey = new Map(periods.map((p) => [p.key, p]));
-  const empty = { count: 0, total: 0, profit: 0, expenses: 0, credit: 0, collected: 0, netProfit: 0 };
+  const empty = { count: 0, total: 0, profit: 0, returns: 0, expenses: 0, credit: 0, collected: 0, netProfit: 0 };
   const byMonth = groupBy === 'month';
   const amount = (value, shown) => (shown ? formatMoney(value) : '–');
 
   const rows = periodKeys(period, groupBy).map((key) => {
     const row = byKey.get(key) ?? empty;
-    const active = row.count || row.expenses || row.credit || row.collected;
-    const label = byMonth ? monthName.format(parseKey(key)) : rowDay.format(parseKey(key));
+    const active = hasFigures(row);
+    const sold = row.count || row.returns;
+    let label = byMonth ? monthName.format(parseKey(key)) : rowDay.format(parseKey(key));
+    let drill = key;
+    // A month cut by the start or end of the range is labelled with its days, and opens
+    // just those days, so its figures match the row
+    if (byMonth) {
+      const monthStart = parseKey(key);
+      const first = monthStart < period.from ? period.from : monthStart;
+      const end = addMonths(monthStart, 1) > period.to ? period.to : addMonths(monthStart, 1);
+      if (first > monthStart || end < addMonths(monthStart, 1)) {
+        const last = addDays(end, -1);
+        label = `${label} (${first.getDate()}–${last.getDate()})`;
+        drill = `${dayKey(first)}:${dayKey(last)}`;
+      }
+    }
     return `<tr${active ? '' : ' class="is-quiet"'}>
       <td>${
         active
-          ? `<button class="drill" type="button" data-drill="${key}" title="${byMonth ? 'عرض الشهر' : 'عرض فواتير اليوم'}">${label}</button>`
+          ? `<button class="drill" type="button" data-drill="${drill}" title="${byMonth ? 'عرض الشهر' : 'عرض فواتير اليوم'}">${label}</button>`
           : label
       }</td>
       <td class="num">${row.count || '–'}</td>
-      <td class="end num">${amount(row.total, row.count)}</td>
-      <td class="end num${profitClass(row.profit)}">${amount(row.profit, row.count)}</td>
+      <td class="end num">${amount(row.total, sold)}</td>
+      <td class="end num${profitClass(row.profit)}">${amount(row.profit, sold)}</td>
       <td class="end num">${amount(row.expenses, row.expenses)}</td>
       <td class="end num owes-text">${amount(row.credit, row.credit)}</td>
       <td class="end num credit-text">${amount(row.collected, row.collected)}</td>
@@ -344,9 +363,11 @@ function renderProducts() {
   els.productsSection.hidden = rows.length === 0;
   if (!rows.length) return;
 
-  // Ties fall back to profit, then name, so the order is stable
+  // By quantity, pieces come before kilograms: 50 kg is not 50 pieces. Ties fall back to
+  // profit, then name, so the order is stable.
+  const unitOrder = (a, b) => (sort === 'quantity' ? (a.unit === 'kg') - (b.unit === 'kg') : 0);
   const sorted = [...rows].sort(
-    (a, b) => b[sort] - a[sort] || b.profit - a.profit || a.name.localeCompare(b.name, 'ar'),
+    (a, b) => unitOrder(a, b) || b[sort] - a[sort] || b.profit - a.profit || a.name.localeCompare(b.name, 'ar'),
   );
   const visible = showAll ? sorted : sorted.slice(0, TOP_PRODUCTS);
 
@@ -482,11 +503,15 @@ function returnQuantities() {
 const validReturn = (r) =>
   Number.isFinite(r.quantity) && r.quantity >= 0 && r.quantity <= r.max && (!wholeOnly(r.item) || Number.isInteger(r.quantity));
 
+// Worked out like the server: a line gives back its share of what it was sold for, by
+// the part of it returned so far, so the amount shown is the amount refunded
+const share = (item, quantity) => roundMoney((item.lineTotal * quantity) / item.quantity);
 function updateReturnAmount() {
-  const amount = returnQuantities().reduce(
-    (sum, r) => sum + (validReturn(r) ? r.quantity * r.item.unitPrice : 0),
-    0,
-  );
+  const amount = returnQuantities().reduce((sum, r) => {
+    if (!validReturn(r) || !r.quantity) return sum;
+    const before = r.item.returnedQuantity ?? 0;
+    return sum + roundMoney(share(r.item, before + r.quantity) - share(r.item, before));
+  }, 0);
   els.returnAmount.textContent = formatMoney(amount);
 }
 
@@ -577,7 +602,11 @@ els.area.addEventListener('click', (e) => {
   const drill = e.target.closest('[data-drill]');
   if (drill) {
     const key = drill.dataset.drill;
-    if (key.length === 7) {
+    if (key.includes(':')) {
+      // Part of a month at the edge of a range: those days only
+      [els.from.value, els.to.value] = key.split(':');
+      setMode('range');
+    } else if (key.length === 7) {
       els.month.value = key;
       setMode('month');
     } else {

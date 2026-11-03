@@ -3,10 +3,37 @@ const moneyFormat = new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 })
 const dateTimeFormat = new Intl.DateTimeFormat('ar-u-nu-latn', { dateStyle: 'medium', timeStyle: 'short' });
 const timeFormat = new Intl.DateTimeFormat('ar-u-nu-latn', { timeStyle: 'short' });
 
-export const formatMoney = (n) => moneyFormat.format(Number(n) || 0);
+// Rounds half away from zero on the number as written, not on its binary value (10.075 is
+// stored as 10.07499999...). The same function is in lib/util.js, so the screen shows
+// exactly what the server saves.
+export function roundTo(n, digits) {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return x;
+  const written = Math.abs(x).toString();
+  const rounded = written.includes('e')
+    ? Math.round(Math.abs(x) * 10 ** digits) / 10 ** digits
+    : Number(`${Math.round(Number(`${written}e${digits}`))}e-${digits}`);
+  return Math.sign(x) * rounded || 0; // || 0: never -0
+}
+export const roundMoney = (n) => roundTo(n, 2);
+
+// Rounded first, so a figure shows what is saved and never as "-0"
+export const formatMoney = (n) => moneyFormat.format(roundMoney(Number(n) || 0));
 export const formatDateTime = (d) => dateTimeFormat.format(new Date(d));
 export const formatTime = (d) => timeFormat.format(new Date(d));
-export const roundMoney = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
+
+// A number as people type it: Arabic-Indic digits, the Arabic decimal mark and thousands
+// separators are read ("١٬٥٠٠" and "1,500" are 1500, "٢٫٥" is 2.5). Anything else is NaN,
+// never quietly 0.
+export const latinDigits = (text) =>
+  String(text ?? '')
+    .replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 0x660))
+    .replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 0x6f0))
+    .replace(/٫/g, '.');
+export function parseNumber(text) {
+  const s = latinDigits(text).trim().replace(/[,٬\s]/g, '');
+  return /^(\d+\.?\d*|\.\d+)$/.test(s) ? Number(s) : NaN;
+}
 
 // For searching Arabic names: أ/إ/آ count as ا, ة as ه, ى as ي, and diacritics are ignored
 export const normalizeArabic = (s) =>
@@ -25,11 +52,13 @@ export const addMonths = (d, n) => new Date(d.getFullYear(), d.getMonth() + n, 1
 
 // Quantities: pieces are whole, weights are kept to the gram
 const qtyFormat = new Intl.NumberFormat('en-US', { maximumFractionDigits: 3 });
-export const formatQty = (n) => qtyFormat.format(Number(n) || 0);
-export const roundQty = (n) => Math.round((n + Number.EPSILON) * 1000) / 1000;
+export const roundQty = (n) => roundTo(n, 3);
+export const formatQty = (n) => qtyFormat.format(roundQty(Number(n) || 0));
 // Under a kilo reads better in grams: 0.06 -> "60 غ", 1.5 -> "1.5 كغم"
-export const formatWeight = (kg) =>
-  kg < 1 ? `${formatQty(Math.round(kg * 1000))} غ` : `${formatQty(kg)} كغم`;
+export const formatWeight = (kg) => {
+  const q = roundQty(Number(kg) || 0);
+  return q < 1 ? `${formatQty(Math.round(q * 1000))} غ` : `${formatQty(q)} كغم`;
+};
 
 // "علبة (10 قطع)" for a box of pieces, "كيس (10 كغم)" for a wholesale weight
 export function packName(unit, size) {

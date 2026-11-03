@@ -1,6 +1,9 @@
 import { Schema, model } from 'mongoose';
 import { money } from '../lib/util.js';
 
+// Numbers like 1e400 parse to Infinity, which Mongoose would otherwise store
+const finite = (label) => ({ validator: (v) => v === undefined || v === null || Number.isFinite(v), message: `قيمة ${label} غير صالحة` });
+
 const productSchema = new Schema(
   {
     name: {
@@ -20,11 +23,13 @@ const productSchema = new Schema(
       type: Number,
       required: [true, 'سعر الشراء مطلوب'],
       min: [0, 'سعر الشراء لا يمكن أن يكون سالبًا'],
+      validate: finite('سعر الشراء'),
     },
     salePrice: {
       type: Number,
       required: [true, 'سعر البيع مطلوب'],
       min: [0, 'سعر البيع لا يمكن أن يكون سالبًا'],
+      validate: finite('سعر البيع'),
     },
     category: {
       type: Schema.Types.ObjectId,
@@ -36,13 +41,13 @@ const productSchema = new Schema(
     unit: { type: String, enum: ['piece', 'kg'], default: 'piece' },
     // Optional wholesale price: for a box of `wholesaleQty` pieces, or for `wholesaleQty` kg
     hasWholesale: { type: Boolean, default: false },
-    wholesaleQty: { type: Number, min: [0, 'كمية الجملة لا يمكن أن تكون سالبة'] },
-    wholesalePrice: { type: Number, min: [0, 'سعر الجملة لا يمكن أن يكون سالبًا'] },
+    wholesaleQty: { type: Number, min: [0, 'كمية الجملة لا يمكن أن تكون سالبة'], validate: finite('كمية الجملة') },
+    wholesalePrice: { type: Number, min: [0, 'سعر الجملة لا يمكن أن يكون سالبًا'], validate: finite('سعر الجملة') },
     // Inventory is opt-in per product: only tracked products have their stock counted,
     // in pieces or kilograms (whole pieces are enforced by the route, which knows the unit)
     trackStock: { type: Boolean, default: false },
-    stock: { type: Number, default: 0 },
-    lowStockAlert: { type: Number, default: 5, min: [0, 'حد التنبيه لا يمكن أن يكون سالبًا'] },
+    stock: { type: Number, default: 0, validate: finite('كمية المخزن') },
+    lowStockAlert: { type: Number, default: 5, min: [0, 'حد التنبيه لا يمكن أن يكون سالبًا'], validate: finite('حد التنبيه') },
     // On: the cashier cannot sell more than what is in stock. Off: stock may go below zero.
     blockWhenOut: { type: Boolean, default: false },
   },

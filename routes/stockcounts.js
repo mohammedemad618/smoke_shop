@@ -2,7 +2,7 @@ import { Router } from 'express';
 import Product from '../models/Product.js';
 import StockCount from '../models/StockCount.js';
 import { httpError } from '../lib/errors.js';
-import { money, roundQty } from '../lib/util.js';
+import { money, roundQty, stockChange } from '../lib/util.js';
 
 const router = Router();
 
@@ -91,11 +91,26 @@ router.post('/:id/apply', async (req, res) => {
   ).lean();
   if (!count) throw httpError(409, 'هذا الجرد اعتُمد من قبل');
 
+  // A product counted while untracked may have started being tracked since (a supplier
+  // invoice starts it from what was bought); the count is then what was already on the
+  // shelf, so it is added rather than overwriting what came in after
+  const untrackedIds = count.lines.filter((l) => l.expected === null).map((l) => l.product);
+  const trackedSince = new Set(
+    (await Product.find({ _id: { $in: untrackedIds }, trackStock: true }, '_id').lean()).map((p) => String(p._id)),
+  );
   const summary = { counted: count.lines.length, shortItems: 0, shortValue: 0, overItems: 0, overValue: 0, newlyTracked: 0 };
   const updates = count.lines.map((line) => {
     if (line.expected === null) {
       summary.newlyTracked++;
-      return { updateOne: { filter: { _id: line.product }, update: { $set: { trackStock: true, stock: line.counted } } } };
+      if (trackedSince.has(String(line.product))) {
+        return { updateOne: { filter: { _id: line.product }, update: stockChange(line.counted) } };
+      }
+      return {
+        updateOne: {
+          filter: { _id: line.product, trackStock: { $ne: true } },
+          update: { $set: { trackStock: true, stock: line.counted } },
+        },
+      };
     }
     const diff = roundQty(line.counted - line.expected);
     if (diff < 0) {
@@ -105,7 +120,7 @@ router.post('/:id/apply', async (req, res) => {
       summary.overItems++;
       summary.overValue += diff * line.purchasePrice;
     }
-    return { updateOne: { filter: { _id: line.product }, update: { $inc: { stock: diff }, $set: { trackStock: true } } } };
+    return { updateOne: { filter: { _id: line.product }, update: stockChange(diff, { trackStock: true }) } };
   });
   await Product.bulkWrite(updates);
 

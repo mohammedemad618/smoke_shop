@@ -7,6 +7,7 @@ import {
   escapeHtml,
   arCount,
   roundMoney,
+  roundTo,
   roundQty,
   normalizeArabic,
   dayKey,
@@ -106,10 +107,11 @@ function dayToIso(key) {
   return d.toISOString();
 }
 
+// Like the server: the quantity to the gram and the price to the cent, then the total
 function lineCalc(line) {
   const packSize = packSizeOf(line);
-  const qty = num(line.quantity);
-  const price = num(line.price);
+  const qty = roundQty(num(line.quantity));
+  const price = roundMoney(num(line.price));
   const valid = Number.isFinite(qty) && qty > 0 && Number.isFinite(price) && price >= 0;
   return {
     packSize,
@@ -117,7 +119,8 @@ function lineCalc(line) {
     price,
     total: valid ? roundMoney(qty * price) : 0,
     stockQty: Number.isFinite(qty) && qty > 0 ? roundQty(qty * packSize) : 0,
-    unitCost: Number.isFinite(price) ? roundMoney(price / packSize) : NaN,
+    // Not rounded to the cent: a box price shared over its pieces must add back up
+    unitCost: Number.isFinite(price) ? roundTo(price / packSize, 6) : NaN,
   };
 }
 
@@ -200,7 +203,7 @@ async function loadList() {
     state.purchases = data.purchases;
     state.suppliers = suppliers;
     renderSummary(data);
-    renderSuppliers();
+    renderSuppliers(data.owedToSuppliers);
     renderList();
   } catch (err) {
     toast(err.message, 'error');
@@ -224,15 +227,21 @@ function renderSummary(data) {
     في ${arCount(data.count, INVOICES_IN)}، دُفع منها <span class="num">${formatMoney(data.paid)}</span>.`;
 }
 
-function renderSuppliers() {
-  const owed = state.suppliers.filter((s) => s.owed > 0).sort((a, b) => b.owed - a.owed);
-  const total = owed.reduce((sum, s) => sum + s.owed, 0);
-  els.suppliersArea.innerHTML = owed.length
+// The total is the server's figure over all invoices, the same one the summary shows;
+// invoices entered without a supplier's name get a row of their own
+function renderSuppliers(total) {
+  const owed = state.suppliers
+    .filter((s) => s.owed > 0)
+    .sort((a, b) => b.owed - a.owed)
+    .map((s) => ({ name: escapeHtml(s.name), owed: s.owed }));
+  const unnamed = roundMoney(total - owed.reduce((sum, s) => sum + s.owed, 0));
+  if (unnamed > 0) owed.push({ name: '<span class="muted">بدون اسم مورد</span>', owed: unnamed });
+  els.suppliersArea.innerHTML = total > 0
     ? `<div class="section-head"><h2>عليك للموردين <span class="num loss">${formatMoney(total)}</span></h2></div>
       <table class="ptable keep-table supplier-debts">
         <thead><tr><th scope="col">المورد</th><th scope="col" class="end">المتبقي عليك</th></tr></thead>
         <tbody>${owed
-          .map((s) => `<tr><td class="pname">${escapeHtml(s.name)}</td><td class="end"><span class="num loss">${formatMoney(s.owed)}</span></td></tr>`)
+          .map((s) => `<tr><td class="pname">${s.name}</td><td class="end"><span class="num loss">${formatMoney(s.owed)}</span></td></tr>`)
           .join('')}</tbody>
       </table>`
     : '';

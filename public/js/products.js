@@ -13,6 +13,8 @@ const state = {
   activeCategory: '',
   query: '',
   editingId: null,
+  // The stock shown in the edit window, to tell whether it was changed
+  editingStock: null,
   renamingId: null,
   // Which part of the stock is shown, and in what order (see STOCK_FILTERS and SORTS)
   stockFilter: '',
@@ -410,9 +412,13 @@ function readForm() {
   }
   // Untracked products keep whatever stock settings they had
   if (data.trackStock) {
-    data.stock = number(fields.stock, 0);
+    // A new product left blank starts at 0; on an edit a blank field is a mistake
+    data.stock = number(fields.stock, state.editingId ? NaN : 0);
     data.lowStockAlert = number(fields.lowStockAlert, DEFAULT_LOW_STOCK);
     data.blockWhenOut = fields.blockWhenOut.checked;
+    // Stock left as it was shown is not sent: sales and purchases made since the window
+    // opened would otherwise be overwritten by the old figure
+    if (state.editingId && state.editingStock !== null && data.stock === state.editingStock) delete data.stock;
   }
   return data;
 }
@@ -466,6 +472,7 @@ function updateWholesaleNote() {
 function setStockFields(product) {
   fields.trackStock.checked = product ? Boolean(product.trackStock) : true;
   fields.stock.value = product?.trackStock ? product.stock : '';
+  state.editingStock = product?.trackStock ? product.stock : null;
   fields.lowStockAlert.value = product?.lowStockAlert ?? DEFAULT_LOW_STOCK;
   fields.blockWhenOut.checked = Boolean(product?.blockWhenOut);
   stockOptions.hidden = !fields.trackStock.checked;
@@ -493,7 +500,7 @@ function validate(data) {
   }
   if (data.trackStock) {
     const valid = (n) => Number.isFinite(n) && (!byPiece || Number.isInteger(n));
-    if (!valid(data.stock)) {
+    if (data.stock !== undefined && !valid(data.stock)) {
       return { field: 'stock', message: byPiece ? 'كمية المخزن يجب أن تكون عددًا صحيحًا من القطع' : 'أدخل كمية المخزن بالكيلوغرام' };
     }
     if (!valid(data.lowStockAlert) || data.lowStockAlert < 0) {
@@ -559,7 +566,26 @@ function openProductDialog(product = null) {
   updateMarginNote();
   els.dialog.showModal();
   (product ? fields.name : fields.barcode).focus();
+  if (product) refreshStock(product);
 }
+
+// The list may have been loaded a while ago: the window shows the stock as it is now,
+// unless the field was already changed
+async function refreshStock(product) {
+  try {
+    const fresh = await api(`/products/barcode/${encodeURIComponent(product.barcode)}`);
+    if (state.editingId !== product._id || !fresh.trackStock || !product.trackStock) return;
+    if (fields.stock.value === String(state.editingStock ?? '')) fields.stock.value = fresh.stock;
+    state.editingStock = fresh.stock;
+  } catch {
+    // The figure from the list stays
+  }
+}
+
+// Sales on other devices change the stock: coming back to the page shows it fresh
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && !els.dialog.open) loadProducts().catch(() => {});
+});
 
 els.addProduct.addEventListener('click', () => openProductDialog());
 els.cancel.addEventListener('click', () => els.dialog.close());

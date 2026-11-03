@@ -8,7 +8,7 @@ const expenseSchema = new Schema(
     amount: {
       type: Number,
       required: [true, 'مبلغ المصروف مطلوب'],
-      validate: { validator: (v) => v > 0, message: 'مبلغ المصروف يجب أن يكون أكبر من صفر' },
+      validate: { validator: (v) => Number.isFinite(v) && v > 0, message: 'مبلغ المصروف يجب أن يكون أكبر من صفر' },
     },
     category: {
       type: String,
@@ -20,13 +20,5 @@ const expenseSchema = new Schema(
   },
   { timestamps: true },
 );
-
-expenseSchema.statics.totalBetween = async function totalBetween(start, end) {
-  const [row] = await this.aggregate([
-    { $match: { date: { $gte: start, $lt: end } } },
-    { $group: { _id: null, total: { $sum: '$amount' } } },
-  ]);
-  return row?.total ?? 0;
-};
 
 export default model('Expense', expenseSchema);

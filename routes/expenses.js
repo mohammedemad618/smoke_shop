@@ -8,8 +8,12 @@ const router = Router();
 const EDITABLE = ['date', 'amount', 'category', 'note'];
 const MAX_RANGE_MS = 3 * 366 * DAY_MS;
 
-const pickEditable = (body) =>
-  Object.fromEntries(EDITABLE.filter((key) => body[key] !== undefined).map((key) => [key, body[key]]));
+// Amounts are kept to the cent, like every other sum
+const pickEditable = (body) => {
+  const data = Object.fromEntries(EDITABLE.filter((key) => body[key] !== undefined).map((key) => [key, body[key]]));
+  if (data.amount !== undefined && data.amount !== null && data.amount !== '') data.amount = money(data.amount);
+  return data;
+};
 
 // Expenses of a period (?from=&to=), newest first, with totals per type
 router.get('/', async (req, res) => {

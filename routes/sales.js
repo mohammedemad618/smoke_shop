@@ -7,7 +7,7 @@ import Customer from '../models/Customer.js';
 import DebtEntry from '../models/DebtEntry.js';
 import { nextSequence } from '../models/Counter.js';
 import { httpError } from '../lib/errors.js';
-import { money, roundQty } from '../lib/util.js';
+import { money, precise, roundQty, stockChange } from '../lib/util.js';
 import { DAY_MS, requestedRange, timeZoneParam } from '../lib/range.js';
 
 const router = Router();
@@ -16,54 +16,10 @@ const MAX_LIST_RANGE_MS = 31 * DAY_MS;
 const MAX_REPORT_RANGE_MS = 3 * 366 * DAY_MS;
 const GROUP_FORMATS = { day: '%Y-%m-%d', month: '%Y-%m' };
 
-// Sales made before returns existed have no return fields
-const RETURNED_TOTAL = { $ifNull: ['$returnedTotal', 0] };
-const RETURNED_COST = { $ifNull: ['$returnedCost', 0] };
-const ITEM_KEPT_QTY = { $subtract: ['$items.quantity', { $ifNull: ['$items.returnedQuantity', 0] }] };
-// In pieces or kg: a wholesale box of 10 sold twice is 20 pieces
-const ITEM_KEPT_BASE = { $multiply: [ITEM_KEPT_QTY, { $ifNull: ['$items.packSize', 1] }] };
-
-// Of what a credit sale put on the customer's account, the part not taken back by returns
-const CREDIT_LEFT = { $subtract: [{ $ifNull: ['$debt', 0] }, { $sum: '$returns.toAccount' }] };
-const creditLeft = (sale) => (sale.debt ?? 0) - (sale.returns ?? []).reduce((sum, r) => sum + (r.toAccount ?? 0), 0);
-
-// What an invoice still counts for after its returns
-function netOf(sale) {
-  const returnedTotal = sale.returnedTotal ?? 0;
-  const returnedCost = sale.returnedCost ?? 0;
-  return {
-    count: sale.returnStatus === 'full' ? 0 : 1,
-    total: sale.total - returnedTotal,
-    cost: sale.cost - returnedCost,
-    profit: sale.profit - (returnedTotal - returnedCost),
-    returns: returnedTotal,
-    credit: creditLeft(sale),
-  };
-}
-
-const summarize = (rows) =>
-  rows.reduce(
-    (acc, row) => ({
-      count: acc.count + row.count,
-      total: money(acc.total + row.total),
-      cost: money(acc.cost + row.cost),
-      profit: money(acc.profit + row.profit),
-      returns: money(acc.returns + row.returns),
-      credit: money(acc.credit + row.credit),
-    }),
-    { count: 0, total: 0, cost: 0, profit: 0, returns: 0, credit: 0 },
-  );
-
 // Net profit counts only money that came in: profit on sales, minus expenses, minus what
-// was sold on credit and is still owed, plus debt payments collected in the period.
-// Over time it adds up to the profit on sales minus expenses.
+// was sold on credit (less what returns took off the account), plus what customers paid
+// towards credit sales. Over time it adds up to the profit on sales minus expenses.
 const netProfitOf = ({ profit, credit }, expenses, collected) => money(profit - expenses - credit + collected);
-const withNet = (summary, expenses, collected) => ({
-  ...summary,
-  expenses: money(expenses),
-  collected: money(collected),
-  netProfit: netProfitOf(summary, expenses, collected),
-});
 
 /* Stock */
 
@@ -71,7 +27,7 @@ async function putBackInStock(entries) {
   if (!entries.length) return;
   await Product.bulkWrite(
     entries.map(([id, quantity]) => ({
-      updateOne: { filter: { _id: id, trackStock: true }, update: { $inc: { stock: quantity } } },
+      updateOne: { filter: { _id: id, trackStock: true }, update: stockChange(quantity) },
     })),
   );
 }
@@ -83,8 +39,8 @@ async function takeFromStock(products, quantities) {
   for (const p of products.filter((x) => x.trackStock)) {
     const quantity = quantities.get(String(p._id));
     const filter = p.blockWhenOut ? { _id: p._id, stock: { $gte: quantity } } : { _id: p._id };
-    const { modifiedCount } = await Product.updateOne(filter, { $inc: { stock: -quantity } });
-    if (!modifiedCount) {
+    const { matchedCount } = await Product.updateOne(filter, stockChange(-quantity), { updatePipeline: true });
+    if (!matchedCount) {
       await putBackInStock(taken);
       const fresh = await Product.findById(p._id, 'stock').lean();
       const left = Math.max(fresh?.stock ?? 0, 0);
@@ -97,129 +53,290 @@ async function takeFromStock(products, quantities) {
 
 /* Reports */
 
-// Invoices of one day (or a short range), newest first
-router.get('/', async (req, res) => {
-  const { start, end } = requestedRange(req.query, MAX_LIST_RANGE_MS);
-  const [sales, expenses, collected] = await Promise.all([
-    Sale.find({ createdAt: { $gte: start, $lt: end } }).sort({ createdAt: -1 }).lean(),
-    Expense.totalBetween(start, end),
-    DebtEntry.collectedBetween(start, end),
-  ]);
-  res.json({ summary: withNet(summarize(sales.map(netOf)), expenses, collected), sales });
+// A period's figures follow the money: a sale counts on the day it was made, a return on
+// the day the refund was given. An invoice returned today lowers today's sales and leaves
+// the day it was sold as it closed.
+
+// Pieces in a list of lines (sold or returned): weights are not pieces
+const piecesIn = (lines) => ({
+  $sum: {
+    $map: {
+      input: lines,
+      as: 'i',
+      in: { $cond: [{ $eq: ['$$i.unit', 'kg'] }, 0, { $multiply: ['$$i.quantity', { $ifNull: ['$$i.packSize', 1] }] }] },
+    },
+  },
 });
 
-// Totals for a month or any period, broken down by day or by month
+/*
+ * What customers paid that settles sales made on credit, dated when it counts: a payment on
+ * its day, and money paid ahead on the day a later credit sale uses it. Paying back a debt
+ * added by hand (money lent, or owed from before this system) is not money from sales, so
+ * it does not count, and money paid ahead does not count until a sale uses it. Each
+ * customer's account is replayed oldest first: payments settle the oldest open debts, and
+ * a return settles its own invoice first.
+ */
+async function collectedEvents(end) {
+  const entries = await DebtEntry.find({ date: { $lt: end } }).sort({ customer: 1, date: 1, createdAt: 1 }).lean();
+  const events = [];
+  let customer = null;
+  let open = [];
+  let ahead = 0;
+  for (const e of entries) {
+    if (String(e.customer) !== customer) {
+      customer = String(e.customer);
+      open = [];
+      ahead = 0;
+    }
+    if (e.amount > 0) {
+      const used = Math.min(ahead, e.amount);
+      ahead = money(ahead - used);
+      if (used > 0 && e.kind === 'sale') events.push({ date: e.date, amount: used });
+      const left = money(e.amount - used);
+      if (left > 0) open.push({ kind: e.kind, sale: e.sale ? String(e.sale) : null, left });
+      continue;
+    }
+    let rest = -e.amount;
+    const ownFirst = e.kind === 'return' ? [...open].sort((a, b) => (b.sale === String(e.sale)) - (a.sale === String(e.sale))) : open;
+    for (const debt of ownFirst) {
+      if (rest <= 0) break;
+      const used = Math.min(debt.left, rest);
+      debt.left = money(debt.left - used);
+      rest = money(rest - used);
+      if (e.kind === 'payment' && debt.kind === 'sale') events.push({ date: e.date, amount: used });
+    }
+    open = open.filter((debt) => debt.left > 0);
+    ahead = money(ahead + rest);
+  }
+  return events;
+}
+
+// The figures of [start, end), in one row ('all') or one row per day or month of the shop's
+// time zone: invoices, pieces, sales, cost, profit, returns, credit, expenses, collected
+async function periodFigures(start, end, groupBy = null, timezone = 'UTC') {
+  const format = GROUP_FORMATS[groupBy];
+  const keyOf = (date) => (format ? { $dateToString: { format, date, timezone } } : 'all');
+  const inRange = { $gte: start, $lt: end };
+  const lastReturn = { $max: '$returns.at' };
+  const [sold, returned, expenses, events] = await Promise.all([
+    Sale.aggregate([
+      { $match: { createdAt: inRange } },
+      {
+        $group: {
+          _id: keyOf('$createdAt'),
+          // An invoice cancelled within the same day (or month) was not really a sale
+          count: {
+            $sum: {
+              $cond: [
+                {
+                  $and: [
+                    { $eq: ['$returnStatus', 'full'] },
+                    { $lt: [lastReturn, end] },
+                    { $eq: [keyOf(lastReturn), keyOf('$createdAt')] },
+                  ],
+                },
+                0,
+                1,
+              ],
+            },
+          },
+          pieces: { $sum: piecesIn('$items') },
+          total: { $sum: '$total' },
+          cost: { $sum: '$cost' },
+          profit: { $sum: '$profit' },
+          credit: { $sum: { $ifNull: ['$debt', 0] } },
+        },
+      },
+    ]),
+    Sale.aggregate([
+      { $match: { 'returns.at': inRange } },
+      { $unwind: '$returns' },
+      { $match: { 'returns.at': inRange } },
+      {
+        $group: {
+          _id: keyOf('$returns.at'),
+          pieces: { $sum: piecesIn('$returns.items') },
+          amount: { $sum: '$returns.amount' },
+          cost: { $sum: '$returns.cost' },
+          toAccount: { $sum: { $ifNull: ['$returns.toAccount', 0] } },
+        },
+      },
+    ]),
+    Expense.aggregate([{ $match: { date: inRange } }, { $group: { _id: keyOf('$date'), total: { $sum: '$amount' } } }]),
+    collectedEvents(end),
+  ]);
+
+  const rows = new Map();
+  const rowFor = (key) => {
+    if (!rows.has(key)) {
+      rows.set(key, { key, count: 0, pieces: 0, total: 0, cost: 0, profit: 0, returns: 0, credit: 0, expenses: 0, collected: 0 });
+    }
+    return rows.get(key);
+  };
+  for (const s of sold) Object.assign(rowFor(s._id), { count: s.count, pieces: s.pieces, total: s.total, cost: s.cost, profit: s.profit, credit: s.credit });
+  for (const r of returned) {
+    const row = rowFor(r._id);
+    row.pieces -= r.pieces;
+    row.total -= r.amount;
+    row.cost -= r.cost;
+    row.profit -= r.amount - r.cost;
+    row.returns += r.amount;
+    row.credit -= r.toAccount;
+  }
+  for (const e of expenses) rowFor(e._id).expenses = e.total;
+  const keyFormat = format && new Intl.DateTimeFormat('en-CA', { timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit' });
+  for (const ev of events) {
+    if (ev.date < start || ev.date >= end) continue;
+    const key = format ? keyFormat.format(ev.date).slice(0, groupBy === 'month' ? 7 : 10) : 'all';
+    rowFor(key).collected += ev.amount;
+  }
+  return [...rows.values()]
+    .sort((a, b) => a.key.localeCompare(b.key))
+    .map((row) => {
+      const figures = { ...row, pieces: roundQty(row.pieces) };
+      for (const field of ['total', 'cost', 'profit', 'returns', 'credit', 'expenses', 'collected']) figures[field] = money(row[field]);
+      return { ...figures, netProfit: netProfitOf(figures, figures.expenses, figures.collected) };
+    });
+}
+
+const EMPTY_FIGURES = { count: 0, pieces: 0, total: 0, cost: 0, profit: 0, returns: 0, credit: 0, expenses: 0, collected: 0, netProfit: 0 };
+const sumFigures = (rows) => {
+  const sum = { ...EMPTY_FIGURES };
+  for (const row of rows) for (const field of Object.keys(EMPTY_FIGURES)) sum[field] += row[field];
+  for (const field of ['total', 'cost', 'profit', 'returns', 'credit', 'expenses', 'collected', 'netProfit']) sum[field] = money(sum[field]);
+  sum.pieces = roundQty(sum.pieces);
+  return sum;
+};
+
+// Invoices made in one day (or a short range), newest first, with the period's figures
+router.get('/', async (req, res) => {
+  const { start, end } = requestedRange(req.query, MAX_LIST_RANGE_MS);
+  const [sales, rows] = await Promise.all([
+    Sale.find({ createdAt: { $gte: start, $lt: end } }).sort({ createdAt: -1 }).lean(),
+    periodFigures(start, end),
+  ]);
+  const summary = { ...EMPTY_FIGURES, ...rows[0] };
+  delete summary.key;
+  res.json({ summary, sales });
+});
+
+// Figures for a month or any period, broken down by day or by month
 router.get('/report', async (req, res) => {
   const { start, end } = requestedRange(req.query, MAX_REPORT_RANGE_MS);
   const groupBy = req.query.groupBy === 'month' ? 'month' : 'day';
-  const timezone = timeZoneParam(req.query.tz);
-  const format = GROUP_FORMATS[groupBy];
-  const salesRows = Sale.aggregate([
-    { $match: { createdAt: { $gte: start, $lt: end } } },
-    {
-      $group: {
-        _id: { $dateToString: { format, date: '$createdAt', timezone } },
-        count: { $sum: { $cond: [{ $eq: ['$returnStatus', 'full'] }, 0, 1] } },
-        // Pieces only: weights are not pieces
-        pieces: {
-          $sum: {
+  const periods = await periodFigures(start, end, groupBy, timeZoneParam(req.query.tz));
+  res.json({ groupBy, summary: sumFigures(periods), periods });
+});
+
+// Per-product figures for a period, from the prices stored on each invoice at the time of
+// sale: what was sold in the period, less what was returned in it (like the period totals)
+router.get('/products', async (req, res) => {
+  const { start, end } = requestedRange(req.query, MAX_REPORT_RANGE_MS);
+  const inRange = { $gte: start, $lt: end };
+  const baseQty = (line) => ({ $multiply: [`${line}.quantity`, { $ifNull: [`${line}.packSize`, 1] }] });
+  const [sold, returned] = await Promise.all([
+    Sale.aggregate([
+      { $match: { createdAt: inRange } },
+      // Oldest first, so $last picks the product's most recent name
+      { $sort: { createdAt: 1 } },
+      { $unwind: '$items' },
+      {
+        $group: {
+          _id: '$items.product',
+          name: { $last: '$items.name' },
+          barcode: { $last: '$items.barcode' },
+          unit: { $last: { $ifNull: ['$items.unit', 'piece'] } },
+          // Invoices, not lines (one invoice may sell a product loose and by the box), and
+          // not those that gave all of it back
+          sales: {
+            $addToSet: { $cond: [{ $lt: [{ $ifNull: ['$items.returnedQuantity', 0] }, '$items.quantity'] }, '$_id', null] },
+          },
+          quantity: { $sum: baseQty('$items') },
+          total: { $sum: '$items.lineTotal' },
+          cost: { $sum: { $multiply: ['$items.unitCost', '$items.quantity'] } },
+        },
+      },
+    ]),
+    Sale.aggregate([
+      { $match: { 'returns.at': inRange } },
+      { $unwind: '$returns' },
+      { $match: { 'returns.at': inRange } },
+      { $unwind: '$returns.items' },
+      {
+        $group: {
+          _id: '$returns.items.product',
+          name: { $last: '$returns.items.name' },
+          unit: { $last: { $ifNull: ['$returns.items.unit', 'piece'] } },
+          quantity: { $sum: baseQty('$returns.items') },
+          amount: { $sum: '$returns.items.amount' },
+          // At the cost of the invoice line it came back from
+          cost: {
             $sum: {
-              $map: {
-                input: '$items',
-                as: 'i',
-                in: {
-                  $cond: [
-                    { $eq: ['$$i.unit', 'kg'] },
-                    0,
-                    {
-                      $multiply: [
-                        { $subtract: ['$$i.quantity', { $ifNull: ['$$i.returnedQuantity', 0] }] },
-                        { $ifNull: ['$$i.packSize', 1] },
-                      ],
+              $multiply: [
+                '$returns.items.quantity',
+                {
+                  $let: {
+                    vars: {
+                      line: {
+                        $arrayElemAt: [
+                          {
+                            $filter: {
+                              input: '$items',
+                              as: 'i',
+                              cond: {
+                                $and: [
+                                  { $eq: ['$$i.product', '$returns.items.product'] },
+                                  { $eq: ['$$i.mode', '$returns.items.mode'] },
+                                ],
+                              },
+                            },
+                          },
+                          0,
+                        ],
+                      },
                     },
-                  ],
+                    in: { $ifNull: ['$$line.unitCost', 0] },
+                  },
                 },
-              },
+              ],
             },
           },
         },
-        total: { $sum: { $subtract: ['$total', RETURNED_TOTAL] } },
-        cost: { $sum: { $subtract: ['$cost', RETURNED_COST] } },
-        profit: { $sum: { $subtract: ['$profit', { $subtract: [RETURNED_TOTAL, RETURNED_COST] }] } },
-        returns: { $sum: RETURNED_TOTAL },
-        credit: { $sum: CREDIT_LEFT },
       },
-    },
-  ]);
-  const expenseRows = Expense.aggregate([
-    { $match: { date: { $gte: start, $lt: end } } },
-    { $group: { _id: { $dateToString: { format, date: '$date', timezone } }, expenses: { $sum: '$amount' } } },
-  ]);
-  const collectedRows = DebtEntry.aggregate([
-    { $match: { kind: 'payment', date: { $gte: start, $lt: end } } },
-    { $group: { _id: { $dateToString: { format, date: '$date', timezone } }, paid: { $sum: '$amount' } } },
+    ]),
   ]);
 
-  // One row per day or month that had sales, expenses, debt payments or any mix
-  const byKey = new Map();
-  const periodFor = (key) => {
-    if (!byKey.has(key)) {
-      byKey.set(key, { key, count: 0, pieces: 0, total: 0, cost: 0, profit: 0, returns: 0, credit: 0, expenses: 0, collected: 0 });
-    }
-    return byKey.get(key);
-  };
-  const [salesData, expenseData, collectedData] = await Promise.all([salesRows, expenseRows, collectedRows]);
-  for (const { _id, total, cost, profit, returns, credit, ...rest } of salesData) {
-    Object.assign(periodFor(_id), rest, {
-      total: money(total),
-      cost: money(cost),
-      profit: money(profit),
-      returns: money(returns),
-      credit: money(credit),
+  const rows = new Map();
+  for (const s of sold) {
+    rows.set(String(s._id), {
+      product: s._id,
+      name: s.name,
+      barcode: s.barcode,
+      unit: s.unit,
+      invoices: s.sales.filter(Boolean).length,
+      quantity: s.quantity,
+      total: s.total,
+      cost: s.cost,
     });
   }
-  for (const { _id, expenses } of expenseData) periodFor(_id).expenses = money(expenses);
-  for (const { _id, paid } of collectedData) periodFor(_id).collected = money(-paid);
-
-  const periods = [...byKey.values()]
-    .sort((a, b) => a.key.localeCompare(b.key))
-    .map((p) => ({ ...p, netProfit: netProfitOf(p, p.expenses, p.collected) }));
-  const sum = (field) => periods.reduce((total, p) => total + p[field], 0);
-  res.json({ groupBy, summary: withNet(summarize(periods), sum('expenses'), sum('collected')), periods });
-});
-
-// Per-product totals for a period, from the prices stored on each invoice at the time of sale
-router.get('/products', async (req, res) => {
-  const { start, end } = requestedRange(req.query, MAX_REPORT_RANGE_MS);
-  const rows = await Sale.aggregate([
-    { $match: { createdAt: { $gte: start, $lt: end } } },
-    // Oldest first, so $last picks the product's most recent name
-    { $sort: { createdAt: 1 } },
-    { $unwind: '$items' },
-    {
-      $group: {
-        _id: '$items.product',
-        name: { $last: '$items.name' },
-        barcode: { $last: '$items.barcode' },
-        unit: { $last: { $ifNull: ['$items.unit', 'piece'] } },
-        invoices: { $sum: { $cond: [{ $gt: [ITEM_KEPT_QTY, 0] }, 1, 0] } },
-        quantity: { $sum: ITEM_KEPT_BASE },
-        total: { $sum: { $multiply: ['$items.unitPrice', ITEM_KEPT_QTY] } },
-        cost: { $sum: { $multiply: ['$items.unitCost', ITEM_KEPT_QTY] } },
-      },
-    },
-    // Fully returned products did not really sell
-    { $match: { quantity: { $gt: 0 } } },
-  ]);
+  for (const r of returned) {
+    const row = rows.get(String(r._id)) ?? { product: r._id, name: r.name, barcode: '', unit: r.unit, invoices: 0, quantity: 0, total: 0, cost: 0 };
+    row.quantity -= r.quantity;
+    row.total -= r.amount;
+    row.cost -= r.cost;
+    rows.set(String(r._id), row);
+  }
   res.json(
-    rows.map(({ _id, total, cost, quantity, ...rest }) => ({
-      product: _id,
-      ...rest,
-      quantity: roundQty(quantity),
-      total: money(total),
-      cost: money(cost),
-      profit: money(total - cost),
-    })),
+    [...rows.values()]
+      .map((row) => ({
+        ...row,
+        quantity: roundQty(row.quantity),
+        total: money(row.total),
+        cost: money(row.cost),
+        profit: money(row.total - row.cost),
+      }))
+      // Sold and returned within the period: it did not really sell
+      .filter((row) => row.quantity !== 0 || row.total !== 0),
   );
 });
 
@@ -234,9 +351,10 @@ router.post('/', async (req, res) => {
   for (const line of lines) {
     const id = String(line?.productId ?? '');
     const mode = line?.mode === 'wholesale' ? 'wholesale' : 'retail';
-    const quantity = Number(line?.quantity);
+    // To the gram: a weight under half a gram is nothing
+    const quantity = roundQty(Number(line?.quantity));
     if (!mongoose.isObjectIdOrHexString(id)) throw httpError(400, 'الفاتورة تحتوي على منتج غير صالح');
-    if (!(quantity > 0)) throw httpError(400, 'الكمية يجب أن تكون أكبر من صفر');
+    if (!Number.isFinite(quantity) || quantity <= 0) throw httpError(400, 'الكمية يجب أن تكون أكبر من صفر');
     const key = `${id}:${mode}`;
     merged.set(key, { id, mode, quantity: roundQty((merged.get(key)?.quantity ?? 0) + quantity) });
   }
@@ -256,7 +374,7 @@ router.post('/', async (req, res) => {
     const p = byId.get(id);
     const unit = p.unit ?? 'piece';
     const wholesale = mode === 'wholesale';
-    if (wholesale && !p.hasWholesale) throw httpError(400, `«${p.name}» ليس له سعر جملة`);
+    if (wholesale && !(p.hasWholesale && p.wholesaleQty > 0)) throw httpError(400, `«${p.name}» ليس له سعر جملة`);
     // Pieces, boxes and wholesale bags are whole; only a retail weight can be a fraction
     if ((wholesale || unit === 'piece') && !Number.isInteger(quantity)) {
       throw httpError(400, `كمية «${p.name}» يجب أن تكون عددًا صحيحًا`);
@@ -272,7 +390,7 @@ router.post('/', async (req, res) => {
       packSize,
       quantity,
       unitPrice,
-      unitCost: money(p.purchasePrice * packSize),
+      unitCost: precise(p.purchasePrice * packSize),
       lineTotal: money(unitPrice * quantity),
     };
   });
@@ -285,7 +403,8 @@ router.post('/', async (req, res) => {
   }
 
   const total = money(items.reduce((sum, i) => sum + i.lineTotal, 0));
-  const cost = money(items.reduce((sum, i) => sum + i.unitCost * i.quantity, 0));
+  // Line by line, like the totals, so a return of a whole line takes back exactly its cost
+  const cost = money(items.reduce((sum, i) => sum + money(i.unitCost * i.quantity), 0));
   // Cash: an empty paid means the exact amount. Credit: paid is the part paid now (often
   // nothing) and the rest goes on the customer's account.
   const paymentType = req.body.paymentType === 'credit' ? 'credit' : 'cash';
@@ -374,27 +493,55 @@ router.post('/:id/returns', async (req, res) => {
     throw httpError(400, sale.returnStatus === 'full' ? 'هذه الفاتورة مرتجعة بالكامل' : 'حدّد كمية واحدة على الأقل للإرجاع');
   }
 
-  const entry = {
-    at: new Date(),
-    items: lines.map(({ item, quantity }) => ({
+  // A line gives back its share of what it was sold for, by the part of it returned so
+  // far, so a line returned in several goes adds up to exactly its total and cost
+  // (three returns of 0.111 kg of a 0.333 kg line make 443.89, not 3 x 147.96 = 443.88)
+  const share = (value, item, quantity) => money((value * quantity) / item.quantity);
+  let cost = 0;
+  const items = lines.map(({ item, quantity }) => {
+    const before = item.returnedQuantity ?? 0;
+    const after = roundQty(before + quantity);
+    const lineCost = item.unitCost * item.quantity;
+    cost += share(lineCost, item, after) - share(lineCost, item, before);
+    return {
       product: item.product,
       name: item.name,
       unit: item.unit,
       mode: item.mode,
       packSize: item.packSize,
       quantity,
-      amount: money(item.unitPrice * quantity),
-    })),
-    cost: money(lines.reduce((sum, { item, quantity }) => sum + item.unitCost * quantity, 0)),
+      amount: money(share(item.lineTotal, item, after) - share(item.lineTotal, item, before)),
+    };
+  });
+  const entry = {
+    at: new Date(),
+    items,
+    amount: money(items.reduce((sum, i) => sum + i.amount, 0)),
+    cost: money(cost),
   };
-  entry.amount = money(entry.items.reduce((sum, i) => sum + i.amount, 0));
+  // The return that empties the invoice takes back exactly what is left of it, whatever
+  // older returns rounded to
+  const emptied = sale.items.every((item) => {
+    const back = lines.find((l) => l.item === item)?.quantity ?? 0;
+    return roundQty((item.returnedQuantity ?? 0) + back) >= item.quantity;
+  });
+  if (emptied) {
+    const rest = money(sale.total - (sale.returnedTotal ?? 0));
+    const last = items[items.length - 1];
+    last.amount = money(last.amount + rest - entry.amount);
+    entry.amount = rest;
+    entry.cost = money(sale.cost - (sale.returnedCost ?? 0));
+  }
 
-  // On a credit sale the refund first comes off the customer's debt, up to what was put
-  // on credit; anything beyond that is paid back in cash
+  // On a credit sale the refund first comes off what the customer still owes, up to what
+  // this invoice put on their account; the rest is paid back in cash. A customer who has
+  // paid since owes less, so a return then is partly or wholly cash.
   entry.toAccount = 0;
   if (sale.paymentType === 'credit' && sale.customer) {
     const alreadyToAccount = sale.returns.reduce((sum, r) => sum + (r.toAccount ?? 0), 0);
-    entry.toAccount = money(Math.min(entry.amount, Math.max(0, (sale.debt ?? 0) - alreadyToAccount)));
+    const leftOnSale = Math.max(0, (sale.debt ?? 0) - alreadyToAccount);
+    const owedNow = Math.max(0, await DebtEntry.balanceOf(sale.customer));
+    entry.toAccount = money(Math.min(entry.amount, leftOnSale, owedNow));
   }
 
   for (const { item, quantity } of lines) item.returnedQuantity = roundQty((item.returnedQuantity ?? 0) + quantity);
