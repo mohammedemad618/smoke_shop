@@ -122,6 +122,28 @@ new MutationObserver(() => {
   requestAnimationFrame(labelTableCells);
 }).observe(document.body, { childList: true, subtree: true });
 
+// The menu's "المزيد" button opens the pages used less often; a click elsewhere or
+// Escape closes it
+const more = document.querySelector('.nav-more');
+if (more) {
+  const button = more.querySelector('.nav-more-btn');
+  const menu = more.querySelector('.more-menu');
+  const setOpen = (open) => {
+    menu.hidden = !open;
+    button.setAttribute('aria-expanded', String(open));
+  };
+  button.addEventListener('click', () => setOpen(menu.hidden));
+  document.addEventListener('click', (e) => {
+    if (!menu.hidden && !more.contains(e.target)) setOpen(false);
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !menu.hidden) {
+      setOpen(false);
+      button.focus();
+    }
+  });
+}
+
 export const PRODUCTS = { one: 'منتج واحد', two: 'منتجان', few: 'منتجات', many: 'منتجًا', single: 'منتج' };
 export const INVOICES = { one: 'فاتورة واحدة', two: 'فاتورتان', few: 'فواتير', many: 'فاتورة', single: 'فاتورة' };
 export const PIECES = { one: 'قطعة واحدة', two: 'قطعتان', few: 'قطع', many: 'قطعة', single: 'قطعة' };

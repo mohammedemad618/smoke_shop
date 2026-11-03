@@ -592,4 +592,11 @@ els.day.value = dayKey(today);
 els.month.value = monthKey(today);
 els.from.value = dayKey(new Date(today.getFullYear(), today.getMonth(), 1));
 els.to.value = dayKey(today);
-load();
+// The summary page links here with ?month=YYYY-MM for a month's report
+const requestedMonth = new URLSearchParams(location.search).get('month');
+if (/^\d{4}-\d{2}$/.test(requestedMonth ?? '')) {
+  els.month.value = requestedMonth;
+  setMode('month');
+} else {
+  load();
+}

@@ -14,7 +14,6 @@ import {
   parseKey,
   addMonths,
   packName,
-  INVOICES,
 } from './common.js';
 import { scanBarcodes } from './scanner.js';
 
@@ -25,6 +24,8 @@ const dayName = new Intl.DateTimeFormat(LOCALE, { day: 'numeric', month: 'long',
 const finePointer = matchMedia('(pointer: fine)').matches;
 const DRAFT_KEY = 'purchaseDraft';
 const ITEMS = { one: 'صنف واحد', two: 'صنفان', few: 'أصناف', many: 'صنفًا', single: 'صنف' };
+// After "في": "في فاتورتين"
+const INVOICES_IN = { one: 'فاتورة واحدة', two: 'فاتورتين', few: 'فواتير', many: 'فاتورة', single: 'فاتورة' };
 
 const state = {
   purchases: [],
@@ -216,32 +217,18 @@ function renderDraftBanner() {
     : '';
 }
 
+// One line for the month; the shop's figures as a whole are on the summary page
 function renderSummary(data) {
-  els.summary.innerHTML = `<div>
-      <span class="z-label">مشتريات الشهر</span>
-      <div class="z-value num">${formatMoney(data.total)}</div>
-      <span class="z-note">${data.count ? arCount(data.count, INVOICES) : 'لا توجد فواتير'}</span>
-    </div>
-    <div>
-      <span class="z-label">المدفوع منها</span>
-      <div class="z-value num">${formatMoney(data.paid)}</div>
-    </div>
-    <div>
-      <span class="z-label">الباقي منها</span>
-      <div class="z-value num${data.remaining ? ' is-loss' : ''}">${formatMoney(data.remaining)}</div>
-      <span class="z-note">آجل على فواتير هذا الشهر</span>
-    </div>
-    <div class="z-net">
-      <span class="z-label">عليك للموردين</span>
-      <div class="z-value num${data.owedToSuppliers ? ' is-loss' : ''}">${formatMoney(data.owedToSuppliers)}</div>
-      <span class="z-note">من كل الفواتير</span>
-    </div>`;
+  els.summary.hidden = !data.count;
+  els.summary.innerHTML = `مشتريات الشهر <strong class="num">${formatMoney(data.total)}</strong>
+    في ${arCount(data.count, INVOICES_IN)}، دُفع منها <span class="num">${formatMoney(data.paid)}</span>.`;
 }
 
 function renderSuppliers() {
   const owed = state.suppliers.filter((s) => s.owed > 0).sort((a, b) => b.owed - a.owed);
+  const total = owed.reduce((sum, s) => sum + s.owed, 0);
   els.suppliersArea.innerHTML = owed.length
-    ? `<div class="section-head"><h2>ديون الموردين</h2></div>
+    ? `<div class="section-head"><h2>عليك للموردين <span class="num loss">${formatMoney(total)}</span></h2></div>
       <table class="ptable keep-table supplier-debts">
         <thead><tr><th scope="col">المورد</th><th scope="col" class="end">المتبقي عليك</th></tr></thead>
         <tbody>${owed

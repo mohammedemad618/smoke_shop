@@ -17,9 +17,16 @@
       <a href="/cashier.html">الكاشير</a>
       <a href="/" aria-current="page">المنتجات</a>
       <a href="/purchases.html">المشتريات</a>
-      <a href="/sales.html">المبيعات</a>
-      <a href="/expenses.html">المصاريف</a>
-      <a href="/debts.html">الديون</a>
+      <a href="/summary.html">الملخص</a>
+      <div class="nav-more">
+        <button class="nav-more-btn" type="button" aria-expanded="false" aria-controls="moreMenu">المزيد</button>
+        <div class="more-menu" id="moreMenu" hidden>
+          <a href="/sales.html">المبيعات</a>
+          <a href="/expenses.html">المصاريف</a>
+          <a href="/debts.html">الديون</a>
+          <a href="/stocktake.html">الجرد</a>
+        </div>
+      </div>
     </nav>
   </header>
 
@@ -41,11 +48,10 @@
         </div>
         <div class="catalog-tools">
           <input class="input search" id="searchInput" type="search" placeholder="ابحث بالاسم أو الباركود" aria-label="بحث في المنتجات">
-          <a class="btn" href="/stocktake.html">الجرد</a>
           <button class="btn btn-primary" id="addProductBtn" type="button">إضافة منتج</button>
         </div>
       </div>
-      <section class="worth" id="worth" aria-label="قيمة البضاعة" hidden></section>
+      <div class="filter-bar" id="filterBar" role="status" hidden></div>
       <div class="table-wrap" id="productsArea"></div>
     </section>
   </main>

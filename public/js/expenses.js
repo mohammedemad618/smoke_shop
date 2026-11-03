@@ -86,12 +86,7 @@ function renderSummary({ total, byCategory }) {
     els.summary.innerHTML = '';
     return;
   }
-  els.summary.innerHTML = `<div class="expense-total">
-      <div class="z-label">مصاريف الشهر</div>
-      <div class="z-value num">${formatMoney(total)}</div>
-      <div class="z-note">${arCount(expenses.length, EXPENSES)}، تُطرح من الربح في صفحة المبيعات</div>
-    </div>
-    <div class="table-scroll"><table class="ptable keep-table">
+  els.summary.innerHTML = `<div class="table-scroll"><table class="ptable keep-table breakdown">
       <thead><tr>
         <th scope="col">النوع</th>
         <th scope="col" class="end">المبلغ</th>
@@ -101,12 +96,18 @@ function renderSummary({ total, byCategory }) {
         .map(
           (c) => `<tr>
           <td>${escapeHtml(c.category)} <small class="pcat">${arCount(c.count, EXPENSES)}</small></td>
-          <td class="end num">${formatMoney(c.total)}</td>
-          <td class="end num">${Math.round((c.total / total) * 100)}%</td>
+          <td class="end"><span class="num">${formatMoney(c.total)}</span></td>
+          <td class="end"><span class="num">${Math.round((c.total / total) * 100)}%</span></td>
         </tr>`,
         )
         .join('')}</tbody>
-    </table></div>`;
+      <tfoot><tr>
+        <td>مصاريف الشهر <small class="pcat">${arCount(expenses.length, EXPENSES)}</small></td>
+        <td class="end"><span class="num">${formatMoney(total)}</span></td>
+        <td class="end"><span class="num">100%</span></td>
+      </tr></tfoot>
+    </table></div>
+    <p class="hint">تُطرح المصاريف من صافي الربح في صفحة المبيعات وفي الملخص.</p>`;
 }
 
 function renderList() {

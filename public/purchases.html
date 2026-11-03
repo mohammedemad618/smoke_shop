@@ -17,9 +17,16 @@
       <a href="/cashier.html">الكاشير</a>
       <a href="/">المنتجات</a>
       <a href="/purchases.html" aria-current="page">المشتريات</a>
-      <a href="/sales.html">المبيعات</a>
-      <a href="/expenses.html">المصاريف</a>
-      <a href="/debts.html">الديون</a>
+      <a href="/summary.html">الملخص</a>
+      <div class="nav-more">
+        <button class="nav-more-btn" type="button" aria-expanded="false" aria-controls="moreMenu">المزيد</button>
+        <div class="more-menu" id="moreMenu" hidden>
+          <a href="/sales.html">المبيعات</a>
+          <a href="/expenses.html">المصاريف</a>
+          <a href="/debts.html">الديون</a>
+          <a href="/stocktake.html">الجرد</a>
+        </div>
+      </div>
     </nav>
   </header>
 
@@ -40,7 +47,7 @@
         </div>
       </div>
       <h2 class="period-title" id="periodTitle"></h2>
-      <div class="zreport" id="purchaseSummary"></div>
+      <p class="month-line" id="purchaseSummary" hidden></p>
       <div id="suppliersArea"></div>
       <div id="purchasesArea"></div>
     </section>
