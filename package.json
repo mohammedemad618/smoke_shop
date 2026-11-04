@@ -13,6 +13,7 @@
     "tenant:owner": "node --env-file-if-exists=.env scripts/tenant-owner.js",
     "tenant:suspend": "node --env-file-if-exists=.env scripts/tenant-suspend.js",
     "tenant:purge": "node --env-file-if-exists=.env scripts/tenant-purge.js",
+    "demo:shop": "node --env-file-if-exists=.env scripts/demo-shop.js",
     "admin:create": "node --env-file-if-exists=.env scripts/create-admin.js",
     "admin:unlock": "node --env-file-if-exists=.env scripts/admin-unlock.js",
     "test": "node --test --test-global-setup=test/support/global.js \"test/**/*.test.js\""
