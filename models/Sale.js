@@ -1,5 +1,16 @@
 import { Schema } from 'mongoose';
 
+// Who made a sale or a return (and a customer's payment, an expense): the signed-in account
+// (from its session, never from the request) and its name at that moment, so the record
+// still names them if the name changes. Records made before accounts were recorded have none.
+export const madeBySchema = new Schema(
+  {
+    user: { type: Schema.Types.ObjectId, ref: 'User' },
+    name: String,
+  },
+  { _id: false },
+);
+
 // Items keep a snapshot of name and prices, so editing or deleting a product
 // later never changes past invoices.
 const saleItemSchema = new Schema(
@@ -43,6 +54,7 @@ const returnSchema = new Schema(
     toAccount: { type: Number, default: 0 },
     // The browser's id for this return: sent again, it is not made twice (lib/idempotency.js)
     clientId: String,
+    madeBy: { type: madeBySchema, default: undefined },
   },
   { _id: false },
 );
@@ -72,6 +84,7 @@ const saleSchema = new Schema(
     // The browser's id for this sale (one per cart): sent again after a lost answer, it
     // finds this invoice instead of making a second one (lib/idempotency.js)
     clientId: String,
+    madeBy: { type: madeBySchema, default: undefined },
   },
   // Two people returning from the same invoice at once: the second save fails instead of double-counting
   { timestamps: true, optimisticConcurrency: true },

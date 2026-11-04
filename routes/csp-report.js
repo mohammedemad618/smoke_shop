@@ -1,5 +1,6 @@
 import express, { Router } from 'express';
 import { rateLimit } from '../lib/ratelimit.js';
+import { allow } from '../lib/permissions.js';
 
 const router = Router();
 const clip = (value, length) => String(value ?? '').slice(0, length);
@@ -11,6 +12,7 @@ const clip = (value, length) => String(value ?? '').slice(0, length);
 // policy can be enforced.
 router.post(
   '/',
+  allow('public'),
   rateLimit({ windowMs: 60 * 1000, max: 30, key: (req) => String(req.tenant._id) }),
   express.json({ type: ['application/csp-report', 'application/reports+json', 'application/json'], limit: '16kb' }),
   (req, res) => {

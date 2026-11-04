@@ -1,5 +1,6 @@
 import mongoose, { Schema } from 'mongoose';
 import { money } from '../lib/util.js';
+import { madeBySchema } from './Sale.js';
 
 // One line of a customer's account. amount is signed: + adds to what they owe,
 // - takes it off. Their balance is the sum of all their entries.
@@ -14,6 +15,9 @@ const debtEntrySchema = new Schema(
     saleNumber: Number,
     note: { type: String, trim: true, maxlength: [200, 'الملاحظة طويلة جدًا'], default: '' },
     date: { type: Date, default: Date.now },
+    // Who recorded a payment or a debt added by hand (lib/auth.js madeByOf); a sale's and a
+    // return's are on their invoice. Entries from before accounts were recorded have none.
+    madeBy: { type: madeBySchema, default: undefined },
   },
   { timestamps: true },
 );

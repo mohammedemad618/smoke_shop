@@ -18,6 +18,8 @@ import {
   PIECES,
   newClientId,
   withSignIn,
+  session,
+  can,
 } from './common.js';
 import { isReturnOf } from './idempotency.js';
 
@@ -103,11 +105,25 @@ const rangeQuery = (period, extra = {}) =>
 /* Loading */
 
 async function load() {
+  await session;
+  // Without `reports` (an account that only returns), a day's invoices and nothing else:
+  // no figures, no profit, no products
+  if (!can('reports') && mode !== 'day') {
+    setMode('day');
+    return;
+  }
   const period = currentPeriod();
   const current = ++request;
   els.title.textContent = period.title;
   syncLimits();
   try {
+    if (!can('reports')) {
+      const data = await api(`/sales?${rangeQuery(period)}`);
+      if (current !== request) return;
+      renderInvoices(data.sales);
+      showProducts([]);
+      return;
+    }
     const productsRequest = api(`/sales/products?${rangeQuery(period)}`);
     if (mode === 'day') {
       const [data, products] = await Promise.all([api(`/sales?${rangeQuery(period)}`), productsRequest]);
@@ -166,13 +182,13 @@ function renderSummary(s, period) {
     <div>
       <div class="z-label">المصاريف</div>
       <div class="z-value num">${formatMoney(s.expenses)}</div>
-      <a class="z-link" href="${expensesLink}">${s.expenses ? 'تفاصيل المصاريف' : 'إضافة مصروف'}</a>
+      <a class="z-link" href="${expensesLink}" data-need="purchases">${s.expenses ? 'تفاصيل المصاريف' : 'إضافة مصروف'}</a>
     </div>
     <div>
       <div class="z-label">بيع بالدين</div>
       <div class="z-value num ${s.credit > 0 ? 'owes-text' : ''}">${formatMoney(s.credit)}</div>
       <div class="z-note">ما بيع بالدين في هذه الفترة، بعد المرتجعات</div>
-      <a class="z-link" href="/debts.html">حسابات الزبائن</a>
+      <a class="z-link" href="/debts.html" data-need="credit">حسابات الزبائن</a>
     </div>
     <div>
       <div class="z-label">محصَّل من الديون</div>
@@ -207,10 +223,13 @@ const netTotal = (sale) => sale.total - (sale.returnedTotal ?? 0);
 const netProfit = (sale) => sale.profit - ((sale.returnedTotal ?? 0) - (sale.returnedCost ?? 0));
 
 function statusBadge(sale) {
+  // A link to the customer's account for an account that can open the debts page
   const credit =
-    sale.paymentType === 'credit'
-      ? `<a class="badge is-credit" href="/debts.html?customer=${sale.customer}" title="فتح حساب الزبون">دين: ${escapeHtml(sale.customerName)}</a>`
-      : '';
+    sale.paymentType !== 'credit'
+      ? ''
+      : can('credit')
+        ? `<a class="badge is-credit" href="/debts.html?customer=${sale.customer}" title="فتح حساب الزبون">دين: ${escapeHtml(sale.customerName)}</a>`
+        : `<span class="badge is-credit">دين: ${escapeHtml(sale.customerName)}</span>`;
   if (sale.returnStatus === 'full') return `<span class="badge is-cancelled">ملغاة</span>${credit}`;
   if (sale.returnStatus === 'partial') return `<span class="badge is-partial">مرتجع جزئي</span>${credit}`;
   return credit;
@@ -223,12 +242,16 @@ function itemsDetail(sale) {
       return `<li><span>${escapeHtml(i.name)} <span class="num">${qtyLabel(i)}</span>${back}</span><span class="num">${formatMoney(i.lineTotal)}</span></li>`;
     })
     .join('');
+  // Who returned it, for returns recorded with their account
+  const by = (r) => (r.madeBy?.name ? `، بواسطة ${escapeHtml(r.madeBy.name)}` : '');
   const log = (sale.returns ?? [])
     .map(
-      (r) => `<li class="returns-log"><span>إرجاع ${r.items.map((i) => `${escapeHtml(i.name)} <span class="num">${qtyLabel(i)}</span>`).join('، ')} الساعة ${formatTime(r.at)}</span><span class="num">−${formatMoney(r.amount)}</span></li>`,
+      (r) => `<li class="returns-log"><span>إرجاع ${r.items.map((i) => `${escapeHtml(i.name)} <span class="num">${qtyLabel(i)}</span>`).join('، ')} الساعة ${formatTime(r.at)}${by(r)}</span><span class="num">−${formatMoney(r.amount)}</span></li>`,
     )
     .join('');
-  return `<ul>${items}${log}</ul>`;
+  // Who sold it; invoices made before accounts were recorded have no name
+  const seller = sale.madeBy?.name ? `<li class="made-by"><span>البائع</span><span>${escapeHtml(sale.madeBy.name)}</span></li>` : '';
+  return `<ul>${seller}${items}${log}</ul>`;
 }
 
 function renderInvoices(sales) {
@@ -244,7 +267,7 @@ function renderInvoices(sales) {
       <th scope="col">الوقت</th>
       <th scope="col">القطع</th>
       <th scope="col" class="end">المبلغ</th>
-      <th scope="col" class="end">الربح</th>
+      <th scope="col" class="end" data-need="reports">الربح</th>
       <th scope="col"><span class="sr-only">الأصناف</span></th>
     </tr></thead>
     <tbody>${sales
@@ -260,10 +283,10 @@ function renderInvoices(sales) {
             <span class="num">${formatMoney(netTotal(sale))}</span>
             ${sale.returnedTotal ? `<small class="returned">مرتجع <span class="num">${formatMoney(sale.returnedTotal)}</span></small>` : ''}
           </td>
-          <td class="end num${profitClass(netProfit(sale))}">${formatMoney(netProfit(sale))}</td>
+          <td class="end num${profitClass(netProfit(sale))}" data-need="reports">${formatMoney(netProfit(sale))}</td>
           <td class="row-actions">
             <button class="btn btn-sm btn-ghost" type="button" data-toggle="${rowId}" aria-expanded="false" aria-controls="${rowId}">الأصناف</button>
-            ${cancelled ? '' : `<button class="btn btn-sm" type="button" data-return="${sale._id}">إرجاع</button>`}
+            ${cancelled ? '' : `<button class="btn btn-sm" type="button" data-return="${sale._id}" data-need="returns">إرجاع</button>`}
           </td>
         </tr>
         <tr class="sale-items" id="${rowId}" hidden><td colspan="6">${itemsDetail(sale)}</td></tr>`;

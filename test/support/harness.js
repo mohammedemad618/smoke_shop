@@ -189,6 +189,22 @@ export async function signInAsOwner(client, { username, password }, slug) {
 }
 
 /*
+ * A staff account of `shop` (from createShop), added by its owner on the settings page's
+ * route (POST /api/staff) and signed in on a browser of its own, its first password changed
+ * as the employee does the first time. Returns the account as the staff card lists it
+ * ({ id, username, displayName, permissions, ... }) with its password and its client;
+ * signIn false leaves it signed out with the first password.
+ */
+export async function addStaff(env, shop, { username, displayName = username, permissions = [], signIn = true } = {}) {
+  const res = await shop.client.request('POST', '/api/staff', { username, displayName, permissions });
+  if (res.status !== 201) throw new Error(`Adding ${username} to ${shop.tenant.slug} -> ${res.status} ${res.text}`);
+  const client = env.client(shop.host);
+  const account = { ...res.data.staff, password: res.data.password, client };
+  if (signIn) account.password = await signInAsOwner(client, { username, password: res.data.password }, shop.tenant.slug);
+  return account;
+}
+
+/*
  * Opens this file's databases (the control one must be empty, with its indexes in place as
  * server.js makes sure), the registry and the app. `retry` replaces lib/db.js's schedule
  * for a shop whose indexes could not be built. Returns:

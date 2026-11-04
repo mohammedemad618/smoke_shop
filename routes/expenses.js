@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { httpError } from '../lib/errors.js';
+import { allow } from '../lib/permissions.js';
 import { money } from '../lib/util.js';
+import { madeByOf } from '../lib/auth.js';
 import { DAY_MS, requestedRange } from '../lib/range.js';
 
 const router = Router();
@@ -15,7 +17,7 @@ const pickEditable = (body) => {
 };
 
 // Expenses of a period (?from=&to=), newest first, with totals per type
-router.get('/', async (req, res) => {
+router.get('/', allow('purchases'), async (req, res) => {
   const { Expense } = req.models;
   const { start, end } = requestedRange(req.query, MAX_RANGE_MS);
   const expenses = await Expense.find({ date: { $gte: start, $lt: end } }).sort({ date: -1, createdAt: -1 }).lean();
@@ -34,7 +36,7 @@ router.get('/', async (req, res) => {
 });
 
 // Types used before, most used first, to suggest in the form
-router.get('/categories', async (req, res) => {
+router.get('/categories', allow('purchases'), async (req, res) => {
   const { Expense } = req.models;
   const rows = await Expense.aggregate([
     { $group: { _id: '$category', count: { $sum: 1 } } },
@@ -44,15 +46,16 @@ router.get('/categories', async (req, res) => {
   res.json(rows.map((r) => r._id));
 });
 
-router.post('/', async (req, res) => {
+// Who recorded an expense and who changed it last come from the session (madeBy, editedBy)
+router.post('/', allow('purchases'), async (req, res) => {
   const { Expense } = req.models;
-  const expense = await Expense.create(pickEditable(req.body));
+  const expense = await Expense.create({ ...pickEditable(req.body), madeBy: madeByOf(req.user) });
   res.status(201).json(expense);
 });
 
-router.put('/:id', async (req, res) => {
+router.put('/:id', allow('purchases'), async (req, res) => {
   const { Expense } = req.models;
-  const expense = await Expense.findByIdAndUpdate(req.params.id, pickEditable(req.body), {
+  const expense = await Expense.findByIdAndUpdate(req.params.id, { ...pickEditable(req.body), editedBy: madeByOf(req.user) }, {
     returnDocument: 'after',
     runValidators: true,
   });
@@ -60,7 +63,7 @@ router.put('/:id', async (req, res) => {
   res.json(expense);
 });
 
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', allow('owner'), async (req, res) => {
   const { Expense } = req.models;
   const deleted = await Expense.findByIdAndDelete(req.params.id);
   if (!deleted) throw httpError(404, 'المصروف غير موجود');

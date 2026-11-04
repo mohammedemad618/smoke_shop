@@ -4,12 +4,15 @@ import { httpError } from '../lib/errors.js';
 import { clientIdOf, isDuplicateOf } from '../lib/idempotency.js';
 import { money, precise, roundQty, stockChange } from '../lib/util.js';
 import { DAY_MS, requestedRange } from '../lib/range.js';
+import { allow, can, forbidden, purchaseFor } from '../lib/permissions.js';
 
 const router = Router();
 const MAX_RANGE_MS = 3 * 366 * DAY_MS;
 const MAX_ITEMS = 300;
 
 const withRemaining = (p) => ({ ...p, remaining: p.status === 'active' ? money(p.total - p.paid) : 0 });
+// An invoice as the account may see it (lib/permissions.js purchaseFor)
+const answer = (req, p) => purchaseFor(req.user, withRemaining(p));
 
 function parseDate(value, label) {
   if (value === undefined || value === null || value === '') return new Date();
@@ -133,9 +136,13 @@ async function giveBack(m, purchase) {
   }
 }
 
+// Every route here needs `purchases`. A supplier's invoice is its prices, so its answers
+// keep them: they are what this permission is for (lib/permissions.js). Without `reports`
+// they leave out the purchase price each line replaced (purchaseFor).
+
 // Invoices of a period (?from=&to=), newest first, with the period's totals and what is
 // owed to suppliers over all invoices
-router.get('/', async (req, res) => {
+router.get('/', allow('purchases'), async (req, res) => {
   const { Purchase } = req.models;
   const { start, end } = requestedRange(req.query, MAX_RANGE_MS);
   const [purchases, owedToSuppliers] = await Promise.all([
@@ -145,11 +152,11 @@ router.get('/', async (req, res) => {
   const active = purchases.filter((p) => p.status === 'active');
   const total = money(active.reduce((sum, p) => sum + p.total, 0));
   const paid = money(active.reduce((sum, p) => sum + p.paid, 0));
-  res.json({ count: active.length, total, paid, remaining: money(total - paid), owedToSuppliers, purchases: purchases.map(withRemaining) });
+  res.json({ count: active.length, total, paid, remaining: money(total - paid), owedToSuppliers, purchases: purchases.map((p) => answer(req, p)) });
 });
 
 // Suppliers bought from before, most recent first, with what is still owed to each
-router.get('/suppliers', async (req, res) => {
+router.get('/suppliers', allow('purchases'), async (req, res) => {
   const { Purchase } = req.models;
   const rows = await Purchase.aggregate([
     { $match: { supplier: { $ne: '' } } },
@@ -166,14 +173,14 @@ router.get('/suppliers', async (req, res) => {
   res.json(rows.map((r) => ({ name: r._id, owed: money(r.owed), last: r.last })));
 });
 
-router.get('/:id', async (req, res) => {
+router.get('/:id', allow('purchases'), async (req, res) => {
   const { Purchase } = req.models;
   const purchase = await Purchase.findById(req.params.id).lean();
   if (!purchase) throw httpError(404, 'فاتورة الشراء غير موجودة');
-  res.json(withRemaining(purchase));
+  res.json(answer(req, purchase));
 });
 
-router.post('/', async (req, res) => {
+router.post('/', allow('purchases'), async (req, res) => {
   const { Product, Purchase, Counter } = req.models;
   const body = req.body;
   // Saved again after an answer that never arrived: the invoice as it was saved, and its
@@ -181,7 +188,7 @@ router.post('/', async (req, res) => {
   const clientId = clientIdOf(body);
   if (clientId) {
     const done = await Purchase.findOne({ clientId }).lean();
-    if (done) return res.json(withRemaining(done));
+    if (done) return res.json(answer(req, done));
   }
   const rawItems = Array.isArray(body.items) ? body.items : [];
   if (!rawItems.length) throw httpError(400, 'أضف منتجًا واحدًا على الأقل إلى الفاتورة');
@@ -197,6 +204,9 @@ router.post('/', async (req, res) => {
     if (!product) throw httpError(400, 'أحد منتجات الفاتورة حُذف. أزله وأعد المحاولة');
     return buildItem(raw, product);
   });
+  // A new sale price is a price change, which needs `products` as in the product form; the
+  // invoice's own prices are this route's
+  if (!can(req.user, 'products') && items.some((item) => item.salePrice !== null)) throw forbidden('products');
 
   const total = money(items.reduce((sum, item) => sum + item.total, 0));
   const paid = body.paid === undefined || body.paid === null || body.paid === '' ? total : money(Number(body.paid));
@@ -222,7 +232,7 @@ router.post('/', async (req, res) => {
       payments: paid > 0 ? [{ amount: paid, date }] : [],
       clientId: clientId ?? undefined,
     });
-    res.status(201).json(withRemaining(purchase.toObject()));
+    res.status(201).json(answer(req, purchase.toObject()));
   } catch (err) {
     // Saved twice at once: the other request saved it, and its invoice stands with the
     // prices it set (the same ones). This one's goods come back out as if put in just
@@ -232,13 +242,13 @@ router.post('/', async (req, res) => {
     // Nothing half done: the goods already put in come back out
     const at = done ? new Date(done.createdAt.getTime() - 1) : new Date();
     await giveBack(req.models, { _id: new mongoose.Types.ObjectId(), createdAt: at, items: received });
-    if (done) return res.json(withRemaining(done));
+    if (done) return res.json(answer(req, done));
     throw err;
   }
 });
 
 // Pays off part or all of what is owed on an invoice
-router.post('/:id/payments', async (req, res) => {
+router.post('/:id/payments', allow('purchases'), async (req, res) => {
   const { Purchase } = req.models;
   const purchase = await Purchase.findById(req.params.id);
   if (!purchase) throw httpError(404, 'فاتورة الشراء غير موجودة');
@@ -250,12 +260,13 @@ router.post('/:id/payments', async (req, res) => {
   purchase.payments.push({ amount, date: parseDate(req.body.date, 'تاريخ الدفع') });
   purchase.paid = money(purchase.paid + amount);
   await purchase.save();
-  res.json(withRemaining(purchase.toObject()));
+  res.json(answer(req, purchase.toObject()));
 });
 
 // Cancels an invoice entered by mistake or returned to the supplier: its goods leave
-// the stock again. Money already paid is between the shop and the supplier.
-router.post('/:id/cancel', async (req, res) => {
+// the stock again. Money already paid is between the shop and the supplier. The invoice
+// stays, marked cancelled, so this is part of `purchases` rather than a deletion.
+router.post('/:id/cancel', allow('purchases'), async (req, res) => {
   const { Purchase } = req.models;
   const purchase = await Purchase.findOneAndUpdate(
     { _id: req.params.id, status: 'active' },
@@ -267,7 +278,7 @@ router.post('/:id/cancel', async (req, res) => {
     throw httpError(409, 'هذه الفاتورة ملغاة من قبل');
   }
   await giveBack(req.models, purchase);
-  res.json(withRemaining(purchase));
+  res.json(answer(req, purchase));
 });
 
 export default router;

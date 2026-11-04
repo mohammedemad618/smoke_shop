@@ -4,6 +4,7 @@ import { errorHandler } from './lib/errors.js';
 import { tenancy, attachModels } from './lib/tenancy.js';
 import { requireTenantSession, requirePasswordChanged } from './lib/auth.js';
 import { requireCsrf } from './lib/csrf.js';
+import { requirePage } from './lib/permissions.js';
 import { createSessionStore } from './lib/sessions.js';
 import { createLoginGuard } from './lib/login-guard.js';
 import { SHOP_CSP, contentSecurityPolicy, noStore, securityHeaders } from './lib/security.js';
@@ -15,6 +16,7 @@ import { EXACT } from './lib/routing.js';
 import { createAdminRouter } from './admin/router.js';
 import { createAuthRouters } from './routes/auth.js';
 import { createSettingsRouter } from './routes/settings.js';
+import { createStaffRouter } from './routes/staff.js';
 import cspReportRouter from './routes/csp-report.js';
 import shopRouter from './routes/shop.js';
 import categoriesRouter from './routes/categories.js';
@@ -41,9 +43,12 @@ function mount(parent, path, ...handlers) {
  *   2. the public endpoints: the shop's name, signing in, CSP reports
  *   3. the session check (lib/auth.js): /api answers 401, a page goes to the sign-in page
  *   4. the account's own routes, then the first-password gate
- *   5. the pages, then the shop's models on req.models and the API (4 requests of the shop at
- *      a time, lib/limits.js), then 404 for /api
+ *   5. the pages (a page the account may not open answers 403), then the shop's models on
+ *      req.models and the API (4 requests of the shop at a time, lib/limits.js), then 404
+ *      for /api
  * Every state-changing /api request past 3 carries the session's CSRF token (lib/csrf.js).
+ * Every /api route declares what an account needs to use it (lib/permissions.js allow()),
+ * the public ones included.
  * Paths match exactly, letter case and final slash included (lib/routing.js).
  */
 export function createTenantRouter({ db, registry, config }) {
@@ -89,10 +94,12 @@ export function createTenantRouter({ db, registry, config }) {
   router.use(requirePasswordChanged());
 
   // 5. The pages, then the shop's data
+  router.use(requirePage());
   router.use(express.static(PUBLIC_DIR));
   const api = express.Router(EXACT);
   mount(api, '/shop', shopRouter);
   mount(api, '/settings', createSettingsRouter({ db, registry, config }));
+  mount(api, '/staff', createStaffRouter({ db, registry, config }));
   mount(api, '/categories', categoriesRouter);
   mount(api, '/products', productsRouter);
   mount(api, '/sales', salesRouter);

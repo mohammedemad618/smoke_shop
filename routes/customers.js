@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { httpError } from '../lib/errors.js';
 import { money } from '../lib/util.js';
+import { madeByOf } from '../lib/auth.js';
+import { allow, forbidden, isOwner } from '../lib/permissions.js';
 
 const router = Router();
 const EDITABLE = ['name', 'phone', 'note'];
@@ -17,7 +19,7 @@ async function findCustomer(Customer, id) {
 }
 
 // All customers with what each owes
-router.get('/', async (req, res) => {
+router.get('/', allow('credit'), async (req, res) => {
   const { Customer, DebtEntry } = req.models;
   const [customers, balances] = await Promise.all([
     Customer.find().collation({ locale: 'ar' }).sort({ name: 1 }).lean(),
@@ -35,7 +37,7 @@ router.get('/', async (req, res) => {
 });
 
 // One customer with their account, oldest entry first
-router.get('/:id', async (req, res) => {
+router.get('/:id', allow('credit'), async (req, res) => {
   const { Customer, DebtEntry } = req.models;
   const customer = await findCustomer(Customer, req.params.id);
   const entries = await DebtEntry.find({ customer: customer._id }).sort({ date: 1, createdAt: 1 }).lean();
@@ -43,13 +45,13 @@ router.get('/:id', async (req, res) => {
   res.json({ ...customer, balance, entries });
 });
 
-router.post('/', async (req, res) => {
+router.post('/', allow('credit'), async (req, res) => {
   const { Customer } = req.models;
   const customer = await Customer.create(pickEditable(req.body));
   res.status(201).json({ ...customer.toObject(), balance: 0 });
 });
 
-router.put('/:id', async (req, res) => {
+router.put('/:id', allow('credit'), async (req, res) => {
   const { Customer } = req.models;
   const customer = await Customer.findByIdAndUpdate(req.params.id, pickEditable(req.body), {
     returnDocument: 'after',
@@ -59,7 +61,7 @@ router.put('/:id', async (req, res) => {
   res.json(customer);
 });
 
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', allow('owner'), async (req, res) => {
   const { Customer, DebtEntry } = req.models;
   if (await DebtEntry.exists({ customer: req.params.id })) {
     throw httpError(409, 'لا يمكن حذف زبون له سجلات دين');
@@ -69,12 +71,17 @@ router.delete('/:id', async (req, res) => {
   res.status(204).end();
 });
 
-// A payment (takes off the debt) or a debt added by hand
-router.post('/:id/entries', async (req, res) => {
+// A payment (takes off the debt) or a debt added by hand. Taking a payment is part of selling
+// on credit; a debt added by hand (money lent, or owed from before) is the owner's. The entry
+// records who made it, from the session. Only the owner dates it: a payment counts as money
+// collected on its day (the net profit), so a staff account's is dated now, never on a day
+// already closed.
+router.post('/:id/entries', allow('credit'), async (req, res) => {
   const { Customer, DebtEntry } = req.models;
-  const customer = await findCustomer(Customer, req.params.id);
   const sign = MANUAL_KINDS[req.body.kind];
   if (!sign) throw httpError(400, 'نوع السجل غير صالح');
+  if (req.body.kind === 'manual' && !isOwner(req.user)) throw forbidden('owner');
+  const customer = await findCustomer(Customer, req.params.id);
   const amount = money(req.body.amount);
   if (!Number.isFinite(amount) || amount <= 0) throw httpError(400, 'المبلغ يجب أن يكون أكبر من صفر');
   const entry = await DebtEntry.create({
@@ -82,13 +89,14 @@ router.post('/:id/entries', async (req, res) => {
     kind: req.body.kind,
     amount: sign * amount,
     note: req.body.note ?? '',
-    date: req.body.date ?? new Date(),
+    date: isOwner(req.user) ? (req.body.date ?? new Date()) : new Date(),
+    madeBy: madeByOf(req.user),
   });
   res.status(201).json({ entry, balance: await DebtEntry.balanceOf(customer._id) });
 });
 
 // Only payments and hand-added debts can be deleted; invoice entries follow their invoice
-router.delete('/:id/entries/:entryId', async (req, res) => {
+router.delete('/:id/entries/:entryId', allow('owner'), async (req, res) => {
   const { DebtEntry } = req.models;
   const entry = await DebtEntry.findOne({ _id: req.params.entryId, customer: req.params.id });
   if (!entry) throw httpError(404, 'السجل غير موجود');

@@ -524,7 +524,8 @@ export async function setShopNameCache(ctx, tenantId, shopName) {
 
 /*
  * A new first password for one of a shop's accounts, made by the admin (who gives it to the
- * owner, and recovers a forgotten one this way); it must be changed at the next sign-in.
+ * owner, and recovers a forgotten one this way) or by the owner for a staff account
+ * (services/staff.js); it must be changed at the next sign-in.
  * Every session of the account ends (authVersion and the sessions themselves) and its failed
  * sign-ins are forgotten. Only the hash is stored, and the audit log names the account,
  * never the password. Returns { username }.
@@ -540,7 +541,9 @@ export async function resetUserPassword(ctx, tenantId, userId, password, by = {}
   const problem = passwordProblem(password, { username: user.usernameLower, slug: tenant.slug });
   if (problem) throw httpError(400, problem, 'WEAK_PASSWORD');
   const passwordHash = await hashPassword(password);
-  await User.updateOne({ _id: user._id }, { $set: { passwordHash, mustChangePassword: true }, $unset: { disabledAt: 1 }, $inc: { authVersion: 1 } });
+  // The owner gets their shop back; a staff account its owner disabled stays disabled
+  const enable = user.role === 'owner' ? { $unset: { disabledAt: 1 } } : {};
+  await User.updateOne({ _id: user._id }, { $set: { passwordHash, mustChangePassword: true }, ...enable, $inc: { authVersion: 1 } });
   await revokeSessions(ctx, tenant._id, user._id);
   await LoginAttempt.deleteMany({ scope: String(tenant._id), username: user.usernameLower });
   await AuditLog.record({

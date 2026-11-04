@@ -30,7 +30,7 @@
         </div>
       </div>
     </nav>
-    <div class="topbar-meta" id="todayStats"></div>
+    <div class="topbar-meta" id="todayStats" data-need="reports"></div>
   </header>
 
   <main class="register">
@@ -65,10 +65,10 @@
           </div>
           <dl class="receipt-sum">
             <div class="sum-row"><dt>عدد القطع</dt><dd class="num" id="itemCount">0</dd></div>
-            <div class="sum-row grand"><dt>الإجمالي</dt><dd class="num" id="grandTotal">0</dd></div>
+            <div class="sum-row grand"><dt>الإجمالي</dt><dd><span class="num" id="grandTotal">0</span> <span class="currency" data-currency></span></dd></div>
           </dl>
           <div class="pay">
-            <div class="segmented segmented-sm pay-type" role="group" aria-label="طريقة الدفع">
+            <div class="segmented segmented-sm pay-type" role="group" aria-label="طريقة الدفع" data-need="credit">
               <button type="button" data-pay="cash" aria-pressed="true">نقدًا</button>
               <button type="button" data-pay="credit" aria-pressed="false">بالدين</button>
             </div>
@@ -105,16 +105,16 @@
     <button class="cart-bar is-empty" id="cartBar" type="button" aria-controls="counter" aria-expanded="false">
       <span class="cart-bar-count num" id="cartBarCount">0</span>
       <span>الفاتورة</span>
-      <span class="cart-bar-total num" id="cartBarTotal">0</span>
+      <span class="cart-bar-total"><span class="num" id="cartBarTotal">0</span> <span class="currency" data-currency></span></span>
     </button>
   </main>
 
   <dialog class="dialog sale-dialog" id="saleDialog" aria-label="إيصال البيع">
-    <div class="printable" id="saleReceipt"></div>
+    <div id="saleReceipt"></div>
     <div class="dialog-actions">
       <button class="btn btn-primary" id="newSaleBtn" type="button">فاتورة جديدة</button>
       <button class="btn" id="printBtn" type="button">طباعة الإيصال</button>
-      <button class="btn btn-ghost danger" id="cancelSaleBtn" type="button">إلغاء البيع وإرجاع المبلغ</button>
+      <button class="btn btn-ghost danger" id="cancelSaleBtn" type="button" data-need="returns">إلغاء البيع وإرجاع المبلغ</button>
     </div>
   </dialog>
 

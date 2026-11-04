@@ -1,7 +1,8 @@
 // One rounding function for the screen and the server (lib/util.js imports it too), so
 // the screen shows exactly what the server saves
 import { roundTo } from './rounding.js';
-import { ApiError, request, fetchMe, hasCsrf, signIn, signOut, loginUrl } from './auth.js';
+import { ApiError, request, fetchMe, hasCsrf, signIn, signOut, loginUrl, rememberedAccess } from './auth.js';
+import { PERMISSION_KEYS, allows, allowsPage } from './permissions.js';
 
 const moneyFormat = new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 });
 // Arabic wording with Latin digits, matching prices and barcodes
@@ -116,6 +117,7 @@ async function sendOnce(path, method, body, write) {
     const fresh = await fetchMe().catch(() => null);
     if (!fresh) throw err;
     account = fresh;
+    setAccess(fresh);
     return request(path, { method, body });
   }
 }
@@ -201,13 +203,43 @@ if (more) {
 
 /* The signed-in account */
 
-// GET /api/auth/me: the account's name for the menu, its role, and the CSRF token
+// GET /api/auth/me: the account's name for the menu, its role and permissions, and the CSRF token
 let account = null;
 const EXPIRY_WARNING_MS = 8 * 60 * 60 * 1000;
 
 function showAccount() {
   const name = account?.user?.displayName || account?.user?.username || '';
   for (const el of document.querySelectorAll('[data-username]')) el.textContent = name;
+}
+
+/*
+ * What the account may use (public/js/permissions.js), as last known: from the server once
+ * it answers, and until then as this browser last saw it (auth.js), so a staff account's
+ * page does not show the owner's menu first. The page is marked for the styles: <html>
+ * gets lacks-<key> for each permission the account does not have (lacks-owner for anyone
+ * but the owner), which hides every element with data-need naming it (style.css). Links to
+ * pages the account cannot open leave the menu. Unknown (offline at the first page) hides
+ * nothing: the server refuses what is not allowed either way.
+ */
+let access = rememberedAccess();
+export const can = (key) => (access ? allows(access, key) : true);
+// Whether the account may open the page at `path` (a link to it is worth showing)
+export const canOpen = (path) => (access ? allowsPage(access, path) : true);
+export const isOwnerAccount = () => access?.role === 'owner';
+
+function applyAccess() {
+  const root = document.documentElement;
+  for (const key of [...PERMISSION_KEYS, 'owner']) root.classList.toggle(`lacks-${key}`, Boolean(access) && !allows(access, key));
+  for (const link of document.querySelectorAll('.nav a[href], .more-menu a[href]')) {
+    link.hidden = Boolean(access) && !allowsPage(access, new URL(link.href, location.href).pathname);
+  }
+}
+applyAccess();
+
+function setAccess(me) {
+  if (!me?.role) return;
+  access = { role: me.role, permissions: me.permissions ?? [] };
+  applyAccess();
 }
 
 async function loadSession() {
@@ -218,6 +250,7 @@ async function loadSession() {
     return null; // offline: the page works with what it has, and writes say so
   }
   showAccount();
+  setAccess(account);
   // A session lasts 14 days at most: say so before it ends in the middle of a sale
   if (new Date(account.expiresAt) - Date.now() < EXPIRY_WARNING_MS) {
     setTimeout(() => toast('تنتهي جلستك بعد أقل من 8 ساعات. سجّل الخروج ثم الدخول لتبدأ جلسة جديدة'), 1500);
@@ -319,6 +352,7 @@ function openSignIn() {
       try {
         account = await signIn(username.value, password.value);
         showAccount();
+        setAccess(account);
         // A new first password from the admin: changed on the sign-in page (the cart is kept in this tab)
         if (account.mustChangePassword) {
           goToLogin();
@@ -351,49 +385,93 @@ export async function withSignIn(write) {
   }
 }
 
-// The shop's name (from its settings, GET /api/shop) in the header and at the end of the tab
-// title, instead of «نقطة البيع». The last one seen is kept for this tab so pages do not
-// flash the default; pages that need the name or the receipt note await shopInfo.
+/*
+ * The shop's settings every page reads (GET /api/shop): its name in the header and at the
+ * end of the tab title, instead of «نقطة البيع»; its currency in every [data-currency]
+ * element, next to the totals people read (formatMoney stays a plain number, for the
+ * figures); and for the pages that need them, the receipt's details and how it prints, and
+ * what a new product starts with. The last answer is kept for this tab so pages do not
+ * flash the defaults; pages that need more than the name await shopInfo.
+ */
 const SHOP_KEY = 'pos.shop';
 const DEFAULT_SHOP_NAME = 'نقطة البيع';
-function showShopName(name) {
-  const text = String(name ?? '').trim() || DEFAULT_SHOP_NAME;
-  for (const el of document.querySelectorAll('.brand-name')) el.textContent = text;
-  document.title = `${document.title.split(' | ')[0]} | ${text}`;
-}
-async function loadShop() {
-  let shop = null;
-  try {
-    shop = JSON.parse(sessionStorage.getItem(SHOP_KEY));
-  } catch {
-    // storage blocked or empty: the default name stays until the server answers
-  }
-  if (shop) showShopName(shop.shopName);
-  try {
-    shop = await api('/shop');
-    sessionStorage.setItem(SHOP_KEY, JSON.stringify(shop));
-  } catch {
-    // offline or storage blocked: keep what is shown
-  }
-  showShopName(shop?.shopName);
-  return shopFields(shop);
-}
-const shopFields = (shop) => ({
-  shopName: String(shop?.shopName ?? '').trim(),
-  receiptNote: String(shop?.receiptNote ?? '').trim(),
-  phone: String(shop?.phone ?? '').trim(),
-  address: String(shop?.address ?? '').trim(),
+// What a shop has before its owner changes anything (models/Setting.js SETTING_DEFAULTS),
+// for an answer kept from before a setting existed
+const SHOP_DEFAULTS = Object.freeze({
+  shopName: '',
+  receiptNote: '',
+  phone: '',
+  address: '',
+  currency: 'د.ع',
+  receiptPaper: '80',
+  receiptShowPhone: true,
+  receiptShowAddress: true,
+  receiptShowCashier: false,
+  autoPrint: false,
+  defaultTrackStock: true,
+  defaultLowStockAlert: 5,
+  defaultBlockWhenOut: false,
+  logoVersion: '',
 });
-export const shopInfo = loadShop();
+const shopFields = (shop) =>
+  Object.fromEntries(
+    Object.entries(SHOP_DEFAULTS).map(([key, fallback]) => {
+      const value = shop?.[key];
+      if (typeof fallback === 'string') return [key, String(value ?? fallback).trim()];
+      return [key, typeof value === typeof fallback ? value : fallback];
+    }),
+  );
 
-// After the settings page saves: the new name at once, here and in the next pages of this tab
-export function rememberShop(shop) {
+function showShop(shop) {
+  const name = shop.shopName || DEFAULT_SHOP_NAME;
+  for (const el of document.querySelectorAll('.brand-name')) el.textContent = name;
+  document.title = `${document.title.split(' | ')[0]} | ${name}`;
+  for (const el of document.querySelectorAll('[data-currency]')) el.textContent = shop.currency;
+}
+
+// The settings from the server, kept for this tab and shown; null when it cannot answer
+async function fetchShop() {
+  let shop;
   try {
-    sessionStorage.setItem(SHOP_KEY, JSON.stringify(shopFields(shop)));
+    shop = shopFields(await api('/shop'));
+  } catch {
+    return null; // offline: keep what is shown
+  }
+  try {
+    sessionStorage.setItem(SHOP_KEY, JSON.stringify(shop));
   } catch {
     // storage blocked: the next page asks the server
   }
-  showShopName(shop.shopName);
+  showShop(shop);
+  return shop;
+}
+
+async function loadShop() {
+  let kept = null;
+  try {
+    kept = JSON.parse(sessionStorage.getItem(SHOP_KEY));
+  } catch {
+    // storage blocked or empty: the page's own default name stays until the server answers
+  }
+  if (kept) showShop(shopFields(kept));
+  return (await fetchShop()) ?? shopFields(kept);
+}
+export const shopInfo = loadShop();
+
+// The settings again, for a page open a long time (the cashier coming back to its tab): the
+// owner may have changed the receipt meanwhile. Null when the server cannot answer.
+export const refreshShop = fetchShop;
+
+// After the settings page saves: the new name and currency at once, here and in the next
+// pages of this tab
+export function rememberShop(shop) {
+  const fields = shopFields(shop);
+  try {
+    sessionStorage.setItem(SHOP_KEY, JSON.stringify(fields));
+  } catch {
+    // storage blocked: the next page asks the server
+  }
+  showShop(fields);
 }
 
 export const PRODUCTS = { one: 'منتج واحد', two: 'منتجان', few: 'منتجات', many: 'منتجًا', single: 'منتج' };

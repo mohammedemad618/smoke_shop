@@ -69,7 +69,11 @@ test('a new shop: its record, address, database, settings, «عام», first inv
   // Through its address, signed in: the name for the header and the receipt, and invoice 500 first
   const client = env.client(`${host}:${env.app.port}`);
   await signInAsOwner(client, owner(), 'amal');
-  assert.deepStrictEqual((await client.request('GET', '/api/shop')).data, { shopName: 'متجر الأمل', receiptNote: 'البضاعة المباعة لا ترد بعد 3 أيام', phone: '0770 000 0000', address: '' });
+  const { data: shopInfo } = await client.request('GET', '/api/shop');
+  assert.deepStrictEqual(
+    { shopName: shopInfo.shopName, receiptNote: shopInfo.receiptNote, phone: shopInfo.phone, address: shopInfo.address, currency: shopInfo.currency },
+    { shopName: 'متجر الأمل', receiptNote: 'البضاعة المباعة لا ترد بعد 3 أيام', phone: '0770 000 0000', address: '', currency: 'د.ع' },
+  );
   const general = (await client.request('GET', '/api/categories')).data[0];
   const product = (await client.request('POST', '/api/products', { name: 'ماء', barcode: 'W1', category: general._id, purchasePrice: 100, salePrice: 250 })).data;
   const sale = await client.request('POST', '/api/sales', { items: [{ productId: product._id, quantity: 1 }] });

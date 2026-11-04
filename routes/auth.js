@@ -6,6 +6,7 @@ import { minutesText } from '../lib/login-guard.js';
 import { PASSWORD_MAX, hashPassword, passwordProblem, verifyDummy, verifyPassword } from '../lib/passwords.js';
 import { rateLimit } from '../lib/ratelimit.js';
 import { EXACT } from '../lib/routing.js';
+import { allow } from '../lib/permissions.js';
 
 const USERNAME_MAX = 64;
 // Another attempt of the same name from the same address is being checked (lib/login-guard.js)
@@ -42,14 +43,14 @@ export function createAuthRouters({ config, store, guard }) {
     message: 'محاولات دخول كثيرة من هذا العنوان. أعد المحاولة بعد دقيقة',
   });
 
-  publicRouter.get('/shop', async (req, res) => {
+  publicRouter.get('/shop', allow('public'), async (req, res) => {
     const settings = await req.models.Setting.findById('shop', 'shopName').lean();
     res.json({ shopName: settings?.shopName ?? '' });
   });
 
   // One answer for an unknown name, a closed account and a wrong password, taking as long
   // in each case. Signing in from another site is refused like any other cross-site write.
-  publicRouter.post('/login', signInLimit, requireSameOrigin(config), async (req, res) => {
+  publicRouter.post('/login', allow('public'), signInLimit, requireSameOrigin(config), async (req, res) => {
     const { username, password } = req.body;
     if (typeof username !== 'string' || typeof password !== 'string' || username.length > USERNAME_MAX || password.length > PASSWORD_MAX) {
       throw httpError(400, AUTH_MESSAGES.badInput, 'BAD_INPUT');
@@ -86,17 +87,17 @@ export function createAuthRouters({ config, store, guard }) {
     }
   });
 
-  sessionRouter.get('/me', (req, res) => {
+  sessionRouter.get('/me', allow('account'), (req, res) => {
     res.json(sessionInfo(req.user, req.authSession));
   });
 
-  sessionRouter.post('/logout', async (req, res) => {
+  sessionRouter.post('/logout', allow('account'), async (req, res) => {
     await store.end(req, res);
     res.status(204).end();
   });
 
   // Every session of this account, on every device, this one included
-  sessionRouter.post('/logout-all', async (req, res) => {
+  sessionRouter.post('/logout-all', allow('account'), async (req, res) => {
     await store.endWhere({ tenantId: req.tenant._id, userId: req.user._id });
     store.clearCookie(res);
     res.status(204).end();
@@ -105,7 +106,7 @@ export function createAuthRouters({ config, store, guard }) {
   // A new password: the current one first (counted like a sign-in, so a session left open
   // cannot be used to guess it), then the rules. Every other session of the account ends;
   // this one carries on.
-  sessionRouter.post('/password', signInLimit, async (req, res) => {
+  sessionRouter.post('/password', allow('account'), signInLimit, async (req, res) => {
     const { currentPassword, newPassword } = req.body;
     if (typeof currentPassword !== 'string' || typeof newPassword !== 'string' || currentPassword.length > PASSWORD_MAX) {
       throw httpError(400, AUTH_MESSAGES.badInput, 'BAD_INPUT');

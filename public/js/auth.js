@@ -22,6 +22,27 @@ const SAFE_METHODS = new Set(['GET', 'HEAD']);
 let csrfToken = null;
 export const hasCsrf = () => Boolean(csrfToken);
 
+// The account's role and permissions (public/js/permissions.js), kept in this browser so the
+// next page hides what the account cannot use before the server answers (common.js). Only
+// names of permissions: the server checks every request anyway.
+const ACCESS_KEY = 'pos.access';
+export function rememberAccess(me) {
+  try {
+    if (me) localStorage.setItem(ACCESS_KEY, JSON.stringify({ role: me.role, permissions: me.permissions ?? [] }));
+    else localStorage.removeItem(ACCESS_KEY);
+  } catch {
+    // storage blocked (or not a browser): the page waits for the server
+  }
+}
+export function rememberedAccess() {
+  try {
+    const access = JSON.parse(localStorage.getItem(ACCESS_KEY));
+    return typeof access?.role === 'string' && Array.isArray(access.permissions) ? access : null;
+  } catch {
+    return null;
+  }
+}
+
 // One JSON request to /api. Returns the answer's data (null for 204); throws ApiError.
 export async function request(path, { method = 'GET', body } = {}) {
   const headers = {};
@@ -44,7 +65,10 @@ export async function request(path, { method = 'GET', body } = {}) {
   if (!res.ok) {
     throw new ApiError(data?.error || `تعذر إتمام الطلب (${res.status})`, { status: res.status, code: data?.code || CODE_BY_STATUS[res.status] || '' });
   }
-  if (typeof data?.csrf === 'string') csrfToken = data.csrf;
+  if (typeof data?.csrf === 'string') {
+    csrfToken = data.csrf;
+    if (typeof data.role === 'string') rememberAccess(data);
+  }
   return data;
 }
 
@@ -71,6 +95,7 @@ export async function signOut() {
     if (!NO_SESSION.has(err.code)) throw err;
   }
   csrfToken = null;
+  rememberAccess(null);
 }
 
 // Where to go after signing in: a path on this address only (never "//" or "/\", which

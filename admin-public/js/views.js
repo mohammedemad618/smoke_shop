@@ -63,6 +63,10 @@ export const ACTION_LABELS = Object.freeze({
   'tenant.settings': 'تعديل إعدادات المتجر',
   'tenant.owner.reset': 'إعادة تعيين كلمة المرور',
   'tenant.user.reset': 'إعادة تعيين كلمة المرور',
+  'staff.create': 'إضافة موظف',
+  'staff.update': 'تعديل موظف',
+  'staff.disable': 'إيقاف حساب موظف',
+  'staff.enable': 'تفعيل حساب موظف',
   'tenant.owner.create': 'إنشاء حساب المالك',
   'tenant.sessions.revoke': 'إلغاء الجلسات',
   'tenant.backup': 'نسخة احتياطية',
@@ -151,7 +155,7 @@ export function userRow(u, { onReset } = {}) {
     'tr',
     {},
     titleCell({}, h('span', { className: 'pname num', text: u.username }), u.displayName ? h('span', { className: 'pcat', text: u.displayName }) : null),
-    cell('الدور', { text: u.role === 'owner' ? 'المالك' : u.role }),
+    cell('الدور', { text: u.role === 'owner' ? 'المالك' : u.role === 'staff' ? 'موظف' : u.role }),
     cell('الحالة', { text: state }),
     cell('آخر دخول', { text: formatDateTime(u.lastLoginAt) }),
     h('td', { className: 'row-actions' }, onReset ? h('button', { className: 'btn btn-sm', type: 'button', text: 'إعادة تعيين كلمة المرور', on: { click: () => onReset(u) } }) : null),
@@ -197,6 +201,8 @@ const DETAIL_LABELS = Object.freeze({
   to: 'إلى',
   cleared: 'سجلات مُسحت',
   counts: 'الأعداد',
+  displayName: 'الاسم',
+  permissions: 'الصلاحيات',
 });
 
 // An audit entry's details as one line of text

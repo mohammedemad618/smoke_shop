@@ -5,6 +5,8 @@ import { clientIdOf, isDuplicateOf } from '../lib/idempotency.js';
 import { REPORT_MS, runReport } from '../lib/limits.js';
 import { money, precise, roundQty, stockChange } from '../lib/util.js';
 import { DAY_MS, requestedRange, timeZoneParam } from '../lib/range.js';
+import { madeByOf } from '../lib/auth.js';
+import { allow, can, forbidden, saleFor, seesCosts } from '../lib/permissions.js';
 
 const router = Router();
 const MAX_QUANTITY = 10000;
@@ -205,22 +207,26 @@ const sumFigures = (rows) => {
   return sum;
 };
 
-// Invoices made in one day (or a short range), newest first, with the period's figures
-router.get('/', async (req, res) => {
+// Invoices made in one day (or a short range), newest first, with the period's figures.
+// An account with `returns` but not `reports` finds the invoice to return from here: it gets
+// the invoices without their costs and profit, and no figures (summary null).
+router.get('/', allow('reports', 'returns'), async (req, res) => {
   const { Sale } = req.models;
   const { start, end } = requestedRange(req.query, MAX_LIST_RANGE_MS);
+  const reports = seesCosts(req.user);
   // The day's figures replay the customers' accounts: a report, one at a time per shop
   const [sales, rows] = await Promise.all([
     Sale.find({ createdAt: { $gte: start, $lt: end } }).sort({ createdAt: -1 }).lean(),
-    runReport(req.tenant._id, () => periodFigures(req.models, start, end)),
+    reports ? runReport(req.tenant._id, () => periodFigures(req.models, start, end)) : null,
   ]);
+  if (!reports) return res.json({ summary: null, sales: sales.map((s) => saleFor(req.user, s)) });
   const summary = { ...EMPTY_FIGURES, ...rows[0] };
   delete summary.key;
   res.json({ summary, sales });
 });
 
 // Figures for a month or any period, broken down by day or by month
-router.get('/report', async (req, res) => {
+router.get('/report', allow('reports'), async (req, res) => {
   const { start, end } = requestedRange(req.query, MAX_REPORT_RANGE_MS);
   const groupBy = req.query.groupBy === 'month' ? 'month' : 'day';
   const periods = await runReport(req.tenant._id, () => periodFigures(req.models, start, end, groupBy, timeZoneParam(req.query.tz)));
@@ -229,7 +235,7 @@ router.get('/report', async (req, res) => {
 
 // Per-product figures for a period, from the prices stored on each invoice at the time of
 // sale: what was sold in the period, less what was returned in it (like the period totals)
-router.get('/products', async (req, res) => {
+router.get('/products', allow('reports'), async (req, res) => {
   const { Sale } = req.models;
   const { start, end } = requestedRange(req.query, MAX_REPORT_RANGE_MS);
   const inRange = { $gte: start, $lt: end };
@@ -342,17 +348,25 @@ router.get('/products', async (req, res) => {
 
 /* Selling */
 
-// An invoice as the cashier shows it, with what its customer owes now
-const withBalance = async (DebtEntry, sale) => ({ ...sale, customerBalance: sale.customer ? await DebtEntry.balanceOf(sale.customer) : undefined });
+// An invoice as the cashier shows it, with what its customer owes now; without `reports`,
+// without its costs (lib/permissions.js)
+const withBalance = async (req, sale) =>
+  saleFor(req.user, { ...sale, customerBalance: sale.customer ? await req.models.DebtEntry.balanceOf(sale.customer) : undefined });
+// The same, answering a sale sent again under an id already recorded: marked repeated. The
+// cashier page decides on printing by itself (autoPrint) from the sales its tab printed, not
+// from this mark: a repeated answer may be the first one to arrive (the earlier one lost)
+const repeated = async (req, sale) => ({ ...(await withBalance(req, sale)), repeated: true });
 
-router.post('/', async (req, res) => {
+// Every account sells for cash; selling on a customer's account needs `credit`. The sale
+// records who made it, from the session.
+router.post('/', allow('selling'), async (req, res) => {
   const { Product, Sale, Customer, DebtEntry, Counter } = req.models;
   // Sent again after an answer that never arrived: the invoice as it was recorded, and
   // nothing else happens (no second number, no stock taken again)
   const clientId = clientIdOf(req.body);
   if (clientId) {
     const done = await Sale.findOne({ clientId }).lean();
-    if (done) return res.json(await withBalance(DebtEntry, done));
+    if (done) return res.json(await repeated(req, done));
   }
   const lines = Array.isArray(req.body.items) ? req.body.items : [];
   if (lines.length === 0) throw httpError(400, 'أضف منتجًا واحدًا على الأقل إلى الفاتورة');
@@ -419,6 +433,7 @@ router.post('/', async (req, res) => {
   // Cash: an empty paid means the exact amount. Credit: paid is the part paid now (often
   // nothing) and the rest goes on the customer's account.
   const paymentType = req.body.paymentType === 'credit' ? 'credit' : 'cash';
+  if (paymentType === 'credit' && !can(req.user, 'credit')) throw forbidden('credit');
   const paidInput = req.body.paid;
   const noPaid = paidInput === undefined || paidInput === null || paidInput === '';
   let customer = null;
@@ -457,6 +472,7 @@ router.post('/', async (req, res) => {
       customerName: customer?.name,
       debt,
       clientId: clientId ?? undefined,
+      madeBy: madeByOf(req.user),
     });
     if (debt > 0) {
       await DebtEntry.create({
@@ -476,19 +492,19 @@ router.post('/', async (req, res) => {
     // stock back and answers with that invoice
     if (clientId && isDuplicateOf(err, 'clientId')) {
       const done = await Sale.findOne({ clientId }).lean();
-      if (done) return res.json(await withBalance(DebtEntry, done));
+      if (done) return res.json(await repeated(req, done));
     }
     throw err;
   }
-  res.status(201).json(await withBalance(DebtEntry, sale.toObject()));
+  res.status(201).json(await withBalance(req, sale.toObject()));
 });
 
 /* Returns */
 
 // Body { items: [{ line, quantity }] } returns quantities of invoice lines (by index, in
 // each line's sold unit). Without items, everything not yet returned comes back: the
-// whole sale is cancelled.
-router.post('/:id/returns', async (req, res) => {
+// whole sale is cancelled. Needs `returns`; the return records who made it, from the session.
+router.post('/:id/returns', allow('returns'), async (req, res) => {
   const { Product, Sale, DebtEntry } = req.models;
   const clientId = clientIdOf(req.body);
   const sale = await Sale.findById(req.params.id);
@@ -496,7 +512,7 @@ router.post('/:id/returns', async (req, res) => {
   // A return sent again: what it gave back the first time, and nothing more
   const replay = (s) => {
     const done = clientId && s.returns.find((r) => r.clientId === clientId);
-    return done && res.json({ sale: s, refunded: money(done.amount - (done.toAccount ?? 0)), toAccount: done.toAccount ?? 0, customerName: s.customerName });
+    return done && res.json({ sale: saleFor(req.user, s), refunded: money(done.amount - (done.toAccount ?? 0)), toAccount: done.toAccount ?? 0, customerName: s.customerName });
   };
   if (replay(sale)) return;
 
@@ -544,6 +560,7 @@ router.post('/:id/returns', async (req, res) => {
     amount: money(items.reduce((sum, i) => sum + i.amount, 0)),
     cost: money(cost),
     ...(clientId ? { clientId } : {}),
+    madeBy: madeByOf(req.user),
   };
   // The return that empties the invoice takes back exactly what is left of it, whatever
   // older returns rounded to
@@ -597,7 +614,7 @@ router.post('/:id/returns', async (req, res) => {
     });
   }
   res.status(201).json({
-    sale,
+    sale: saleFor(req.user, sale),
     refunded: money(entry.amount - entry.toAccount), // cash back to the customer
     toAccount: entry.toAccount,
     customerName: sale.customerName,

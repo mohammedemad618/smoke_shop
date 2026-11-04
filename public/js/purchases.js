@@ -17,6 +17,8 @@ import {
   packName,
   newClientId,
   withSignIn,
+  session,
+  can,
 } from './common.js';
 import { scanBarcodes } from './scanner.js';
 import { isPurchaseOf } from './idempotency.js';
@@ -512,7 +514,8 @@ async function openComposer() {
   els.date.max = dayKey(new Date());
   renderLines();
   try {
-    const [products, suppliers] = await Promise.all([api('/products'), api('/purchases/suppliers')]);
+    // The account known too, for the sale price column (can('products'))
+    const [products, suppliers] = await Promise.all([api('/products'), api('/purchases/suppliers'), session]);
     state.products = products;
     state.suppliers = suppliers;
   } catch (err) {
@@ -671,7 +674,8 @@ function addProduct(product, { focus = true } = {}) {
       product,
       mode,
       quantity: '1',
-      price: String(roundMoney(product.purchasePrice * (mode === 'pack' ? product.wholesaleQty : 1))),
+      // An account without `reports` is not sent the purchase price: typed from the invoice
+      price: Number.isFinite(product.purchasePrice) ? String(roundMoney(product.purchasePrice * (mode === 'pack' ? product.wholesaleQty : 1))) : '',
       salePrice: String(product.salePrice),
     };
     d.lines.unshift(line); // newest on top, next to the scan box
@@ -719,7 +723,12 @@ function lineRow(line) {
     </td>
     <td class="end"><strong class="num" data-info="total"></strong></td>
     <td>
-      <input class="input num" data-field="salePrice" type="number" min="0" step="any" inputmode="decimal" value="${escapeHtml(line.salePrice)}" aria-label="سعر بيع ${escapeHtml(p.name)}">
+      ${
+        // A new sale price needs `products`, as in the product form: shown, not changed, without it
+        can('products')
+          ? `<input class="input num" data-field="salePrice" type="number" min="0" step="any" inputmode="decimal" value="${escapeHtml(line.salePrice)}" aria-label="سعر بيع ${escapeHtml(p.name)}">`
+          : `<span class="num sale-now">${formatMoney(p.salePrice)}</span>`
+      }
       <small class="line-hint" data-info="margin"></small>
     </td>
     <td class="row-actions"><button class="icon-btn danger" type="button" data-remove title="إزالة" aria-label="إزالة ${escapeHtml(p.name)}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button></td>
@@ -766,18 +775,20 @@ function updateLineInfo(line) {
   }
 
   const cost = row.querySelector('[data-info="cost"]');
+  // Unknown to an account without `reports`: no «كان …», no up or down
+  const before = Number.isFinite(p.purchasePrice) ? p.purchasePrice : null;
   const parts = [];
   if (line.mode === 'pack' && Number.isFinite(c.unitCost)) parts.push(`أي ${formatMoney(c.unitCost)} ${perWord(unit, 'unit')}`);
   if (c.price === 0) parts.push('مجاني، لا يغيّر سعر الشراء');
-  else if (Number.isFinite(c.unitCost) && c.unitCost !== p.purchasePrice) parts.push(`كان ${formatMoney(p.purchasePrice)} ${perWord(unit, 'unit')}`);
+  else if (before !== null && Number.isFinite(c.unitCost) && c.unitCost !== before) parts.push(`كان ${formatMoney(before)} ${perWord(unit, 'unit')}`);
   cost.textContent = parts.join('، ');
-  cost.className = `line-hint${c.price > 0 && c.unitCost > p.purchasePrice ? ' is-up' : c.price > 0 && c.unitCost < p.purchasePrice ? ' is-down' : ''}`;
+  cost.className = `line-hint${before !== null && c.price > 0 && c.unitCost > before ? ' is-up' : before !== null && c.price > 0 && c.unitCost < before ? ' is-down' : ''}`;
 
   row.querySelector('[data-info="total"]').textContent = formatMoney(c.total);
 
   const margin = row.querySelector('[data-info="margin"]');
-  const sale = num(line.salePrice);
-  const unitCost = c.price === 0 ? p.purchasePrice : c.unitCost;
+  const sale = can('products') ? num(line.salePrice) : p.salePrice;
+  const unitCost = c.price === 0 ? (before ?? NaN) : c.unitCost;
   if (Number.isFinite(sale) && Number.isFinite(unitCost)) {
     const profit = roundMoney(sale - unitCost);
     margin.textContent =
@@ -908,7 +919,7 @@ function checkDraft() {
     }
     if (!(c.price >= 0)) return { message: `أدخل سعر شراء «${p.name}»`, input: row.querySelector('[data-field="price"]') };
     const sale = num(line.salePrice);
-    if (String(line.salePrice).trim() !== '' && !(sale >= 0)) {
+    if (can('products') && String(line.salePrice).trim() !== '' && !(sale >= 0)) {
       return { message: `سعر بيع «${p.name}» غير صالح`, input: row.querySelector('[data-field="salePrice"]') };
     }
   }
@@ -942,7 +953,7 @@ els.save.addEventListener('click', async () => {
       mode: l.mode,
       quantity: num(l.quantity),
       price: num(l.price),
-      salePrice: String(l.salePrice).trim() === '' ? undefined : num(l.salePrice),
+      salePrice: !can('products') || String(l.salePrice).trim() === '' ? undefined : num(l.salePrice),
     })),
   };
   els.save.disabled = true;

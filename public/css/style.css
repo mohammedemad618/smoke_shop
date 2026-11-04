@@ -27,6 +27,14 @@
 
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
+/* What the signed-in account may not use: common.js marks <html> with lacks-<permission>,
+   and anything whose data-need names it goes (columns, buttons, whole cards) */
+.lacks-credit [data-need~="credit"],
+.lacks-returns [data-need~="returns"],
+.lacks-products [data-need~="products"],
+.lacks-purchases [data-need~="purchases"],
+.lacks-reports [data-need~="reports"],
+.lacks-owner [data-need~="owner"] { display: none !important; }
 html, body { margin: 0; }
 /* Keep phones from inflating text on their own */
 html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
@@ -136,6 +144,7 @@ h1, h2, h3 { line-height: 1.25; }
 }
 .input:focus { outline: none; border-color: var(--ink-2); box-shadow: 0 0 0 3px rgb(47 111 228 / .25); }
 .input.is-invalid { border-color: var(--stop); }
+.input:disabled { background: var(--paper-2); color: var(--ink-2); cursor: not-allowed; }
 
 .icon-btn {
   width: 30px; height: 30px; display: grid; place-items: center; flex: none;
@@ -352,7 +361,8 @@ h1, h2, h3 { line-height: 1.25; }
 .purchase-table [data-field="quantity"] { width: 76px; }
 .purchase-table [data-field="price"],
 .purchase-table [data-field="salePrice"] { width: 112px; }
-.purchase-table [data-info="total"] { display: inline-block; padding-top: 7px; }
+.purchase-table [data-info="total"],
+.purchase-table .sale-now { display: inline-block; padding-top: 7px; }
 .purchase-table tr.is-flash td { animation: line-in .9s ease-out; }
 .qty-field { display: flex; align-items: center; gap: 6px; }
 .qty-field select { width: auto; max-width: 170px; }
@@ -420,7 +430,7 @@ a.ledger-row:hover { background: var(--paper-2); }
   background: var(--paper); border: 1px solid var(--line); border-radius: var(--r-m);
   color: var(--ink); text-decoration: none;
 }
-.attention-row:hover { border-color: var(--ink-2); }
+a.attention-row:hover { border-color: var(--ink-2); }
 .attention-dot { flex: none; width: 10px; height: 10px; border-radius: 50%; background: var(--focus); }
 .attention-row.is-stop .attention-dot { background: var(--stop); }
 .attention-row.is-warn .attention-dot { background: #E0A100; }
@@ -472,8 +482,86 @@ a.ledger-row:hover { background: var(--paper-2); }
 .settings-danger p { margin: 0; }
 select.input { padding-block: 7px; }
 .export-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+/* A card's title with its action on the same line */
+.card-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+.settings-card .card-head h2 { margin: 0; }
+
+/* Staff accounts */
+.staff-lead { margin: 0 0 14px; }
+.staff-count { margin: 0 0 8px; font-size: 13.5px; color: var(--ink-2); }
+.staff-full { color: var(--stop); }
+/* Who recorded an expense, under its type */
+.made-by-note { display: block; font-weight: 400; }
+.staff-empty { padding: 14px 16px; border: 1px dashed var(--line); border-radius: var(--r-m); color: var(--ink-2); font-size: 14px; }
+.staff-empty p { margin: 0; }
+.staff-table tr.is-disabled td { color: var(--muted); }
+.staff-table .row-actions { white-space: normal; }
+.staff-table .row-actions .btn { margin-block: 2px; }
+.perm-list { display: flex; flex-wrap: wrap; gap: 4px; }
+.perm-chip {
+  display: inline-block; max-width: 100%; padding: 1px 8px; border: 1px solid var(--line-soft); border-radius: 999px;
+  background: var(--paper-2); color: var(--ink-2); font-size: 12px;
+}
+.perm-chip.is-all { background: var(--ink); border-color: var(--ink); color: #fff; }
+.preset-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 4px 0 10px; }
+.preset-label { font-size: 13.5px; color: var(--ink-2); }
+.preset-buttons { display: flex; gap: 6px; }
+.preset-buttons .btn[aria-pressed="true"] { background: var(--ink); border-color: var(--ink); color: #fff; }
+.perm-always { margin: 0 0 10px; padding: 6px 10px; border-radius: var(--r-s); background: var(--paper-2); font-size: 13.5px; color: var(--ink-2); }
+.perm-check { align-items: flex-start; }
+.perm-check input { margin-top: 3px; flex: none; }
+.perm-name { display: block; font-weight: 500; }
+.perm-hint { display: block; font-size: 12.5px; color: var(--muted); }
+/* A new password, shown once */
+.credentials-lead { margin: -8px 0 14px; color: var(--ink-2); }
+.credentials { display: grid; gap: 8px; margin: 0 0 6px; padding: 12px 14px; border-radius: var(--r-m); background: var(--paper-2); }
+.credentials div { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; }
+.credentials dt { color: var(--ink-2); font-size: 14px; }
+.credentials dd { margin: 0; font-weight: 600; word-break: break-all; }
+.credentials-secret { font-size: 18px; letter-spacing: .04em; user-select: all; }
+.credentials-dialog .dialog-actions { margin-top: 14px; }
+.credentials-status { min-height: 1.55em; margin: 8px 0 0; font-size: 13.5px; font-weight: 500; color: var(--go); }
+.credentials-status.is-error { color: var(--stop); }
+/* Who sold an invoice, above its items (sales page) */
+.sale-items .made-by { color: var(--ink-2); }
 .export-month { display: flex; align-items: center; gap: 6px; font-size: 14px; color: var(--ink-2); }
 .export-month .input { width: auto; }
+
+/* Receipt and printing: the options, and beside them (below on phones) the receipt as it
+   will print, at its paper's width */
+.receipt-settings { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 320px); gap: 20px; align-items: start; }
+.receipt-settings .option-box .check:last-child { margin-bottom: 8px; }
+.defaults-lead { margin: 0 0 10px; }
+.logo-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.logo-box {
+  display: grid; place-items: center; width: 132px; height: 64px; padding: 4px;
+  border: 1px dashed var(--line); border-radius: var(--r-s); background: var(--paper-2);
+  font-size: 12.5px; color: var(--muted); text-align: center;
+}
+.logo-box img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.logo-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.receipt-preview-wrap { position: sticky; top: calc(var(--topbar-h) + 12px); }
+.receipt-preview { padding: 10px; border-radius: var(--r-m); background: var(--counter); overflow: hidden; }
+.receipt-preview .slip {
+  width: 100%; margin: 0 auto; padding: 14px 12px 8px; background: var(--paper);
+  box-shadow: 0 1px 3px rgb(28 37 48 / .18);
+  font-size: 14px; line-height: 1.5; /* as .print-area */
+}
+/* The printed width inside the slip's 12px sides, 1 CSS millimetre to the millimetre: 72 mm
+   for an 80 mm roll, 48 mm for 58 mm, so the lines wrap where the printed ones do */
+.receipt-preview[data-paper="80"] .slip { max-width: calc(72mm + 24px); }
+.receipt-preview[data-paper="58"] .slip { max-width: calc(48mm + 24px); font-size: 13px; }
+.receipt-preview[data-paper="58"] .slip-items { font-size: 12px; }
+.receipt-preview[data-paper="58"] .slip-head strong { font-size: 15px; }
+.receipt-preview[data-paper="58"] .slip-sum .grand { font-size: 16px; }
+.preview-note { margin: 6px 0 0; font-size: 12px; color: var(--muted); text-align: center; }
+/* A default for new products, with the button that applies it to the products already there */
+.default-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 12px; margin-bottom: 4px; }
+.default-row .field { margin-bottom: 0; }
+.default-row .check { margin-bottom: 0; min-height: 34px; }
+.default-row .input { width: 120px; }
+.default-row + .hint { margin: 6px 0 14px; }
+.settings-card .currency-field .input { max-width: 160px; }
 
 /* Camera scanner */
 .scanner-dialog { width: min(640px, calc(100vw - 32px)); }
@@ -632,6 +720,8 @@ select.input { padding-block: 7px; }
 .sum-row.grand { margin-top: 2px; }
 .sum-row.grand dt { font-size: 16px; font-weight: 600; color: var(--ink); }
 .sum-row.grand dd { font-size: 40px; font-weight: 600; line-height: 1.15; letter-spacing: -.01em; }
+/* The shop's currency after a total people read (common.js fills [data-currency]) */
+.currency { font-size: .4em; font-weight: 500; letter-spacing: 0; color: var(--ink-2); }
 .pay { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 8px 12px; margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--line); }
 .pay label { font-size: 14px; color: var(--ink-2); }
 .pay-input { font-size: 19px; font-weight: 600; }
@@ -648,15 +738,19 @@ select.input { padding-block: 7px; }
 .slip-head { display: grid; gap: 2px; padding-bottom: 12px; border-bottom: 1px dashed var(--line); text-align: center; }
 .slip-head strong { font-size: 18px; font-weight: 600; }
 .slip-head span { font-size: 13px; color: var(--ink-2); }
+.slip-logo { display: block; max-width: 100%; max-height: 80px; margin: 0 auto 6px; object-fit: contain; }
 .slip-items { width: 100%; margin: 8px 0; border-collapse: collapse; font-size: 14px; }
 .slip-items th { padding: 4px 0; font-size: 12px; font-weight: 500; color: var(--muted); text-align: start; }
 .slip-items td { padding: 6px 0; border-bottom: 1px dotted var(--line); vertical-align: top; }
 .slip-items small { display: block; font-size: 12px; color: var(--muted); }
 .slip-items .end { text-align: end; }
 .slip-sum { display: grid; gap: 4px; margin: 0; padding-top: 10px; border-top: 1px dashed var(--line); }
-.slip-sum div { display: flex; justify-content: space-between; }
-.slip-sum dd { margin: 0; }
+/* On a 58 mm roll a long total with its currency may not fit beside its label: never touching
+   it, it goes under it at the end, the currency kept with the amount */
+.slip-sum div { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0 8px; }
+.slip-sum dd { margin: 0; margin-inline-start: auto; text-align: end; }
 .slip-sum .grand { font-size: 20px; font-weight: 600; }
+.slip-currency { font-size: .7em; font-weight: 500; white-space: nowrap; }
 .slip-foot { margin: 14px 0 0; text-align: center; font-size: 13px; color: var(--muted); }
 .sale-dialog .dialog-actions { padding: 14px 22px 20px; }
 
@@ -787,6 +881,7 @@ select.input { padding-block: 7px; }
   .cart-bar.is-empty { display: none; }
   .cart-bar-count { display: grid; place-items: center; min-width: 28px; height: 28px; padding: 0 8px; border-radius: 999px; background: rgb(255 255 255 / .22); font-size: 14px; }
   .cart-bar-total { margin-inline-start: auto; font-size: 19px; }
+  .cart-bar-total .currency { font-size: .75em; color: inherit; opacity: .85; }
   body.cart-open .cart-bar { display: none; }
   .keys-hint { display: none; }
 }
@@ -809,7 +904,8 @@ select.input { padding-block: 7px; }
     position: fixed; inset: auto 0 0 0; z-index: 40;
     height: calc(var(--bottom-nav-h) + env(safe-area-inset-bottom));
     padding-bottom: env(safe-area-inset-bottom);
-    display: grid; grid-template-columns: repeat(5, 1fr);
+    /* One column per link the account can use (a cashier's bar has fewer) */
+    display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr);
     background: var(--ink); box-shadow: 0 -1px 0 rgb(255 255 255 / .08);
   }
   .nav > a,
@@ -876,7 +972,15 @@ select.input { padding-block: 7px; }
   .expense-fields .field-wide { grid-column: 1 / -1; }
   .debt-total { display: block; }
   .export-row .btn, .export-month { flex: 1 1 100%; }
+  .card-head .btn { flex: 1 1 100%; }
+  .ptable.staff-table .row-actions { flex-wrap: wrap; }
+  /* One line each: the name, the permissions, the last sign-in, the buttons */
+  .ptable.staff-table td { grid-column: 1 / -1; }
+  .ptable.staff-table .row-actions .btn { flex: 1 1 auto; }
   .export-month .input { flex: 1; }
+  .receipt-settings { grid-template-columns: minmax(0, 1fr); }
+  .receipt-preview-wrap { position: static; }
+  .default-row .btn { flex: 1 1 100%; }
 
   /* Dialogs become bottom sheets; in forms the buttons stay pinned at the bottom while
      the fields scroll, so Save is always in reach */
@@ -1040,12 +1144,35 @@ select.input { padding-block: 7px; }
   .scan-input { padding-inline-end: 60px; }
 }
 
+/* The receipt as printed (receipt.js): a block of its own at the end of the page, unseen on
+   screen, and alone on paper at its roll's width: an 80 mm roll prints 72 mm of it and a
+   58 mm roll 48 mm, in black, which thermal printers print best. receipt.js lays it out out
+   of sight to measure its length, and makes the page exactly that long. Its type is set
+   here, not inherited, so the narrow paper's small-screen rules cannot change that length. */
+.print-area { display: none; color: #000; background: #fff; font-size: 14px; line-height: 1.5; }
+.print-area.is-measuring { display: block; position: fixed; top: 0; left: 0; z-index: -1; visibility: hidden; pointer-events: none; }
+.print-area[data-paper="80"] { width: 80mm; padding: 2mm 4mm 3mm; }
+.print-area[data-paper="58"] { width: 58mm; padding: 2mm 5mm 3mm; font-size: 13px; }
+.print-area[data-paper="a4"] { width: 100%; }
+.print-area .slip { padding: 0; }
+.print-area[data-paper="a4"] .slip { max-width: 140mm; margin: 0 auto; }
+.print-area .slip-head span,
+.print-area .slip-items th,
+.print-area .slip-items small,
+.print-area .slip-foot { color: #000; }
+.print-area .slip-head,
+.print-area .slip-sum,
+.print-area .slip-items td { border-color: #000; }
+.print-area .slip-logo { max-height: 22mm; }
+.print-area .slip-items .end { padding-inline-start: 2mm; }
+.print-area[data-paper="58"] .slip-items { font-size: 12px; }
+.print-area[data-paper="58"] .slip-head strong { font-size: 15px; }
+.print-area[data-paper="58"] .slip-sum .grand { font-size: 16px; }
+
 @media print {
   @page { margin: 4mm; }
-  body { background: #fff; }
-  body * { visibility: hidden; }
-  .printable, .printable * { visibility: visible; }
-  .printable { position: fixed; inset: 0 0 auto 0; }
-  .dialog { box-shadow: none; }
-  .dialog::backdrop { background: none; }
+  body.printing { display: block; height: auto; min-height: 0; padding: 0; overflow: visible; background: #fff; }
+  body.printing > :not(.print-area) { display: none !important; }
+  body.printing > .print-area { display: block; }
 }
+

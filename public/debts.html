@@ -79,7 +79,8 @@
         </div>
       </div>
       <div class="field-row">
-        <div class="field">
+        <!-- Only the owner dates an entry: a staff account's payment is dated now (routes/customers.js) -->
+        <div class="field" data-need="owner">
           <label for="enDate">التاريخ</label>
           <input class="input" id="enDate" type="date">
         </div>

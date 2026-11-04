@@ -3,7 +3,6 @@ import {
   toast,
   formatMoney,
   formatQty,
-  formatWeight,
   formatDateTime,
   escapeHtml,
   roundMoney,
@@ -16,11 +15,15 @@ import {
   INVOICES,
   dayQuery,
   shopInfo,
+  refreshShop,
   newClientId,
   withSignIn,
+  session,
+  can,
 } from './common.js';
 import { scanBarcodes } from './scanner.js';
 import { isSaleOf } from './idempotency.js';
+import { receiptHtml, prepareReceipt, printPrepared, clearReceipt } from './receipt.js';
 
 const MAX_QTY = 10000;
 // On touch screens, refocusing the scan box would keep popping up the keyboard
@@ -38,15 +41,27 @@ const state = {
   busy: false,
   payType: 'cash',
   customers: [],
-  // The shop's name, receipt note, phone and address for the receipt (GET /api/shop)
-  shop: { shopName: '', receiptNote: '', phone: '', address: '' },
+  // The shop's settings for the receipt and its printing (GET /api/shop), and its logo
+  shop: { shopName: '', receiptNote: '', phone: '', address: '', currency: '', receiptPaper: '80', receiptShowPhone: true, receiptShowAddress: true, receiptShowCashier: false, autoPrint: false },
+  logo: '',
+  logoVersion: '',
   // The id of the sale this cart becomes, made with its first item and sent with every try
   // to complete it, so trying again after a lost answer never records it twice
   clientSaleId: null,
 };
-shopInfo.then((shop) => {
+// The logo is fetched on its own (GET /api/shop/logo), and again only when it changed
+async function applyShop(shop) {
+  if (!shop) return;
   state.shop = shop;
-});
+  if (shop.logoVersion === state.logoVersion) return;
+  try {
+    state.logo = shop.logoVersion ? (await api('/shop/logo')).receiptLogo : '';
+    state.logoVersion = shop.logoVersion;
+  } catch {
+    // offline: the receipt shows the logo it had, or none
+  }
+}
+shopInfo.then(applyShop);
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -118,7 +133,13 @@ async function loadCatalog() {
   renderCart();
 }
 
+// Today's sales in the top bar, for an account that sees the sales figures (`reports`)
 async function loadToday() {
+  await session;
+  if (!can('reports')) {
+    els.today.textContent = '';
+    return;
+  }
   try {
     const { summary } = await api(`/sales?${dayQuery(new Date())}`);
     els.today.innerHTML = `مبيعات اليوم <strong class="num">${formatMoney(summary.total)}</strong> (${arCount(summary.count, INVOICES)})`;
@@ -163,7 +184,7 @@ function renderTiles() {
     els.tiles.innerHTML = `<div class="empty">
       <h3>لا توجد منتجات بعد</h3>
       <p>أضف الأقسام والمنتجات من صفحة المنتجات، ثم عد إلى هنا للبيع.</p>
-      <a class="btn btn-primary" href="/">الذهاب إلى المنتجات</a>
+      <a class="btn btn-primary" href="/" data-need="products">الذهاب إلى المنتجات</a>
     </div>`;
     return;
   }
@@ -451,7 +472,7 @@ function restoreCart() {
   if (!lines.length) return;
   state.cart = lines;
   state.clientSaleId = typeof saved.clientSaleId === 'string' ? saved.clientSaleId : newClientId();
-  if (saved.payType === 'credit') {
+  if (saved.payType === 'credit' && can('credit')) {
     setPayType('credit');
     els.customerInput.value = String(saved.customer ?? '');
   }
@@ -463,7 +484,15 @@ function restoreCart() {
 
 const customerLabel = (c) => (c.phone ? `${c.name} (${c.phone})` : c.name);
 
+// Only for selling on credit (`credit`). A cart restored on credit before the account was
+// known (or after the owner took `credit` away) goes back to cash, or the hidden «نقدًا»
+// could not be pressed and the sale would only be refused.
 async function loadCustomers() {
+  await session;
+  if (!can('credit')) {
+    if (state.payType === 'credit') setPayType('cash');
+    return;
+  }
   try {
     state.customers = await api('/customers');
     if (document.activeElement === els.customerInput) renderSuggestions();
@@ -778,6 +807,7 @@ async function checkout() {
   }
   state.busy = true;
   state.clientSaleId ??= newClientId();
+  const sentId = state.clientSaleId;
   updatePayment();
   const body = {
     items: state.cart.map((l) => ({ productId: l.productId, quantity: l.qty, mode: l.mode })),
@@ -809,7 +839,7 @@ async function checkout() {
     }
     renderCart();
     openInvoiceSheet(false);
-    showReceipt(sale);
+    showReceipt(sale, sentId);
     loadToday();
     loadCatalog().catch(() => {}); // stock went down
   } catch (err) {
@@ -822,55 +852,56 @@ async function checkout() {
   }
 }
 
-// "9,000 للعلبة (10 قطع)", "1,000 للكيلو", "250 للقطعة"
-function receiptPrice(item) {
-  const price = `<span class="num">${formatMoney(item.unitPrice)}</span>`;
-  if (item.mode === 'wholesale') return `${price} لل${packName(item.unit, item.packSize)}`;
-  return `${price} ${item.unit === 'kg' ? 'للكيلو' : 'للقطعة'}`;
+/*
+ * The sales whose receipt this tab printed by itself, by their id (clientId), in
+ * sessionStorage so that a reload or a duplicated tab knows them too. The server marks the
+ * answer to a sale sent again `repeated`, but that is also the answer to a sale whose first
+ * answer was lost on the way (the network dropped after the sale was recorded, and the
+ * cashier pressed «إتمام البيع» again): its receipt never showed, so it is printed then.
+ */
+const PRINTED_KEY = 'pos.printed';
+const PRINTED_KEEP = 20;
+// And in memory, for where storage is blocked
+const printedHere = new Set();
+
+function printedBefore(id) {
+  try {
+    return JSON.parse(sessionStorage.getItem(PRINTED_KEY) ?? '[]').includes(id);
+  } catch {
+    return false;
+  }
 }
 
-function showReceipt(sale) {
+function markPrinted(id) {
+  try {
+    const ids = JSON.parse(sessionStorage.getItem(PRINTED_KEY) ?? '[]');
+    sessionStorage.setItem(PRINTED_KEY, JSON.stringify([...(Array.isArray(ids) ? ids : []), id].slice(-PRINTED_KEEP)));
+  } catch {
+    // Storage blocked: printedHere has it
+  }
+}
+
+/*
+ * The receipt of a completed sale (receipt.js), ready to print as soon as it shows: by the
+ * button, by the keyboard, or by itself once per sale when the owner turned «طباعة تلقائية»
+ * on: never again for a sale this tab printed already (sent twice, `sentId` the id it was
+ * sent with). A failed sale or a return shows no receipt at all.
+ */
+function showReceipt(sale, sentId) {
   state.lastSale = sale;
-  els.saleReceipt.innerHTML = `<div class="slip">
-    <div class="slip-head">
-      <strong>${escapeHtml(state.shop.shopName || 'نقطة البيع')}</strong>
-      ${state.shop.address ? `<span>${escapeHtml(state.shop.address)}</span>` : ''}
-      ${state.shop.phone ? `<span class="num">${escapeHtml(state.shop.phone)}</span>` : ''}
-      <span>فاتورة رقم <span class="num">${sale.number}</span></span>
-      <span>${formatDateTime(sale.createdAt)}</span>
-    </div>
-    <table class="slip-items">
-      <thead><tr><th>الصنف</th><th class="end">الكمية</th><th class="end">المبلغ</th></tr></thead>
-      <tbody>${sale.items
-        .map(
-          (i) => `<tr>
-          <td>${escapeHtml(i.name)}<small>${receiptPrice(i)}</small></td>
-          <td class="end num">${i.unit === 'kg' && i.mode !== 'wholesale' ? formatWeight(i.quantity) : formatQty(i.quantity)}</td>
-          <td class="end num">${formatMoney(i.lineTotal)}</td>
-        </tr>`,
-        )
-        .join('')}</tbody>
-    </table>
-    <dl class="slip-sum">
-      <div class="grand"><dt>الإجمالي</dt><dd class="num">${formatMoney(sale.total)}</dd></div>
-      ${
-        sale.paymentType === 'credit'
-          ? `<div><dt>بالدين على</dt><dd>${escapeHtml(sale.customerName)}</dd></div>
-            <div><dt>المدفوع الآن</dt><dd class="num">${formatMoney(sale.paid)}</dd></div>
-            <div><dt>أُضيف إلى الدين</dt><dd class="num">${formatMoney(sale.debt)}</dd></div>
-            <div><dt>مجموع دينه الآن</dt><dd class="num">${formatMoney(sale.customerBalance)}</dd></div>`
-          : `<div><dt>المدفوع</dt><dd class="num">${formatMoney(sale.paid)}</dd></div>
-            <div><dt>الباقي</dt><dd class="num">${formatMoney(sale.change)}</dd></div>`
-      }
-    </dl>
-    <p class="slip-foot">${escapeHtml(state.shop.receiptNote || 'شكرًا لزيارتكم')}</p>
-  </div>`;
+  const html = receiptHtml(sale, state.shop, state.logo);
+  els.saleReceipt.innerHTML = html;
   els.saleDialog.showModal();
   els.newSale.focus();
+  prepareReceipt(html, state.shop.receiptPaper);
+  if (!state.shop.autoPrint || printedHere.has(sentId) || printedBefore(sentId)) return;
+  printedHere.add(sentId);
+  markPrinted(sentId);
+  printPrepared();
 }
 
 els.newSale.addEventListener('click', () => els.saleDialog.close());
-els.print.addEventListener('click', () => window.print());
+els.print.addEventListener('click', () => printPrepared());
 els.cancelSale.addEventListener('click', async () => {
   const sale = state.lastSale;
   const question =
@@ -894,7 +925,10 @@ els.cancelSale.addEventListener('click', async () => {
     toast(err.message, 'error');
   }
 });
-els.saleDialog.addEventListener('close', focusScan);
+els.saleDialog.addEventListener('close', () => {
+  clearReceipt();
+  focusScan();
+});
 
 /* Keyboard */
 
@@ -925,6 +959,7 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
     loadCatalog().catch(() => {});
     loadToday();
+    refreshShop().then(applyShop); // the receipt as the owner set it since
   }
 });
 

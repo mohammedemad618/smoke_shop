@@ -168,9 +168,9 @@ function renderDetail() {
       </div>
       <div class="catalog-tools">
         <button class="btn btn-go" type="button" data-entry="payment"${c.balance > 0 ? '' : ' disabled'}>تسديد</button>
-        <button class="btn" type="button" data-entry="manual">إضافة دين</button>
+        <button class="btn" type="button" data-entry="manual" data-need="owner">إضافة دين</button>
         <button class="btn btn-ghost" type="button" data-edit-customer>تعديل</button>
-        <button class="btn btn-ghost danger" type="button" data-delete-customer>حذف</button>
+        <button class="btn btn-ghost danger" type="button" data-delete-customer data-need="owner">حذف</button>
       </div>
     </div>
     <div class="table-wrap">
@@ -194,19 +194,21 @@ function renderDetail() {
                 .map(
                   (e) => `<tr>
                   <td>${formatDateTime(e.date)}</td>
-                  <td>${ENTRY_LABELS[e.kind](e)}${e.note ? `<small class="pcat">${escapeHtml(e.note)}</small>` : ''}</td>
+                  <td>${ENTRY_LABELS[e.kind](e)}${e.note ? `<small class="pcat">${escapeHtml(e.note)}</small>` : ''}${
+                    e.madeBy?.name ? `<small class="pcat">بواسطة ${escapeHtml(e.madeBy.name)}</small>` : ''
+                  }</td>
                   <td class="end num ${e.amount > 0 ? 'owes-text' : 'credit-text'}">${e.amount > 0 ? '+' : '−'}${formatMoney(Math.abs(e.amount))}</td>
                   <td class="end num">${formatMoney(e.after)}</td>
                   <td class="row-actions">${
                     e.kind === 'payment' || e.kind === 'manual'
-                      ? `<button class="btn btn-sm btn-ghost danger" type="button" data-delete-entry="${e._id}">حذف</button>`
+                      ? `<button class="btn btn-sm btn-ghost danger" type="button" data-delete-entry="${e._id}" data-need="owner">حذف</button>`
                       : ''
                   }</td>
                 </tr>`,
                 )
                 .join('')}</tbody>
             </table></div>`
-          : `<div class="empty"><h3>لا توجد سجلات بعد</h3><p>البيع بالدين من الكاشير يُسجَّل هنا تلقائيًا، أو أضف دينًا سابقًا من زر «إضافة دين».</p></div>`
+          : `<div class="empty"><h3>لا توجد سجلات بعد</h3><p>البيع بالدين من الكاشير يُسجَّل هنا تلقائيًا<span data-need="owner">، أو أضف دينًا سابقًا من زر «إضافة دين»</span>.</p></div>`
       }
     </div>`;
 }

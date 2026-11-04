@@ -32,9 +32,26 @@ async function product(shop, { barcode, name, salePrice, stock = 0 }) {
   return ok(shop, 'POST', '/products', { name, barcode, category: category._id, purchasePrice: 100, salePrice, trackStock: true, stock });
 }
 
+// What a new shop's settings read as (models/Setting.js SETTING_DEFAULTS), its name aside
+const NEW_SHOP = {
+  receiptNote: '',
+  currency: 'د.ع',
+  phone: '',
+  address: '',
+  receiptPaper: '80',
+  receiptShowPhone: true,
+  receiptShowAddress: true,
+  receiptShowCashier: false,
+  autoPrint: false,
+  defaultTrackStock: true,
+  defaultLowStockAlert: 5,
+  defaultBlockWhenOut: false,
+  logoVersion: '',
+};
+
 test('each shop starts with its own settings and the category «عام»', async () => {
-  assert.deepStrictEqual(await ok(a, 'GET', '/shop'), { shopName: 'متجر shop-a', receiptNote: '', phone: '', address: '' });
-  assert.deepStrictEqual(await ok(b, 'GET', '/shop'), { shopName: 'متجر shop-b', receiptNote: '', phone: '', address: '' });
+  assert.deepStrictEqual(await ok(a, 'GET', '/shop'), { shopName: 'متجر shop-a', ...NEW_SHOP });
+  assert.deepStrictEqual(await ok(b, 'GET', '/shop'), { shopName: 'متجر shop-b', ...NEW_SHOP });
   assert.deepStrictEqual((await ok(a, 'GET', '/categories')).map((c) => c.name), ['عام']);
   assert.deepStrictEqual((await ok(b, 'GET', '/categories')).map((c) => c.name), ['عام']);
 });

@@ -2,6 +2,7 @@ import { Router } from 'express';
 import mongoose from 'mongoose';
 import { httpError } from '../lib/errors.js';
 import { escapeRegex, roundQty } from '../lib/util.js';
+import { allow, productFor } from '../lib/permissions.js';
 
 const router = Router();
 const EDITABLE = [
@@ -52,7 +53,9 @@ async function assertCategoryExists(Category, id) {
   }
 }
 
-router.get('/', async (req, res) => {
+// Every account sells, so every account reads the products: without `reports`, without
+// their purchase price (lib/permissions.js)
+router.get('/', allow('selling'), async (req, res) => {
   const { Product } = req.models;
   const filter = {};
   if (req.query.category) filter.category = String(req.query.category);
@@ -66,7 +69,7 @@ router.get('/', async (req, res) => {
     .sort({ name: 1 })
     .populate('category', 'name')
     .lean();
-  res.json(products);
+  res.json(products.map((p) => productFor(req.user, p)));
 });
 
 // What the whole shop is owed and owes: customers' debts, and unpaid supplier invoices
@@ -77,7 +80,7 @@ async function debtTotals({ DebtEntry, Purchase }) {
 
 // What the stock is worth, for the products page. For the whole shop it also brings the
 // debts both ways, which are part of the shop's capital.
-router.get('/valuation', async (req, res) => {
+router.get('/valuation', allow('reports'), async (req, res) => {
   const { Product, StockCount } = req.models;
   const category = String(req.query.category ?? '');
   if (category && !mongoose.isObjectIdOrHexString(category)) throw httpError(400, 'اختر القسم');
@@ -89,24 +92,26 @@ router.get('/valuation', async (req, res) => {
   res.json({ ...stock, debts, lastCountAt: lastCount?.appliedAt ?? null });
 });
 
-router.get('/barcode/:code', async (req, res) => {
+router.get('/barcode/:code', allow('selling'), async (req, res) => {
   const { Product } = req.models;
   const product = await Product.findOne({ barcode: req.params.code.trim() }).populate('category', 'name').lean();
   if (!product) throw httpError(404, 'لا يوجد منتج بهذا الباركود');
-  res.json(product);
+  res.json(productFor(req.user, product));
 });
 
-router.post('/', async (req, res) => {
+// The purchase price can be given without `reports` (a new product needs one); it is just
+// never sent back
+router.post('/', allow('products'), async (req, res) => {
   const { Product, Category } = req.models;
   const data = pickEditable(req.body);
   checkUnits(data);
   await assertCategoryExists(Category, data.category);
   const product = await Product.create(data);
   await product.populate('category', 'name');
-  res.status(201).json(product);
+  res.status(201).json(productFor(req.user, product));
 });
 
-router.put('/:id', async (req, res) => {
+router.put('/:id', allow('products'), async (req, res) => {
   const { Product, Category } = req.models;
   const data = pickEditable(req.body);
   const existing = await Product.findById(req.params.id).lean();
@@ -118,10 +123,10 @@ router.put('/:id', async (req, res) => {
     runValidators: true,
   }).populate('category', 'name');
   if (!product) throw httpError(404, 'المنتج غير موجود');
-  res.json(product);
+  res.json(productFor(req.user, product));
 });
 
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', allow('owner'), async (req, res) => {
   const { Product } = req.models;
   const deleted = await Product.findByIdAndDelete(req.params.id);
   if (!deleted) throw httpError(404, 'المنتج غير موجود');

@@ -110,6 +110,14 @@ function renderSummary({ total, byCategory }) {
     <p class="hint">تُطرح المصاريف من صافي الربح في صفحة المبيعات وفي الملخص.</p>`;
 }
 
+// Who recorded the expense, and who changed it since (none on expenses from before accounts were recorded)
+function madeByNote(e) {
+  const parts = [];
+  if (e.madeBy?.name) parts.push(`سجّله ${escapeHtml(e.madeBy.name)}`);
+  if (e.editedBy?.name) parts.push(`عدّله ${escapeHtml(e.editedBy.name)}`);
+  return parts.length ? `<small class="pcat made-by-note">${parts.join('، ')}</small>` : '';
+}
+
 function renderList() {
   if (!expenses.length) {
     els.area.innerHTML = `<div class="empty">
@@ -131,12 +139,12 @@ function renderList() {
       .map(
         (e) => `<tr${e._id === editingId ? ' class="is-editing"' : ''}>
         <td>${rowDay.format(new Date(e.date))}</td>
-        <td class="pname">${escapeHtml(e.category)}</td>
+        <td class="pname">${escapeHtml(e.category)}${madeByNote(e)}</td>
         <td class="pcat">${escapeHtml(e.note || '–')}</td>
         <td class="end num">${formatMoney(e.amount)}</td>
         <td class="row-actions">
           <button class="btn btn-sm" type="button" data-edit="${e._id}">تعديل</button>
-          <button class="btn btn-sm btn-ghost danger" type="button" data-delete="${e._id}">حذف</button>
+          <button class="btn btn-sm btn-ghost danger" type="button" data-delete="${e._id}" data-need="owner">حذف</button>
         </td>
       </tr>`,
       )

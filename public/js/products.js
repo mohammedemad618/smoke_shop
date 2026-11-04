@@ -1,4 +1,4 @@
-import { api, toast, formatMoney, formatQty, escapeHtml, arCount, packName, PRODUCTS } from './common.js';
+import { api, toast, formatMoney, formatQty, escapeHtml, arCount, packName, PRODUCTS, can, shopInfo } from './common.js';
 import { randomStoreBarcode } from './barcode.js';
 import { scanBarcode } from './scanner.js';
 
@@ -15,6 +15,9 @@ const state = {
   editingId: null,
   // The stock shown in the edit window, to tell whether it was changed
   editingStock: null,
+  // The product being edited came without its purchase price (an account without
+  // `reports`): a blank field leaves it as it is
+  editingCostHidden: false,
   renamingId: null,
   // Which part of the stock is shown, and in what order (see STOCK_FILTERS and SORTS)
   stockFilter: '',
@@ -37,6 +40,7 @@ const els = {
   dialogTitle: $('productDialogTitle'),
   error: $('productError'),
   marginNote: $('marginNote'),
+  purchaseHint: $('purchaseHint'),
   saveNext: $('saveNextBtn'),
   generate: $('genBarcodeBtn'),
   camera: $('cameraScanBtn'),
@@ -67,6 +71,14 @@ const unitForm = {
   wholesaleNote: $('wholesaleNote'),
 };
 const DEFAULT_LOW_STOCK = 5;
+// What a new product starts with, as the owner set it in the settings («البيع والمخزون»);
+// until the shop's settings arrive, what a new product always started with
+const newProduct = { trackStock: true, lowStockAlert: DEFAULT_LOW_STOCK, blockWhenOut: false };
+shopInfo.then((shop) => {
+  newProduct.trackStock = shop.defaultTrackStock;
+  newProduct.lowStockAlert = shop.defaultLowStockAlert;
+  newProduct.blockWhenOut = shop.defaultBlockWhenOut;
+});
 const PER_UNIT = { piece: 'للقطعة', kg: 'للكيلو' };
 let formUnit = 'piece';
 
@@ -123,7 +135,7 @@ function renderCategories() {
       const actions = c._id
         ? `<span class="rail-actions">
             <button class="icon-btn" type="button" data-rename="${c._id}" title="تعديل الاسم" aria-label="تعديل اسم ${name}">${ICONS.edit}</button>
-            <button class="icon-btn danger" type="button" data-delete-category="${c._id}" title="حذف القسم" aria-label="حذف قسم ${name}">${ICONS.trash}</button>
+            <button class="icon-btn danger" type="button" data-delete-category="${c._id}" title="حذف القسم" aria-label="حذف قسم ${name}" data-need="owner">${ICONS.trash}</button>
           </span>`
         : '';
       return `<li class="rail-item${active ? ' is-active' : ''}">
@@ -277,9 +289,9 @@ function renderProducts() {
       <th scope="col">المنتج</th>
       <th scope="col">الباركود</th>
       <th scope="col">المخزن</th>
-      <th scope="col" class="end">سعر الشراء</th>
+      <th scope="col" class="end" data-need="reports">سعر الشراء</th>
       <th scope="col" class="end">سعر البيع</th>
-      <th scope="col" class="end">الربح</th>
+      <th scope="col" class="end" data-need="reports">الربح</th>
       <th scope="col"><span class="sr-only">إجراءات</span></th>
     </tr></thead>
     <tbody>${products
@@ -291,12 +303,12 @@ function renderProducts() {
         </td>
         <td><span class="num barcode">${escapeHtml(p.barcode)}</span></td>
         <td>${stockCell(p)}</td>
-        <td class="end num">${formatMoney(p.purchasePrice)}</td>
+        <td class="end num" data-need="reports">${formatMoney(p.purchasePrice)}</td>
         <td class="end">${salePriceCell(p)}</td>
-        <td class="end">${profitCell(p)}</td>
+        <td class="end" data-need="reports">${profitCell(p)}</td>
         <td class="row-actions">
           <button class="btn btn-sm" type="button" data-edit="${p._id}">تعديل</button>
-          <button class="btn btn-sm btn-ghost danger" type="button" data-delete="${p._id}">حذف</button>
+          <button class="btn btn-sm btn-ghost danger" type="button" data-delete="${p._id}" data-need="owner">حذف</button>
         </td>
       </tr>`,
       )
@@ -405,6 +417,8 @@ function readForm() {
     hasWholesale: fields.hasWholesale.checked,
     trackStock: fields.trackStock.checked,
   };
+  // Not shown to this account: left blank, the product keeps its purchase price
+  if (state.editingCostHidden && fields.purchasePrice.value.trim() === '') delete data.purchasePrice;
   // Without wholesale, the old box size and price are kept for when it is turned back on
   if (data.hasWholesale) {
     data.wholesaleQty = number(fields.wholesaleQty);
@@ -414,11 +428,15 @@ function readForm() {
   if (data.trackStock) {
     // A new product left blank starts at 0; on an edit a blank field is a mistake
     data.stock = number(fields.stock, state.editingId ? NaN : 0);
-    data.lowStockAlert = number(fields.lowStockAlert, DEFAULT_LOW_STOCK);
+    data.lowStockAlert = number(fields.lowStockAlert, newProduct.lowStockAlert);
     data.blockWhenOut = fields.blockWhenOut.checked;
     // Stock left as it was shown is not sent: sales and purchases made since the window
     // opened would otherwise be overwritten by the old figure
     if (state.editingId && state.editingStock !== null && data.stock === state.editingStock) delete data.stock;
+  } else if (!state.editingId) {
+    // A new product not tracked yet still takes the shop's defaults, for the day it is
+    data.lowStockAlert = newProduct.lowStockAlert;
+    data.blockWhenOut = newProduct.blockWhenOut;
   }
   return data;
 }
@@ -461,7 +479,7 @@ function updateWholesaleNote() {
   }
   const per = PER_UNIT[formUnit];
   const parts = [`أي ${formatMoney(price / size)} ${per}${Number.isFinite(sell) ? ` بدل ${formatMoney(sell)}` : ''}`];
-  if (Number.isFinite(buy)) {
+  if (Number.isFinite(buy) && can('reports')) {
     const profit = price - buy * size;
     parts.push(profit < 0 ? `وخسارة ${formatMoney(-profit)} في كل جملة` : `وربح الجملة ${formatMoney(profit)}`);
     note.classList.add(profit < 0 ? 'is-loss' : 'is-gain');
@@ -469,12 +487,13 @@ function updateWholesaleNote() {
   note.textContent = parts.join('، ');
 }
 
+// A product's own stock settings, or a new product's from the shop's defaults
 function setStockFields(product) {
-  fields.trackStock.checked = product ? Boolean(product.trackStock) : true;
+  fields.trackStock.checked = product ? Boolean(product.trackStock) : newProduct.trackStock;
   fields.stock.value = product?.trackStock ? product.stock : '';
   state.editingStock = product?.trackStock ? product.stock : null;
-  fields.lowStockAlert.value = product?.lowStockAlert ?? DEFAULT_LOW_STOCK;
-  fields.blockWhenOut.checked = Boolean(product?.blockWhenOut);
+  fields.lowStockAlert.value = product ? (product.lowStockAlert ?? DEFAULT_LOW_STOCK) : newProduct.lowStockAlert;
+  fields.blockWhenOut.checked = product ? Boolean(product.blockWhenOut) : newProduct.blockWhenOut;
   stockOptions.hidden = !fields.trackStock.checked;
 }
 
@@ -482,7 +501,7 @@ function validate(data) {
   if (!data.barcode) return { field: 'barcode', message: 'أدخل رمز الباركود أو اضغط «توليد رمز»' };
   if (!data.name) return { field: 'name', message: 'أدخل اسم المنتج' };
   if (!data.category) return { field: 'category', message: 'اختر القسم' };
-  if (!Number.isFinite(data.purchasePrice) || data.purchasePrice < 0) {
+  if ('purchasePrice' in data && (!Number.isFinite(data.purchasePrice) || data.purchasePrice < 0)) {
     return { field: 'purchasePrice', message: 'أدخل سعر شراء صحيحًا' };
   }
   if (!Number.isFinite(data.salePrice) || data.salePrice < 0) {
@@ -551,11 +570,15 @@ function openProductDialog(product = null) {
   renderCategorySelect();
   els.dialogTitle.textContent = product ? 'تعديل المنتج' : 'منتج جديد';
   els.saveNext.hidden = Boolean(product);
+  // Without `reports` the server sends no purchase price: it can be given, never read
+  state.editingCostHidden = Boolean(product) && product.purchasePrice === undefined;
+  els.purchaseHint.hidden = !state.editingCostHidden;
+  fields.purchasePrice.placeholder = state.editingCostHidden ? 'كما هو' : '';
   if (product) {
     fields.barcode.value = product.barcode;
     fields.name.value = product.name;
     fields.category.value = product.category?._id ?? '';
-    fields.purchasePrice.value = product.purchasePrice;
+    fields.purchasePrice.value = product.purchasePrice ?? '';
     fields.salePrice.value = product.salePrice;
   } else {
     fields.category.value = state.activeCategory;

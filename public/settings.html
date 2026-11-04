@@ -37,7 +37,9 @@
       <h1>الإعدادات</h1>
     </div>
 
-    <section class="settings-card" aria-labelledby="shopTitle">
+    <!-- The shop's own settings, its staff and its files are its owner's: a staff account sees
+         «حسابك» only (data-need, style.css) -->
+    <section class="settings-card" aria-labelledby="shopTitle" data-need="owner">
       <h2 id="shopTitle">المتجر</h2>
       <form id="shopForm" novalidate>
         <p class="form-error" id="shopError" role="alert" hidden></p>
@@ -50,17 +52,12 @@
           <div class="field">
             <label for="phone">الهاتف</label>
             <input id="phone" class="input" type="tel" inputmode="tel" maxlength="30" dir="ltr" autocomplete="off">
-            <p class="hint">يظهر على الإيصال إن كتبته</p>
+            <p class="hint">يظهر على الإيصال إن كتبته، ما لم تُخفه في «الإيصال والطباعة»</p>
           </div>
         </div>
         <div class="field">
           <label for="address">عنوان المحل</label>
           <input id="address" class="input" maxlength="120" placeholder="مثل: بغداد، الكرادة، قرب ساحة الحرية">
-        </div>
-        <div class="field">
-          <label for="receiptNote">ملاحظة الإيصال</label>
-          <input id="receiptNote" class="input" maxlength="120" placeholder="شكرًا لزيارتكم">
-          <p class="hint">سطر في آخر الإيصال مكان «شكرًا لزيارتكم»، مثل: البضاعة المباعة لا ترد بعد 3 أيام</p>
         </div>
         <div class="field">
           <label for="timeZone">المنطقة الزمنية</label>
@@ -73,7 +70,103 @@
       </form>
     </section>
 
-    <section class="settings-card" aria-labelledby="exportTitle">
+    <section class="settings-card" aria-labelledby="receiptTitle" data-need="owner">
+      <h2 id="receiptTitle">الإيصال والطباعة</h2>
+      <form id="receiptForm" novalidate>
+        <p class="form-error" id="receiptError" role="alert" hidden></p>
+        <div class="receipt-settings">
+          <div class="receipt-options">
+            <div class="field">
+              <span class="field-label" id="paperLabel">مقاس الورق</span>
+              <div class="segmented segmented-sm" role="group" aria-labelledby="paperLabel" id="paperButtons">
+                <button type="button" data-paper="80" aria-pressed="true">80 مم</button>
+                <button type="button" data-paper="58" aria-pressed="false">58 مم</button>
+                <button type="button" data-paper="a4" aria-pressed="false">A4</button>
+              </div>
+              <p class="hint">لفافة الطابعة الحرارية بعرض 80 أو 58 مم، أو ورقة A4 لطابعة عادية</p>
+            </div>
+            <div class="field">
+              <span class="field-label" id="logoLabel">الشعار</span>
+              <div class="logo-row">
+                <div class="logo-box" id="logoBox"><img id="logoImage" alt="شعار المتجر" hidden><span id="logoEmpty">لا يوجد شعار</span></div>
+                <div class="logo-actions">
+                  <button class="btn btn-sm" type="button" id="logoPick" aria-describedby="logoHint">اختيار صورة</button>
+                  <button class="btn btn-sm btn-ghost danger" type="button" id="logoRemove" hidden>إزالة الشعار</button>
+                </div>
+                <input id="logoInput" type="file" accept="image/png,image/jpeg,image/webp" aria-labelledby="logoLabel" hidden>
+              </div>
+              <p class="hint" id="logoHint">صورة PNG أو JPEG أو WebP في أعلى الإيصال. تُصغَّر في هذا الجهاز إلى 384 نقطة على الأكثر قبل حفظها.</p>
+            </div>
+            <fieldset class="option-box">
+              <legend>ما يظهر على الإيصال</legend>
+              <label class="check"><input type="checkbox" id="receiptShowAddress"> عنوان المحل</label>
+              <label class="check"><input type="checkbox" id="receiptShowPhone"> الهاتف</label>
+              <label class="check"><input type="checkbox" id="receiptShowCashier"> اسم البائع</label>
+            </fieldset>
+            <div class="field">
+              <label for="receiptNote">ملاحظة الإيصال</label>
+              <input id="receiptNote" class="input" maxlength="120" placeholder="شكرًا لزيارتكم">
+              <p class="hint">سطر في آخر الإيصال مكان «شكرًا لزيارتكم»، مثل: البضاعة المباعة لا ترد بعد 3 أيام</p>
+            </div>
+            <label class="check"><input type="checkbox" id="autoPrint" aria-describedby="autoPrintHint"> طباعة تلقائية بعد كل بيعة</label>
+            <p class="hint" id="autoPrintHint">تفتح نافذة الطباعة وحدها مرة واحدة عند إتمام البيع. لا تُفتح عند إلغاء البيع أو إرجاع أصناف.</p>
+          </div>
+          <div class="receipt-preview-wrap">
+            <span class="field-label">معاينة</span>
+            <div class="receipt-preview" id="receiptPreview" data-paper="80" aria-label="معاينة الإيصال"></div>
+            <p class="preview-note">فاتورة مثال بأصناف تجريبية</p>
+          </div>
+        </div>
+        <div class="dialog-actions">
+          <button class="btn btn-primary" type="submit">حفظ إعدادات الإيصال</button>
+          <button class="btn" type="button" id="testPrint">طباعة تجريبية</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="settings-card" aria-labelledby="salesTitle" data-need="owner">
+      <h2 id="salesTitle">البيع والمخزون</h2>
+      <form id="salesForm" novalidate>
+        <p class="form-error" id="salesError" role="alert" hidden></p>
+        <div class="field currency-field">
+          <label for="currency">العملة</label>
+          <input id="currency" class="input" maxlength="10" placeholder="د.ع" autocomplete="off">
+          <p class="hint">تظهر بجانب الإجمالي في الكاشير وعلى الإيصال. لا تغيّر أي سعر ولا أي حساب.</p>
+        </div>
+        <fieldset class="option-box">
+          <legend>عند إضافة منتج جديد</legend>
+          <p class="hint defaults-lead">قيم يبدأ بها نموذج المنتج الجديد، ويمكن تغييرها لكل منتج. المنتجات الحالية تبقى كما هي.</p>
+          <label class="check"><input type="checkbox" id="defaultTrackStock"> تتبّع الكمية في المخزن</label>
+          <div class="default-row">
+            <div class="field">
+              <label for="defaultLowStockAlert">نبّهني عندما تصل الكمية إلى</label>
+              <input id="defaultLowStockAlert" class="input num" type="number" min="0" max="100000" step="1" inputmode="numeric">
+            </div>
+            <button class="btn btn-sm" type="button" data-apply="lowStockAlert" aria-label="تطبيق حد التنبيه على كل المنتجات الحالية">تطبيق على كل المنتجات الحالية</button>
+          </div>
+          <div class="default-row">
+            <label class="check"><input type="checkbox" id="defaultBlockWhenOut"> منع البيع عند نفاد الكمية</label>
+            <button class="btn btn-sm" type="button" data-apply="blockWhenOut" aria-label="تطبيق منع البيع عند نفاد الكمية على كل المنتجات الحالية">تطبيق على كل المنتجات الحالية</button>
+          </div>
+          <p class="hint">«تطبيق على كل المنتجات الحالية» يضبط القيمة المحفوظة في كل منتج تُتتبَّع كميته، وهذا الخيار وحده: لا تتغير الكميات ولا الأسعار.</p>
+        </fieldset>
+        <div class="dialog-actions">
+          <button class="btn btn-primary" type="submit">حفظ إعدادات البيع والمخزون</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="settings-card" aria-labelledby="staffTitle" data-need="owner">
+      <div class="card-head">
+        <h2 id="staffTitle">الموظفون</h2>
+        <button class="btn btn-primary" id="addStaffBtn" type="button">إضافة موظف</button>
+      </div>
+      <p class="hint staff-lead">لكل موظف اسم دخول وكلمة مرور خاصة به. كل موظف يبيع نقدًا من الكاشير، وما زاد على ذلك تختاره له بالصلاحيات. الإعدادات والموظفون وتصدير البيانات والحذف تبقى لك وحدك.</p>
+      <p class="form-error" id="staffLoadError" role="alert" hidden></p>
+      <div id="staffList"></div>
+    </section>
+
+    <section class="settings-card" aria-labelledby="exportTitle" data-need="owner">
       <h2 id="exportTitle">تصدير البيانات</h2>
       <p class="hint">ملفات CSV تفتح في Excel بالعربية: المنتجات بأسعارها وكمياتها، ومبيعات شهر يومًا بيوم (بنفس أرقام صفحة المبيعات)، وديون الزبائن.</p>
       <div class="export-row">
@@ -116,6 +209,56 @@
       </div>
     </section>
   </main>
+
+  <dialog class="dialog staff-dialog" id="staffDialog" aria-labelledby="staffDialogTitle">
+    <form id="staffForm" novalidate autocomplete="off">
+      <h2 id="staffDialogTitle">إضافة موظف</h2>
+      <p class="form-error" id="staffError" role="alert" hidden></p>
+      <div class="field-row">
+        <div class="field">
+          <label for="staffName">اسم الموظف</label>
+          <input id="staffName" class="input" maxlength="60" placeholder="مثل: علي حسن" aria-describedby="staffNameHint">
+          <p class="hint" id="staffNameHint">يظهر في الفواتير التي يبيعها أو يرجعها</p>
+        </div>
+        <div class="field">
+          <label for="staffUsername">اسم المستخدم</label>
+          <input id="staffUsername" class="input" maxlength="32" dir="ltr" autocapitalize="none" spellcheck="false" autocomplete="off" placeholder="ali" aria-describedby="staffUsernameHint">
+          <p class="hint" id="staffUsernameHint">للدخول: أحرف إنجليزية صغيرة وأرقام ونقطة وشرطة، من 3 إلى 32 حرفًا</p>
+        </div>
+      </div>
+      <fieldset class="option-box staff-permissions">
+        <legend>الصلاحيات</legend>
+        <div class="preset-row">
+          <span class="preset-label" id="presetLabel">اختيار سريع</span>
+          <div class="preset-buttons" role="group" aria-labelledby="presetLabel" id="staffPresets"></div>
+        </div>
+        <p class="perm-always">البيع نقدًا من الكاشير متاح لكل موظف دائمًا</p>
+        <div id="staffPermissionList"></div>
+      </fieldset>
+      <div class="dialog-actions">
+        <button class="btn btn-primary" type="submit" id="staffSubmit">إضافة الموظف</button>
+        <button class="btn btn-ghost" type="button" id="staffCancel">إلغاء</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="dialog credentials-dialog" id="credentialsDialog" aria-labelledby="credentialsTitle">
+    <form method="dialog">
+      <h2 id="credentialsTitle"></h2>
+      <p class="credentials-lead" id="credentialsLead"></p>
+      <dl class="credentials">
+        <div><dt>عنوان المتجر</dt><dd class="num" id="credentialsUrl"></dd></div>
+        <div><dt>اسم المستخدم</dt><dd class="num" id="credentialsUser"></dd></div>
+        <div><dt>كلمة المرور</dt><dd class="num credentials-secret" id="credentialsPassword"></dd></div>
+      </dl>
+      <p class="hint">تظهر الآن فقط ولا تُحفظ في أي مكان. عند أول دخول يختار الموظف كلمة مرور خاصة به.</p>
+      <p class="credentials-status" id="credentialsStatus" role="status"></p>
+      <div class="dialog-actions">
+        <button class="btn btn-primary" type="button" id="credentialsCopy">نسخ الكل</button>
+        <button class="btn btn-ghost" type="submit">تم</button>
+      </div>
+    </form>
+  </dialog>
 
   <div class="toasts" id="toasts"></div>
   <script type="module" src="/js/settings.js"></script>

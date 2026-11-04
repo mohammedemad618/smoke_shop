@@ -1,5 +1,8 @@
-import { api, toast, session, rememberShop, withSignIn } from './common.js';
+import { api, toast, session, rememberShop, withSignIn, isOwnerAccount } from './common.js';
 import { PASSWORD_MIN, passwordLength } from './auth.js';
+import { initStaffCard } from './staff.js';
+import { initReceiptCard, fillReceipt, renderPreview } from './receipt-settings.js';
+import { initStockCard, fillStock } from './stock-settings.js';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -8,7 +11,6 @@ const els = {
   shopName: $('shopName'),
   phone: $('phone'),
   address: $('address'),
-  receiptNote: $('receiptNote'),
   timeZone: $('timeZone'),
   passwordForm: $('passwordForm'),
   passwordError: $('passwordError'),
@@ -66,13 +68,19 @@ function fillShop(settings) {
   els.shopName.value = settings.shopName;
   els.phone.value = settings.phone;
   els.address.value = settings.address;
-  els.receiptNote.value = settings.receiptNote;
   fillZones(settings.timeZone || 'Asia/Baghdad');
 }
 
+// The owner's cards, from one read of the settings; each card saves its own fields
 async function load() {
+  initReceiptCard();
+  initStockCard();
   try {
-    fillShop(await api('/settings'));
+    const settings = await api('/settings');
+    fillShop(settings);
+    fillStock(settings);
+    // Last: its preview reads the other two cards
+    fillReceipt(settings);
   } catch (err) {
     showError(els.shopError, err.message);
   }
@@ -85,7 +93,6 @@ els.shopForm.addEventListener('submit', async (e) => {
     shopName: els.shopName.value.trim(),
     phone: els.phone.value.trim(),
     address: els.address.value.trim(),
-    receiptNote: els.receiptNote.value.trim(),
     timeZone: els.timeZone.value,
   };
   if (!body.shopName) {
@@ -99,6 +106,7 @@ els.shopForm.addEventListener('submit', async (e) => {
     const saved = await withSignIn(() => api('/settings', { method: 'PUT', body }));
     fillShop(saved);
     rememberShop(saved);
+    renderPreview();
     toast('حُفظت إعدادات المتجر');
   } catch (err) {
     showError(els.shopError, err.message);
@@ -170,9 +178,12 @@ exportMonth.value = `${today.getFullYear()}-${pad(today.getMonth() + 1)}`;
 exportMonth.addEventListener('change', salesLink);
 salesLink();
 
-// For password managers: the account the new password belongs to
+// For password managers: the account the new password belongs to. The shop's settings and
+// its staff are the owner's: a staff account has «حسابك» only, and asks for nothing else.
 session.then((me) => {
   const field = document.querySelector('[data-username-field]');
   if (field && me) field.value = me.user.username;
+  if (!isOwnerAccount()) return;
+  load();
+  initStaffCard();
 });
-load();

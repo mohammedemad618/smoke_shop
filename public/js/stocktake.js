@@ -11,6 +11,7 @@ import {
   normalizeArabic,
   PRODUCTS,
   PIECES,
+  can,
 } from './common.js';
 import { scanBarcode } from './scanner.js';
 
@@ -127,7 +128,7 @@ function renderIdle() {
       <h2>عدّ البضاعة الموجودة فعلًا</h2>
       <ol class="count-steps">
         <li>امسح باركود كل منتج على الرفوف، بالقارئ أو بكاميرا الجهاز، واكتب العدد الموجود.</li>
-        <li>يقارن النظام عدّك بالكمية المسجّلة ويُظهر النقص والزيادة وقيمتهما.</li>
+        <li>يقارن النظام عدّك بالكمية المسجّلة ويُظهر النقص والزيادة<span data-need="reports"> وقيمتهما</span>.</li>
         <li>اعتمد الجرد فتُصحَّح الكميات ويُحفظ بتاريخه في السجل.</li>
       </ol>
       <p class="hint">العمل يُحفظ أولًا بأول: يمكنك التوقف والإكمال لاحقًا، أو جرد قسم واحد فقط. المنتجات التي لا تعدّها تبقى كمياتها كما هي.</p>
@@ -145,9 +146,9 @@ function historyTable() {
     <thead><tr>
       <th scope="col">التاريخ</th>
       <th scope="col" class="end">المعدود</th>
-      <th scope="col" class="end">النقص</th>
-      <th scope="col" class="end">الزيادة</th>
-      <th scope="col" class="end">رأس المال بعده</th>
+      <th scope="col" class="end" data-need="reports">النقص</th>
+      <th scope="col" class="end" data-need="reports">الزيادة</th>
+      <th scope="col" class="end" data-need="reports">رأس المال بعده</th>
       <th scope="col"><span class="sr-only">تفاصيل</span></th>
     </tr></thead>
     <tbody>${state.history
@@ -156,9 +157,9 @@ function historyTable() {
         return `<tr>
           <td>${formatDateTime(c.appliedAt)}</td>
           <td class="end"><span class="num">${s.counted ?? 0}</span></td>
-          <td class="end"><span class="num${s.shortValue ? ' loss' : ''}">${formatMoney(s.shortValue)}</span></td>
-          <td class="end"><span class="num">${formatMoney(s.overValue)}</span></td>
-          <td class="end"><span class="num">${formatMoney(s.capital)}</span></td>
+          <td class="end" data-need="reports"><span class="num${s.shortValue ? ' loss' : ''}">${formatMoney(s.shortValue)}</span></td>
+          <td class="end" data-need="reports"><span class="num">${formatMoney(s.overValue)}</span></td>
+          <td class="end" data-need="reports"><span class="num">${formatMoney(s.capital)}</span></td>
           <td class="row-actions"><button class="btn btn-sm" type="button" data-history="${c._id}">التفاصيل</button></td>
         </tr>`;
       })
@@ -210,12 +211,12 @@ function updateOpen() {
       <div class="z-value num">${done} / ${total}</div>
       <div class="progress" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100" aria-label="نسبة المعدود"><span></span></div>
     </div>
-    <div>
+    <div data-need="reports">
       <span class="z-label">النقص</span>
       <div class="z-value num${s.shortValue ? ' is-loss' : ''}">${formatMoney(s.shortValue)}</div>
       <span class="z-note">${s.short ? `في ${arCount(s.short, PRODUCTS)}، بسعر الشراء` : 'لا يوجد حتى الآن'}</span>
     </div>
-    <div>
+    <div data-need="reports">
       <span class="z-label">الزيادة</span>
       <div class="z-value num${s.overValue ? ' is-profit' : ''}">${formatMoney(s.overValue)}</div>
       <span class="z-note">${s.over ? `في ${arCount(s.over, PRODUCTS)}، بسعر الشراء` : 'لا يوجد حتى الآن'}</span>
@@ -288,7 +289,7 @@ function countRow(p) {
     <td>${recorded === null ? '<span class="muted">غير مسجّل</span>' : `<span class="num">${qtyIn(recorded, unit)}</span>`}</td>
     <td>${line ? `<strong class="num">${qtyIn(line.counted, unit)}</strong>` : '<span class="muted">لم يُعدّ</span>'}</td>
     <td>${diff}</td>
-    <td class="end">${value}</td>
+    <td class="end" data-need="reports">${value}</td>
     <td class="row-actions"><button class="btn btn-sm${line ? '' : ' btn-primary'}" type="button" data-count="${p._id}">${line ? 'تعديل' : 'عدّ'}</button></td>
   </tr>`;
 }
@@ -313,7 +314,7 @@ function renderList() {
       <th scope="col">المسجّل</th>
       <th scope="col">المعدود</th>
       <th scope="col">الفرق</th>
-      <th scope="col" class="end">قيمة الفرق</th>
+      <th scope="col" class="end" data-need="reports">قيمة الفرق</th>
       <th scope="col"><span class="sr-only">عدّ</span></th>
     </tr></thead>
     <tbody>${products.map(countRow).join('')}</tbody>
@@ -436,9 +437,10 @@ function updateCountDiff() {
     note.classList.add('is-gain');
     return;
   }
-  const value = formatMoney(Math.abs(diff) * p.purchasePrice);
-  note.textContent =
-    diff < 0 ? `${lead}نقص ${amount(-diff, unit)}، قيمته ${value}` : `${lead}زيادة ${amount(diff, unit)}، قيمتها ${value}`;
+  // Its value at purchase price, for an account that sees costs (`reports`)
+  const value = can('reports') ? formatMoney(Math.abs(diff) * p.purchasePrice) : null;
+  const worth = (word) => (value === null ? '' : `، ${word} ${value}`);
+  note.textContent = diff < 0 ? `${lead}نقص ${amount(-diff, unit)}${worth('قيمته')}` : `${lead}زيادة ${amount(diff, unit)}${worth('قيمتها')}`;
   note.classList.add(diff < 0 ? 'is-loss' : 'is-gain');
 }
 
@@ -530,12 +532,16 @@ function openApply() {
   const s = summarize(lines);
   const left = state.products.filter((p) => !state.lines.has(p._id)).length;
   const items = [`عُدّ ${arCount(lines.length, PRODUCTS)} من ${formatMoney(state.products.length)}.`];
+  // The values at purchase price only for an account that sees costs (`reports`)
+  const values = can('reports');
   items.push(
     s.short
-      ? `<span class="loss">نقص في ${arCount(s.short, PRODUCTS)} بقيمة ${formatMoney(s.shortValue)}</span> بسعر الشراء.`
+      ? values
+        ? `<span class="loss">نقص في ${arCount(s.short, PRODUCTS)} بقيمة ${formatMoney(s.shortValue)}</span> بسعر الشراء.`
+        : `<span class="loss">نقص في ${arCount(s.short, PRODUCTS)}</span>.`
       : 'لا يوجد نقص.',
   );
-  items.push(s.over ? `زيادة في ${arCount(s.over, PRODUCTS)} بقيمة ${formatMoney(s.overValue)}.` : 'لا توجد زيادة.');
+  items.push(s.over ? `زيادة في ${arCount(s.over, PRODUCTS)}${values ? ` بقيمة ${formatMoney(s.overValue)}` : ''}.` : 'لا توجد زيادة.');
   if (s.fresh) items.push(`${arCount(s.fresh, PRODUCTS)} تبدأ متابعة كميتها من العدد الذي كتبته.`);
   if (left) items.push(`المنتجات التي لم تُعدّ (${formatMoney(left)}) تبقى كمياتها كما هي.`);
   els.applySummary.innerHTML = items.map((t) => `<li>${t}</li>`).join('');
@@ -548,7 +554,7 @@ els.applyForm.addEventListener('submit', async (e) => {
   try {
     const applied = await api(`/stockcounts/${state.count._id}/apply`, { method: 'POST' });
     els.applyDialog.close();
-    toast(`اعتُمد الجرد. رأس المال في البضاعة الآن ${formatMoney(applied.summary.capital)}`);
+    toast(applied.summary.capital === undefined ? 'اعتُمد الجرد' : `اعتُمد الجرد. رأس المال في البضاعة الآن ${formatMoney(applied.summary.capital)}`);
     await load();
   } catch (err) {
     els.applyDialog.close();
@@ -590,17 +596,18 @@ async function showHistory(id) {
     const d = diffOf(l);
     if (d === null) return 1e15;
     if (d === 0) return 2e15;
-    return d * l.purchasePrice;
+    // Without costs (no `reports`) by quantity instead
+    return d * (l.purchasePrice ?? 1);
   };
   const lines = [...count.lines].sort((a, b) => weight(a) - weight(b));
   els.historyBody.innerHTML = `<h2 id="historyTitle">جرد ${formatDateTime(count.appliedAt)}</h2>
     <div class="zreport">
       <div><span class="z-label">المعدود</span><div class="z-value num">${s.counted ?? 0}</div></div>
-      <div><span class="z-label">النقص</span><div class="z-value num${s.shortValue ? ' is-loss' : ''}">${formatMoney(s.shortValue)}</div>
+      <div data-need="reports"><span class="z-label">النقص</span><div class="z-value num${s.shortValue ? ' is-loss' : ''}">${formatMoney(s.shortValue)}</div>
         <span class="z-note">${s.shortItems ? `في ${arCount(s.shortItems, PRODUCTS)}` : 'لا يوجد'}</span></div>
-      <div><span class="z-label">الزيادة</span><div class="z-value num">${formatMoney(s.overValue)}</div>
+      <div data-need="reports"><span class="z-label">الزيادة</span><div class="z-value num">${formatMoney(s.overValue)}</div>
         <span class="z-note">${s.overItems ? `في ${arCount(s.overItems, PRODUCTS)}` : 'لا يوجد'}</span></div>
-      <div class="z-net"><span class="z-label">رأس المال بعده</span><div class="z-value num">${formatMoney(s.capital)}</div>
+      <div class="z-net" data-need="reports"><span class="z-label">رأس المال بعده</span><div class="z-value num">${formatMoney(s.capital)}</div>
         <span class="z-note">بسعر الشراء</span></div>
     </div>
     <table class="ptable">
@@ -609,7 +616,7 @@ async function showHistory(id) {
         <th scope="col">المسجّل</th>
         <th scope="col">المعدود</th>
         <th scope="col">الفرق</th>
-        <th scope="col" class="end">قيمة الفرق</th>
+        <th scope="col" class="end" data-need="reports">قيمة الفرق</th>
       </tr></thead>
       <tbody>${lines
         .map((l) => {
@@ -625,7 +632,7 @@ async function showHistory(id) {
             <td>${l.expected === null ? '<span class="muted">غير مسجّل</span>' : `<span class="num">${qtyIn(l.expected, l.unit)}</span>`}</td>
             <td><strong class="num">${qtyIn(l.counted, l.unit)}</strong></td>
             <td>${diff}</td>
-            <td class="end">${d ? `<span class="num${d < 0 ? ' loss' : ''}">${formatMoney(d * l.purchasePrice)}</span>` : dash}</td>
+            <td class="end" data-need="reports">${d ? `<span class="num${d < 0 ? ' loss' : ''}">${formatMoney(d * l.purchasePrice)}</span>` : dash}</td>
           </tr>`;
         })
         .join('')}</tbody>

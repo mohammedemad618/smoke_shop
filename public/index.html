@@ -112,13 +112,14 @@
         <div class="field">
           <label for="fPurchase">سعر الشراء <span class="per" data-per></span></label>
           <input class="input num" id="fPurchase" name="purchasePrice" type="number" min="0" step="any" inputmode="decimal">
+          <p class="hint" id="purchaseHint" hidden>اتركه فارغًا ليبقى سعر الشراء كما هو</p>
         </div>
         <div class="field">
           <label for="fSale">سعر البيع <span class="per" data-per></span></label>
           <input class="input num" id="fSale" name="salePrice" type="number" min="0" step="any" inputmode="decimal">
         </div>
       </div>
-      <p class="margin-note" id="marginNote" aria-live="polite"></p>
+      <p class="margin-note" id="marginNote" aria-live="polite" data-need="reports"></p>
       <fieldset class="option-box">
         <legend>البيع بالجملة</legend>
         <label class="check"><input type="checkbox" id="fHasWholesale"> يوجد سعر جملة</label>

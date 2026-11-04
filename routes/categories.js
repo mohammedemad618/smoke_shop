@@ -1,9 +1,10 @@
 import { Router } from 'express';
 import { httpError } from '../lib/errors.js';
+import { allow } from '../lib/permissions.js';
 
 const router = Router();
 
-router.get('/', async (req, res) => {
+router.get('/', allow('selling'), async (req, res) => {
   const { Category, Product } = req.models;
   const [categories, counts] = await Promise.all([
     Category.find().collation({ locale: 'ar' }).sort({ name: 1 }).lean(),
@@ -13,13 +14,13 @@ router.get('/', async (req, res) => {
   res.json(categories.map((c) => ({ ...c, productCount: countById.get(String(c._id)) ?? 0 })));
 });
 
-router.post('/', async (req, res) => {
+router.post('/', allow('products'), async (req, res) => {
   const { Category } = req.models;
   const category = await Category.create({ name: req.body.name });
   res.status(201).json({ ...category.toObject(), productCount: 0 });
 });
 
-router.put('/:id', async (req, res) => {
+router.put('/:id', allow('products'), async (req, res) => {
   const { Category } = req.models;
   const category = await Category.findByIdAndUpdate(
     req.params.id,
@@ -30,7 +31,7 @@ router.put('/:id', async (req, res) => {
   res.json(category);
 });
 
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', allow('owner'), async (req, res) => {
   const { Category, Product } = req.models;
   if (await Product.exists({ category: req.params.id })) {
     throw httpError(409, 'لا يمكن حذف قسم يحتوي على منتجات. انقل منتجاته أو احذفها أولًا');

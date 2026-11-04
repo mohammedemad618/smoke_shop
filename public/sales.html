@@ -35,7 +35,7 @@
   <main class="sales">
     <div class="sales-head">
       <h1>المبيعات</h1>
-      <div class="segmented" role="group" aria-label="عرض المبيعات حسب">
+      <div class="segmented" role="group" aria-label="عرض المبيعات حسب" data-need="reports">
         <button type="button" data-mode="day" aria-pressed="true">يوم</button>
         <button type="button" data-mode="month" aria-pressed="false">شهر</button>
         <button type="button" data-mode="range" aria-pressed="false">فترة</button>
@@ -68,10 +68,10 @@
     </div>
 
     <h2 class="period-title" id="periodTitle"></h2>
-    <div class="zreport" id="summary"></div>
+    <div class="zreport" id="summary" data-need="reports"></div>
     <div id="salesArea"></div>
 
-    <section class="report-section" id="productsSection" aria-labelledby="productsTitle" hidden>
+    <section class="report-section" id="productsSection" aria-labelledby="productsTitle" data-need="reports" hidden>
       <div class="section-head">
         <h2 id="productsTitle">المنتجات</h2>
         <div class="segmented segmented-sm" role="group" aria-label="ترتيب المنتجات">

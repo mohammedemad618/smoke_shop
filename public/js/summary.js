@@ -1,4 +1,4 @@
-import { api, formatMoney, formatDateTime, escapeHtml, arCount, dayQuery, addMonths, monthKey } from './common.js';
+import { api, formatMoney, formatDateTime, escapeHtml, arCount, dayQuery, addMonths, monthKey, can, canOpen, session } from './common.js';
 
 const LOCALE = 'ar-u-nu-latn';
 const TIME_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -16,6 +16,24 @@ const DAYS = { one: 'يوم', two: 'يومين', few: 'أيام', many: 'يوم�
 const $ = (id) => document.getElementById(id);
 const els = { date: $('summaryDate'), view: $('summary') };
 
+// The page is `reports`; what it loads is open to `reports`, but for the customers who owe
+// (`credit`) and the open stocktake (`products`). An account without one of those gets
+// `fallback` in its place and the page without that reminder, rather than no page at all
+// on the 403 (FORBIDDEN as well when the permission was taken away since the page loaded).
+async function optional(key, path, fallback) {
+  await session;
+  if (!can(key)) return fallback;
+  try {
+    return await api(path);
+  } catch (err) {
+    if (err.code === 'FORBIDDEN') return fallback;
+    throw err;
+  }
+}
+
+// A link only to a page the account may open
+const link = (href) => (canOpen(new URL(href, location.href).pathname) ? href : null);
+
 async function load() {
   const now = new Date();
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -30,14 +48,14 @@ async function load() {
     api(`/sales/report?${monthQuery}`),
     api('/products/valuation'),
     api('/products'),
-    api('/customers'),
-    api('/stockcounts/current'),
+    optional('credit', '/customers', []),
+    optional('products', '/stockcounts/current', null),
   ]);
   els.date.textContent = longDay.format(now);
   els.view.innerHTML = `${salesBlock(today.summary, month.summary, now)}
     <div class="summary-pair">
       ${moneyBlock(valuation)}
-      ${attentionBlock({ now, products, customers, openCount, lastCountAt: valuation.lastCountAt })}
+      ${attentionBlock({ now, products, customers, openCount, lastCountAt: valuation.lastCountAt, counts: can('products') })}
     </div>`;
 }
 
@@ -84,11 +102,11 @@ function moneyBlock(v) {
   const { owedToShop, owedByShop, owedToSuppliers } = v.debts;
   const capital = v.capital + owedToShop - owedByShop - owedToSuppliers;
   const rows = [
-    ledgerRow({ sign: '', label: 'البضاعة على الرفوف', note: 'بسعر الشراء', value: v.capital, href: '/' }),
-    ledgerRow({ sign: '+', label: 'ديون لك عند الزبائن', value: owedToShop, href: '/debts.html' }),
+    ledgerRow({ sign: '', label: 'البضاعة على الرفوف', note: 'بسعر الشراء', value: v.capital, href: link('/') }),
+    ledgerRow({ sign: '+', label: 'ديون لك عند الزبائن', value: owedToShop, href: link('/debts.html') }),
   ];
-  if (owedByShop) rows.push(ledgerRow({ sign: '−', label: 'رصيد دفعه زبائن مقدمًا', value: owedByShop, href: '/debts.html' }));
-  rows.push(ledgerRow({ sign: '−', label: 'ديون عليك للموردين', value: owedToSuppliers, href: '/purchases.html' }));
+  if (owedByShop) rows.push(ledgerRow({ sign: '−', label: 'رصيد دفعه زبائن مقدمًا', value: owedByShop, href: link('/debts.html') }));
+  rows.push(ledgerRow({ sign: '−', label: 'ديون عليك للموردين', value: owedToSuppliers, href: link('/purchases.html') }));
   rows.push(ledgerRow({ sign: '=', label: 'رأس مال المحل', value: capital, tone: 'ledger-total' }));
 
   const notes = [];
@@ -107,7 +125,9 @@ function moneyBlock(v) {
 
 /* What needs doing */
 
-function attentionBlock({ now, products, customers, openCount, lastCountAt }) {
+// The stocktake reminders only for an account that does the stocktake (`counts`); each row
+// links to its page when the account may open it
+function attentionBlock({ now, products, customers, openCount, lastCountAt, counts }) {
   const tracked = products.filter((p) => p.trackStock);
   const out = tracked.filter((p) => p.stock <= 0).length;
   const low = tracked.filter((p) => p.stock > 0 && p.stock <= (p.lowStockAlert ?? DEFAULT_LOW_STOCK)).length;
@@ -117,16 +137,16 @@ function attentionBlock({ now, products, customers, openCount, lastCountAt }) {
   ).length;
 
   const items = [];
-  const add = (tone, text, href, count) => items.push({ tone, text, href, count });
+  const add = (tone, text, href, count) => items.push({ tone, text, href: link(href), count });
   if (out) add('is-stop', 'منتجات نفدت كميتها', '/?stock=out', out);
   if (low) add('is-warn', 'منتجات قاربت على النفاد', '/?stock=low', low);
   if (overdue) add('is-warn', 'زبائن عليهم دين وحسابهم بلا حركة منذ أكثر من شهر', '/debts.html', overdue);
   if (untracked) add('is-info', 'منتجات بلا كمية مسجّلة، تُسجَّل بالجرد أو بفاتورة شراء', '/?stock=untracked', untracked);
-  if (openCount) {
+  if (counts && openCount) {
     add('is-info', `جرد مفتوح منذ ${formatDateTime(openCount.createdAt)} لم يُعتمد بعد`, '/stocktake.html');
-  } else if (!lastCountAt) {
+  } else if (counts && !lastCountAt) {
     if (tracked.length) add('is-info', 'لم يُجرَ جرد بعد', '/stocktake.html');
-  } else {
+  } else if (counts) {
     const days = Math.floor((now - new Date(lastCountAt)) / DAY_MS);
     if (days > STOCKTAKE_DAYS) add('is-info', `آخر جرد قبل ${arCount(days, DAYS)}`, '/stocktake.html');
   }
@@ -134,11 +154,11 @@ function attentionBlock({ now, products, customers, openCount, lastCountAt }) {
   const list = items.length
     ? `<ul class="attention">${items
         .map(
-          (i) => `<li><a class="attention-row ${i.tone}" href="${i.href}">
+          (i) => `<li><${i.href ? `a href="${i.href}"` : 'div'} class="attention-row ${i.tone}">
             <span class="attention-dot" aria-hidden="true"></span>
             <span class="attention-text">${escapeHtml(i.text)}</span>
             ${i.count ? `<strong class="num">${formatMoney(i.count)}</strong>` : ''}
-          </a></li>`,
+          </${i.href ? 'a' : 'div'}></li>`,
         )
         .join('')}</ul>`
     : '<p class="all-good">لا شيء يحتاج انتباهك الآن.</p>';
