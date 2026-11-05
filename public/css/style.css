@@ -562,6 +562,7 @@ select.input { padding-block: 7px; }
 .default-row .input { width: 120px; }
 .default-row + .hint { margin: 6px 0 14px; }
 .settings-card .currency-field .input { max-width: 160px; }
+.settings-card .rounding-field .input { max-width: 200px; }
 
 /* Camera scanner */
 .scanner-dialog { width: min(640px, calc(100vw - 32px)); }
@@ -753,6 +754,7 @@ select.input { padding-block: 7px; }
 .slip-currency { font-size: .7em; font-weight: 500; white-space: nowrap; }
 .slip-foot { margin: 14px 0 0; text-align: center; font-size: 13px; color: var(--muted); }
 .sale-dialog .dialog-actions { padding: 14px 22px 20px; }
+.sale-dialog .sale-note { margin: 8px 22px 0; }
 
 /* Sales page */
 .sales { width: 100%; max-width: 980px; margin: 0 auto; padding: 24px 20px 48px; }

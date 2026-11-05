@@ -11,6 +11,12 @@ const timeFormat = new Intl.DateTimeFormat('ar-u-nu-latn', { timeStyle: 'short' 
 
 export { roundTo };
 export const roundMoney = (n) => roundTo(n, 2);
+// A sale line's amount, up to the shop's «أصغر فئة نقدية» when it rounds: the server's own
+// function, so the cashier shows what the server charges
+export { roundUpTo, lineAmount } from './rounding.js';
+// Whether a line's unit price times its quantity is its amount. A line rounded up shows its
+// quantity and amount only: never a unit price that does not multiply to the amount shown.
+export const priceAddsUp = (unitPrice, quantity, amount) => roundMoney(unitPrice * quantity) === amount;
 
 // Rounded first, so a figure shows what is saved and never as "-0"
 export const formatMoney = (n) => moneyFormat.format(roundMoney(Number(n) || 0));
@@ -411,6 +417,8 @@ const SHOP_DEFAULTS = Object.freeze({
   defaultTrackStock: true,
   defaultLowStockAlert: 5,
   defaultBlockWhenOut: false,
+  // Sent only while the shop rounds sale lines up (routes/shop.js)
+  roundingStep: 0,
   logoVersion: '',
 });
 const shopFields = (shop) =>

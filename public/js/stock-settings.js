@@ -1,9 +1,10 @@
 // The «البيع والمخزون» card of the settings page, for the owner: the currency shown next to
-// totals, and what a new product starts with in the product form (PUT /api/settings).
+// totals, the «أصغر فئة نقدية» each sale line is rounded up to, and what a new product
+// starts with in the product form (PUT /api/settings).
 // Products already made keep their own values until the owner applies a saved default to
 // them with «تطبيق على كل المنتجات الحالية» (routes/settings.js): first how many tracked
 // products it changes, in the confirmation, then one update of that field alone.
-import { api, toast, withSignIn, rememberShop, parseNumber, arCount, PRODUCTS } from './common.js';
+import { api, toast, withSignIn, rememberShop, parseNumber, arCount, formatMoney, lineAmount, PRODUCTS } from './common.js';
 
 const LOW_STOCK_MAX = 100000;
 
@@ -12,6 +13,8 @@ const els = {
   form: $('salesForm'),
   error: $('salesError'),
   currency: $('currency'),
+  roundingStep: $('roundingStep'),
+  roundingHint: $('roundingHint'),
   trackStock: $('defaultTrackStock'),
   lowStock: $('defaultLowStockAlert'),
   blockWhenOut: $('defaultBlockWhenOut'),
@@ -34,9 +37,31 @@ function typedLowStock() {
   return Number.isInteger(value) && value >= 0 && value <= LOW_STOCK_MAX ? value : NaN;
 }
 
+/* «أصغر فئة نقدية» */
+
+// Each step with the currency as it is typed («250 د.ع»), and what the one chosen does, on
+// a price of its own that it rounds (600 at 250, 1,200 at 500)
+function showRounding() {
+  const currency = els.currency.value.trim();
+  for (const option of els.roundingStep.options) {
+    const step = Number(option.value);
+    if (step) option.textContent = currency ? `${formatMoney(step)} ${currency}` : formatMoney(step);
+  }
+  const step = Number(els.roundingStep.value) || 0;
+  if (!step) {
+    els.roundingHint.textContent = 'كل سطر في الفاتورة بسعره كما هو، بلا تقريب. اختر فئة ليُقرَّب مبلغ كل سطر للأعلى إليها.';
+    return;
+  }
+  const price = step * 2.4;
+  const [one, two, three] = [1, 2, 3].map((quantity) => formatMoney(lineAmount(price, quantity, step)));
+  els.roundingHint.textContent = `يُقرَّب مبلغ كل سطر في الفاتورة للأعلى إلى أقرب ${formatMoney(step)}: صنف بـ${formatMoney(price)} يُباع بـ${one}، واثنان بـ${two}، وثلاثة بـ${three}. الفواتير السابقة لا تتغير.`;
+}
+
 // The card from the saved settings (GET or PUT /api/settings)
 export function fillStock(settings) {
   els.currency.value = settings.currency;
+  els.roundingStep.value = String(settings.roundingStep ?? 0);
+  showRounding();
   els.trackStock.checked = settings.defaultTrackStock;
   els.lowStock.value = settings.defaultLowStockAlert;
   els.blockWhenOut.checked = settings.defaultBlockWhenOut;
@@ -86,6 +111,9 @@ async function applyToProducts(field, button) {
 
 export function initStockCard() {
   els.apply.forEach((button) => button.addEventListener('click', () => applyToProducts(button.dataset.apply, button)));
+  els.roundingStep.addEventListener('change', showRounding);
+  els.currency.addEventListener('input', showRounding);
+  showRounding();
 
   els.form.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -104,6 +132,7 @@ export function initStockCard() {
     }
     const body = {
       currency,
+      roundingStep: Number(els.roundingStep.value) || 0,
       defaultTrackStock: els.trackStock.checked,
       defaultLowStockAlert: lowStock,
       defaultBlockWhenOut: els.blockWhenOut.checked,

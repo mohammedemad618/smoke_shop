@@ -1,11 +1,11 @@
 // The «الإيصال والطباعة» card of the settings page, for the owner (PUT /api/settings): the
 // paper, the logo, what shows on the receipt, its note and printing by itself after a sale,
 // with the receipt beside it as it will print, redrawn at each change. The preview takes
-// the shop's name, phone and address from the «المتجر» card and the currency from «البيع
-// والمخزون» as they are typed, saved or not. A picture chosen for the logo is shrunk here
-// to LOGO_SIDE pixels at most and kept as a data: URL under LOGO_MAX_BYTES (lib/logo.js
-// checks it again); it is saved with the rest of the card.
-import { api, toast, withSignIn, rememberShop, session } from './common.js';
+// the shop's name, phone and address from the «المتجر» card and the currency and «أصغر فئة
+// نقدية» from «البيع والمخزون» as they are typed, saved or not. A picture chosen for the
+// logo is shrunk here to LOGO_SIDE pixels at most and kept as a data: URL under
+// LOGO_MAX_BYTES (lib/logo.js checks it again); it is saved with the rest of the card.
+import { api, toast, withSignIn, rememberShop, session, lineAmount, roundMoney } from './common.js';
 import { paperOf, receiptHtml, printReceipt, clearReceipt } from './receipt.js';
 
 const LOGO_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
@@ -35,6 +35,7 @@ const els = {
   phone: $('phone'),
   address: $('address'),
   currency: $('currency'),
+  roundingStep: $('roundingStep'),
 };
 
 const state = { paper: '80', logo: '', savedLogo: '', seller: '' };
@@ -49,19 +50,23 @@ const showError = (message) => {
 
 /* The preview */
 
-// An invoice to show what the receipt looks like: by the piece, by weight and a whole box
+// An invoice to show what the receipt looks like: by the piece, by weight and a whole box,
+// each line rounded up to the «أصغر فئة نقدية» chosen (7,000, 2,250 and 3,000 without)
 function sampleSale() {
+  const step = Number(els.roundingStep.value) || 0;
+  const items = [
+    { name: 'شاي 500 غ', unit: 'piece', mode: 'retail', packSize: 1, quantity: 2, unitPrice: 3500 },
+    { name: 'سكر', unit: 'kg', mode: 'retail', packSize: 1, quantity: 1.5, unitPrice: 1500 },
+    { name: 'ماء معدني', unit: 'piece', mode: 'wholesale', packSize: 12, quantity: 1, unitPrice: 3000 },
+  ].map((item) => ({ ...item, lineTotal: lineAmount(item.unitPrice, item.quantity, step) }));
+  const total = roundMoney(items.reduce((sum, item) => sum + item.lineTotal, 0));
   return {
     number: 1024,
     createdAt: new Date(),
-    items: [
-      { name: 'شاي 500 غ', unit: 'piece', mode: 'retail', packSize: 1, quantity: 2, unitPrice: 3500, lineTotal: 7000 },
-      { name: 'سكر', unit: 'kg', mode: 'retail', packSize: 1, quantity: 1.5, unitPrice: 1500, lineTotal: 2250 },
-      { name: 'ماء معدني', unit: 'piece', mode: 'wholesale', packSize: 12, quantity: 1, unitPrice: 3000, lineTotal: 3000 },
-    ],
-    total: 12250,
+    items,
+    total,
     paid: 15000,
-    change: 2750,
+    change: roundMoney(15000 - total),
     paymentType: 'cash',
     madeBy: { name: state.seller || 'البائع' },
   };
@@ -192,6 +197,7 @@ export function initReceiptCard() {
   els.form.addEventListener('input', renderPreview);
   els.form.addEventListener('change', renderPreview);
   for (const input of [els.shopName, els.phone, els.address, els.currency]) input.addEventListener('input', renderPreview);
+  els.roundingStep.addEventListener('change', renderPreview);
   session.then((me) => {
     state.seller = me?.user?.displayName ?? '';
     renderPreview();

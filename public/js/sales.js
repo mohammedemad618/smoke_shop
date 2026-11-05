@@ -3,6 +3,9 @@ import {
   toast,
   formatMoney,
   roundMoney,
+  roundQty,
+  lineAmount,
+  priceAddsUp,
   formatQty,
   formatWeight,
   formatTime,
@@ -531,13 +534,20 @@ const validReturn = (r) =>
   Number.isFinite(r.quantity) && r.quantity >= 0 && r.quantity <= r.max && (!wholeOnly(r.item) || Number.isInteger(r.quantity));
 
 // Worked out like the server: a line gives back its share of what it was sold for, by
-// the part of it returned so far, so the amount shown is the amount refunded
+// the part of it returned so far, so the amount shown is the amount refunded. A sale made
+// while the shop rounded up to its «أصغر فئة نقدية» gives back what was left of the line
+// before less what is left after, each rounded up at the sale's own step (routes/sales.js).
 const share = (item, quantity) => roundMoney((item.lineTotal * quantity) / item.quantity);
+const leftAmount = (item, left, step) => (left >= item.quantity ? item.lineTotal : left > 0 ? lineAmount(item.unitPrice, left, step) : 0);
+function refundOf(item, before, quantity) {
+  const step = returning.roundingStep ?? 0;
+  if (!step) return roundMoney(share(item, before + quantity) - share(item, before));
+  return roundMoney(leftAmount(item, roundQty(item.quantity - before), step) - leftAmount(item, roundQty(item.quantity - roundQty(before + quantity)), step));
+}
 function updateReturnAmount() {
   const amount = returnQuantities().reduce((sum, r) => {
     if (!validReturn(r) || !r.quantity) return sum;
-    const before = r.item.returnedQuantity ?? 0;
-    return sum + roundMoney(share(r.item, before + r.quantity) - share(r.item, before));
+    return sum + refundOf(r.item, r.item.returnedQuantity ?? 0, r.quantity);
   }, 0);
   els.returnAmount.textContent = formatMoney(amount);
 }
@@ -556,8 +566,10 @@ function openReturn(sale) {
     .map((item, index) => {
       const left = Math.round((item.quantity - (item.returnedQuantity ?? 0)) * 1000) / 1000;
       const per = item.mode === 'wholesale' ? 'للجملة' : item.unit === 'kg' ? 'للكيلو' : 'للقطعة';
+      // No unit price on a line rounded up (3 x 600 sold for 2,000): it would not add up
+      const price = priceAddsUp(item.unitPrice, item.quantity, item.lineTotal) ? `<div class="pcat"><span class="num">${formatMoney(item.unitPrice)}</span> ${per}</div>` : '';
       return `<tr${left ? '' : ' class="is-quiet"'}>
-        <td><div class="pname">${escapeHtml(item.name)}</div><div class="pcat"><span class="num">${formatMoney(item.unitPrice)}</span> ${per}</div></td>
+        <td><div class="pname">${escapeHtml(item.name)}</div>${price}</td>
         <td><span class="num">${qtyLabel(item)}</span>${item.returnedQuantity ? ` <small class="returned-inline">أُرجع ${amountOf(item, item.returnedQuantity)}</small>` : ''}</td>
         <td>${
           wholeOnly(item)

@@ -11,14 +11,17 @@ export const logoVersion = (logo) => (logo ? createHash('sha256').update(logo).d
 
 // What every signed-in account reads of the shop's settings: the header and tab title, the
 // receipt and how it prints, the currency shown next to totals, and what a new product
-// starts with in the product form. The logo itself is left out (up to 64 KB, and every
-// page loads this): GET /logo below has it. Not the time zone, which only the settings
-// page shows.
+// starts with in the product form, and the step sale lines are rounded up to (roundingStep)
+// when the owner turned that on: left out while it is off, so a shop that does not round
+// reads exactly as before (the pages read a missing one as 0). The logo itself is left out
+// (up to 64 KB, and every page loads this): GET /logo below has it. Not the time zone,
+// which only the settings page shows.
 export function shopView(doc) {
   const shop = settingsOf(doc);
   const version = logoVersion(shop.receiptLogo);
   delete shop.receiptLogo;
   delete shop.timeZone;
+  if (!shop.roundingStep) delete shop.roundingStep;
   return { ...shop, logoVersion: version };
 }
 

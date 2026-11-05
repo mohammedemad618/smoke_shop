@@ -306,6 +306,9 @@ test('certificate tries: checks first, then backoff, giving up after 6, and a ne
   };
   const desired = path.join(config.desiredDir, HOST);
   fs.writeFileSync(desired, '');
+  // Asked at the start of this test's clock, not the machine's: a real date later than the
+  // give-up below would read as asked again
+  fs.utimesSync(desired, new Date(clock), new Date(clock));
   const statePath = path.join(config.stateDir, 'certs', `${HOST}.json`);
 
   await runOnce(config);

@@ -111,6 +111,8 @@
 
   <dialog class="dialog sale-dialog" id="saleDialog" aria-label="إيصال البيع">
     <div id="saleReceipt"></div>
+    <!-- When the server charged another total than the cart showed (cashier.js) -->
+    <p class="form-error sale-note" id="saleNote" role="alert" hidden></p>
     <div class="dialog-actions">
       <button class="btn btn-primary" id="newSaleBtn" type="button">فاتورة جديدة</button>
       <button class="btn" id="printBtn" type="button">طباعة الإيصال</button>

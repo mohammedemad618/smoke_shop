@@ -1,4 +1,4 @@
-import { api, toast, formatMoney, formatQty, escapeHtml, arCount, packName, PRODUCTS, can, shopInfo } from './common.js';
+import { api, toast, formatMoney, formatQty, escapeHtml, arCount, packName, roundUpTo, PRODUCTS, can, shopInfo } from './common.js';
 import { randomStoreBarcode } from './barcode.js';
 import { scanBarcode } from './scanner.js';
 
@@ -74,10 +74,16 @@ const DEFAULT_LOW_STOCK = 5;
 // What a new product starts with, as the owner set it in the settings («البيع والمخزون»);
 // until the shop's settings arrive, what a new product always started with
 const newProduct = { trackStock: true, lowStockAlert: DEFAULT_LOW_STOCK, blockWhenOut: false };
+// The «أصغر فئة نقدية» the cashier rounds each line up to (0: none), for the hint beside a
+// price that sells for more
+let roundingStep = 0;
 shopInfo.then((shop) => {
   newProduct.trackStock = shop.defaultTrackStock;
   newProduct.lowStockAlert = shop.defaultLowStockAlert;
   newProduct.blockWhenOut = shop.defaultBlockWhenOut;
+  if (shop.roundingStep === roundingStep) return;
+  roundingStep = shop.roundingStep;
+  if (state.products.length) renderProducts();
 });
 const PER_UNIT = { piece: 'للقطعة', kg: 'للكيلو' };
 let formUnit = 'piece';
@@ -184,11 +190,21 @@ function stockCell(p) {
   return `<span class="stock num">${amount}</span>`;
 }
 
+// The prices are shown as stored. A piece or a box whose price is not a multiple of the
+// shop's «أصغر فئة نقدية» also says what one sells for at the cashier («يُباع بـ750» for 600
+// at 250); '' otherwise. A weight keeps its price per kg: its line is rounded at the cashier.
+function soldFor(price) {
+  const rounded = roundUpTo(price, roundingStep);
+  return rounded === price ? '' : `يُباع بـ<span class="num">${formatMoney(rounded)}</span>`;
+}
+
 function salePriceCell(p) {
   const unit = p.unit ?? 'piece';
-  const retail = `<span class="tag num">${formatMoney(p.salePrice)}</span>${unit === 'kg' ? '<small class="per-unit">للكيلو</small>' : ''}`;
+  const retailNote = unit === 'kg' ? 'للكيلو' : soldFor(p.salePrice);
+  const retail = `<span class="tag num">${formatMoney(p.salePrice)}</span>${retailNote ? `<small class="per-unit">${retailNote}</small>` : ''}`;
   if (!p.hasWholesale) return retail;
-  return `${retail}<small class="wholesale-price">جملة <span class="num">${formatMoney(p.wholesalePrice)}</span> / ${packName(unit, p.wholesaleQty)}</small>`;
+  const boxNote = soldFor(p.wholesalePrice);
+  return `${retail}<small class="wholesale-price">جملة <span class="num">${formatMoney(p.wholesalePrice)}</span> / ${packName(unit, p.wholesaleQty)}${boxNote ? `، ${boxNote}` : ''}</small>`;
 }
 
 function profitCell(p) {

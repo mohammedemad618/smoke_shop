@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { httpError } from '../lib/errors.js';
 import { logoProblem } from '../lib/logo.js';
 import { allow } from '../lib/permissions.js';
-import { LOW_STOCK_MAX, RECEIPT_PAPERS, settingsOf } from '../lib/shop-settings.js';
+import { LOW_STOCK_MAX, RECEIPT_PAPERS, ROUNDING_STEPS, settingsOf } from '../lib/shop-settings.js';
 import { setShopNameCache } from '../services/tenants.js';
 import { logoVersion } from './shop.js';
 
@@ -46,6 +46,11 @@ function changesFrom(body) {
       throw httpError(400, `حد التنبيه يجب أن يكون عددًا صحيحًا من 0 إلى ${LOW_STOCK_MAX}`);
     }
     changes.defaultLowStockAlert = value;
+  }
+  // One of the steps as a number: 0 (no rounding), 50, 100, 250, 500 or 1000
+  if (body.roundingStep !== undefined) {
+    if (!ROUNDING_STEPS.includes(body.roundingStep)) throw httpError(400, 'أصغر فئة نقدية غير صالحة');
+    changes.roundingStep = body.roundingStep;
   }
   // '' takes the logo away
   if (body.receiptLogo !== undefined) {

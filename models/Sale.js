@@ -76,6 +76,11 @@ const saleSchema = new Schema(
     customer: { type: Schema.Types.ObjectId, ref: 'Customer' },
     customerName: String,
     debt: { type: Number, default: 0 },
+    // The shop's «أصغر فئة نقدية» when this sale was made, kept only when it was on: each
+    // line's lineTotal is its price x quantity rounded up to a multiple of it, and a return
+    // gives back the difference between the rounded amounts of what was left before and
+    // after (routes/sales.js). Without it, lines are as priced and returns proportional.
+    roundingStep: { type: Number, default: undefined },
     // Totals above are as sold; reports subtract these to get net figures
     returns: { type: [returnSchema], default: [] },
     returnedTotal: { type: Number, default: 0 },

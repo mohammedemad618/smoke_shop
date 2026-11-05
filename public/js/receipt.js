@@ -6,7 +6,7 @@
 // The page size goes into the page's own stylesheet through CSSOM, which the shop's
 // Content-Security-Policy allows (no inline style). Text goes in through escapeHtml only;
 // the logo is a data: URL the server checked (lib/logo.js).
-import { formatMoney, formatQty, formatWeight, formatDateTime, escapeHtml, packName } from './common.js';
+import { formatMoney, formatQty, formatWeight, formatDateTime, escapeHtml, packName, priceAddsUp } from './common.js';
 
 // The paper choices of the settings (models/Setting.js RECEIPT_PAPERS), with the roll's width
 export const PAPERS = Object.freeze({
@@ -16,11 +16,13 @@ export const PAPERS = Object.freeze({
 });
 export const paperOf = (value) => (Object.hasOwn(PAPERS, value) ? value : '80');
 
-// "9,000 للعلبة (10 قطع)", "1,000 للكيلو", "250 للقطعة"
+// "9,000 للعلبة (10 قطع)", "1,000 للكيلو", "250 للقطعة"; nothing for a line rounded up to
+// the shop's «أصغر فئة نقدية» (3 x 600 sold for 2,000): its quantity and amount say it all
 function receiptPrice(item) {
+  if (!priceAddsUp(item.unitPrice, item.quantity, item.lineTotal)) return '';
   const price = `<span class="num">${formatMoney(item.unitPrice)}</span>`;
-  if (item.mode === 'wholesale') return `${price} لل${packName(item.unit, item.packSize)}`;
-  return `${price} ${item.unit === 'kg' ? 'للكيلو' : 'للقطعة'}`;
+  if (item.mode === 'wholesale') return `<small>${price} لل${packName(item.unit, item.packSize)}</small>`;
+  return `<small>${price} ${item.unit === 'kg' ? 'للكيلو' : 'للقطعة'}</small>`;
 }
 
 // An amount with the shop's currency after it, when it has one
@@ -46,7 +48,7 @@ export function receiptHtml(sale, shop, logo = '') {
   const lines = sale.items
     .map(
       (i) => `<tr>
-          <td>${escapeHtml(i.name)}<small>${receiptPrice(i)}</small></td>
+          <td>${escapeHtml(i.name)}${receiptPrice(i)}</td>
           <td class="end num">${i.unit === 'kg' && i.mode !== 'wholesale' ? formatWeight(i.quantity) : formatQty(i.quantity)}</td>
           <td class="end num">${formatMoney(i.lineTotal)}</td>
         </tr>`,

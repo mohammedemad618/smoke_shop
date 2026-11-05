@@ -6,6 +6,9 @@ import {
   formatDateTime,
   escapeHtml,
   roundMoney,
+  roundUpTo,
+  lineAmount,
+  priceAddsUp,
   parseNumber,
   latinDigits,
   roundQty,
@@ -41,18 +44,29 @@ const state = {
   busy: false,
   payType: 'cash',
   customers: [],
-  // The shop's settings for the receipt and its printing (GET /api/shop), and its logo
-  shop: { shopName: '', receiptNote: '', phone: '', address: '', currency: '', receiptPaper: '80', receiptShowPhone: true, receiptShowAddress: true, receiptShowCashier: false, autoPrint: false },
+  // The shop's settings for the receipt and its printing (GET /api/shop), its logo, and the
+  // step sale lines are rounded up to (roundingStep, 0 when the shop does not round)
+  shop: { shopName: '', receiptNote: '', phone: '', address: '', currency: '', receiptPaper: '80', receiptShowPhone: true, receiptShowAddress: true, receiptShowCashier: false, autoPrint: false, roundingStep: 0 },
   logo: '',
   logoVersion: '',
+  catalogLoaded: false,
   // The id of the sale this cart becomes, made with its first item and sent with every try
   // to complete it, so trying again after a lost answer never records it twice
   clientSaleId: null,
 };
-// The logo is fetched on its own (GET /api/shop/logo), and again only when it changed
+// The shop's «أصغر فئة نقدية» as this screen last read it; the server rounds by its own
+const step = () => state.shop.roundingStep || 0;
+
+// A step changed by the owner shows at once on the tiles and the cart. The logo is fetched
+// on its own (GET /api/shop/logo), and again only when it changed.
 async function applyShop(shop) {
   if (!shop) return;
+  const stepChanged = (shop.roundingStep || 0) !== step();
   state.shop = shop;
+  if (stepChanged) {
+    if (state.catalogLoaded) renderTiles();
+    renderCart();
+  }
   if (shop.logoVersion === state.logoVersion) return;
   try {
     state.logo = shop.logoVersion ? (await api('/shop/logo')).receiptLogo : '';
@@ -83,6 +97,7 @@ const els = {
   clock: $('clock'),
   saleDialog: $('saleDialog'),
   saleReceipt: $('saleReceipt'),
+  saleNote: $('saleNote'),
   newSale: $('newSaleBtn'),
   print: $('printBtn'),
   cancelSale: $('cancelSaleBtn'),
@@ -115,7 +130,9 @@ const normalize = (s) =>
 /* Catalog */
 
 async function loadCatalog() {
-  const [products, categories] = await Promise.all([api('/products'), api('/categories')]);
+  // With the shop's settings, so the tiles show their prices rounded from the start
+  const [products, categories] = await Promise.all([api('/products'), api('/categories'), shopInfo]);
+  state.catalogLoaded = true;
   state.products = products;
   state.categories = categories.filter((c) => c.productCount > 0);
   state.byBarcode = new Map(products.map((p) => [p.barcode, p]));
@@ -193,14 +210,16 @@ function renderTiles() {
     els.tiles.innerHTML = `<div class="empty"><p>لا يوجد منتج يطابق «${escapeHtml(state.query.trim())}».</p></div>`;
     return;
   }
+  // What one piece or one box sells for, rounded up as a line of one is; a weight keeps its
+  // price per kg (the line it makes is rounded)
   els.tiles.innerHTML = list
     .map(
       (p) => `<button type="button" class="tile" data-id="${p._id}">
         <span class="tile-name">${escapeHtml(p.name)}</span>
         <span class="tile-code num">${escapeHtml(p.barcode)}</span>
         ${stockLine(p)}
-        ${p.hasWholesale ? `<span class="tile-wholesale">جملة <span class="num">${formatMoney(p.wholesalePrice)}</span></span>` : ''}
-        <span class="tag num">${formatMoney(p.salePrice)}${p.unit === 'kg' ? ' / كغم' : ''}</span>
+        ${p.hasWholesale ? `<span class="tile-wholesale">جملة <span class="num">${formatMoney(roundUpTo(p.wholesalePrice, step()))}</span></span>` : ''}
+        <span class="tag num">${p.unit === 'kg' ? `${formatMoney(p.salePrice)} / كغم` : formatMoney(roundUpTo(p.salePrice, step()))}</span>
       </button>`,
     )
     .join('');
@@ -268,8 +287,9 @@ function lineFields(product, mode) {
 const baseInCart = (productId, exceptKey) =>
   state.cart.reduce((sum, l) => (l.productId === productId && l.key !== exceptKey ? sum + l.qty * l.packSize : sum), 0);
 
-// Line by line, like the server: each line is rounded to the cent before adding up
-const lineTotal = (l) => roundMoney(l.price * l.qty);
+// Line by line, like the server: each line is rounded to the cent, and up to the shop's
+// «أصغر فئة نقدية» when it rounds, before adding up
+const lineTotal = (l) => lineAmount(l.price, l.qty, step());
 const cartTotal = () => roundMoney(state.cart.reduce((sum, l) => sum + lineTotal(l), 0));
 
 // Returns an error message instead of adding when the stock does not allow it
@@ -281,8 +301,11 @@ function addToCart(product, qty = 1, mode = 'retail') {
   const next = Math.min(roundQty((line?.qty ?? 0) + qty), MAX_QTY);
   const problem = stockProblem(product, baseInCart(product._id, key) + next * fields.packSize);
   if (problem) return problem;
-  // A new cart is a new sale
-  if (!state.cart.length) state.clientSaleId = newClientId();
+  // A new cart is a new sale, priced with the rounding as the owner set it now
+  if (!state.cart.length) {
+    state.clientSaleId = newClientId();
+    refreshShop().then(applyShop);
+  }
   if (line) line.qty = next;
   else state.cart.push({ key, productId: product._id, mode, qty: next, weightUnit: preferredWeightUnit(product._id), ...fields });
   state.lastAdded = key;
@@ -375,7 +398,7 @@ function lineHtml(l) {
         <button type="button" class="qty-btn" data-dec aria-label="إنقاص الكمية"${l.qty <= qtyStep(l) ? ' disabled' : ''}>−</button>
       </div>
       ${weightSwitch}
-      <span class="line-unit">× <span class="num">${formatMoney(l.price)}</span>${weighed ? ' للكيلو' : ''}</span>
+      ${priceAddsUp(l.price, l.qty, lineTotal(l)) ? `<span class="line-unit">× <span class="num">${formatMoney(l.price)}</span>${weighed ? ' للكيلو' : ''}</span>` : ''}
       ${modeSwitch}
       <button type="button" class="line-remove" data-remove aria-label="حذف ${name} من الفاتورة" title="حذف من الفاتورة">×</button>
     </div>
@@ -808,6 +831,8 @@ async function checkout() {
   state.busy = true;
   state.clientSaleId ??= newClientId();
   const sentId = state.clientSaleId;
+  const shownTotal = cartTotal();
+  const shownStep = step();
   updatePayment();
   const body = {
     items: state.cart.map((l) => ({ productId: l.productId, quantity: l.qty, mode: l.mode })),
@@ -839,13 +864,28 @@ async function checkout() {
     }
     renderCart();
     openInvoiceSheet(false);
+    // The receipt has the server's figures. Rounded otherwise than the cart was (the owner
+    // changed the rounding while it was open), its total is said beside it, to collect.
+    const reRounded = sale.total !== shownTotal && (sale.roundingStep ?? 0) !== shownStep;
+    els.saleNote.textContent = reRounded ? `سُجّلت الفاتورة بإجمالي ${formatMoney(sale.total)} لا ${formatMoney(shownTotal)}، لأن تقريب الأسعار تغيّر من الإعدادات.` : '';
+    els.saleNote.hidden = !reRounded;
     showReceipt(sale, sentId);
     loadToday();
     loadCatalog().catch(() => {}); // stock went down
+    // and the rounding, so the next cart shows what the server charges
+    if (reRounded) refreshShop().then(applyShop);
   } catch (err) {
     // The cart stays as it is, its id too, ready to be sent again
-    toast(err.code === 'TENANT_SUSPENDED' ? 'المتجر موقوف مؤقتًا، ولم يُسجَّل البيع. الفاتورة باقية كما هي' : err.message, 'error');
+    let message = err.code === 'TENANT_SUSPENDED' ? 'المتجر موقوف مؤقتًا، ولم يُسجَّل البيع. الفاتورة باقية كما هي' : err.message;
     if (err.code !== 'TENANT_SUSPENDED' && err.code !== 'NETWORK') loadCatalog().catch(() => {});
+    // A paid amount refused against a total this screen did not show: the owner changed the
+    // rounding meanwhile. The cart then shows the new total, to check the amount by.
+    if (err.status === 400) {
+      const before = step();
+      await applyShop(await refreshShop());
+      if (step() !== before) message = `تغيّر تقريب الأسعار من الإعدادات، فصار إجمالي الفاتورة ${formatMoney(cartTotal())}. راجع المبلغ ثم أتمم البيع`;
+    }
+    toast(message, 'error');
   } finally {
     state.busy = false;
     updatePayment();

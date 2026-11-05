@@ -3,7 +3,8 @@ import mongoose from 'mongoose';
 import { httpError } from '../lib/errors.js';
 import { clientIdOf, isDuplicateOf } from '../lib/idempotency.js';
 import { REPORT_MS, runReport } from '../lib/limits.js';
-import { money, precise, roundQty, stockChange } from '../lib/util.js';
+import { lineAmount, money, precise, roundQty, stockChange } from '../lib/util.js';
+import { roundingStepOf } from '../lib/shop-settings.js';
 import { DAY_MS, requestedRange, timeZoneParam } from '../lib/range.js';
 import { madeByOf } from '../lib/auth.js';
 import { allow, can, forbidden, saleFor, seesCosts } from '../lib/permissions.js';
@@ -360,7 +361,7 @@ const repeated = async (req, sale) => ({ ...(await withBalance(req, sale)), repe
 // Every account sells for cash; selling on a customer's account needs `credit`. The sale
 // records who made it, from the session.
 router.post('/', allow('selling'), async (req, res) => {
-  const { Product, Sale, Customer, DebtEntry, Counter } = req.models;
+  const { Product, Sale, Customer, DebtEntry, Counter, Setting } = req.models;
   // Sent again after an answer that never arrived: the invoice as it was recorded, and
   // nothing else happens (no second number, no stock taken again)
   const clientId = clientIdOf(req.body);
@@ -387,9 +388,13 @@ router.post('/', allow('selling'), async (req, res) => {
     throw httpError(400, `أقصى كمية للصنف الواحد ${MAX_QUANTITY}`);
   }
 
-  // Prices always come from the database, never from the client
+  // Prices always come from the database, never from the client, and so does the step each
+  // line is rounded up to (the shop's «أصغر فئة نقدية» now, 0 when it does not round)
   const ids = [...new Set([...merged.values()].map((l) => l.id))];
-  const products = await Product.find({ _id: { $in: ids } }).lean();
+  const [products, step] = await Promise.all([
+    Product.find({ _id: { $in: ids } }).lean(),
+    Setting.findById('shop').select('roundingStep').lean().then(roundingStepOf),
+  ]);
   if (products.length !== ids.length) {
     throw httpError(400, 'بعض منتجات الفاتورة لم تعد موجودة. حدّث الصفحة وأعد المحاولة');
   }
@@ -416,7 +421,8 @@ router.post('/', allow('selling'), async (req, res) => {
       quantity,
       unitPrice,
       unitCost: precise(p.purchasePrice * packSize),
-      lineTotal: money(unitPrice * quantity),
+      // The line, not each piece, goes up to the step: 3 x 600 is 2,000 at 250, not 2,250
+      lineTotal: lineAmount(unitPrice, quantity, step),
     };
   });
 
@@ -471,6 +477,7 @@ router.post('/', allow('selling'), async (req, res) => {
       customer: customer?._id,
       customerName: customer?.name,
       debt,
+      roundingStep: step || undefined,
       clientId: clientId ?? undefined,
       madeBy: madeByOf(req.user),
     });
@@ -538,6 +545,16 @@ router.post('/:id/returns', allow('returns'), async (req, res) => {
   // far, so a line returned in several goes adds up to exactly its total and cost
   // (three returns of 0.111 kg of a 0.333 kg line make 443.89, not 3 x 147.96 = 443.88)
   const share = (value, item, quantity) => money((value * quantity) / item.quantity);
+  // A sale made while the shop rounded up to its «أصغر فئة نقدية» gives back, for a line,
+  // what was left of it before less what is left after, each rounded up as the line was
+  // sold, at the sale's own step: 3 x 600 sold for 2,000 at 250, one back leaves 2 = 1,250,
+  // so 750 comes back, and the other two then 1,250. Its cost still comes back by share.
+  const step = sale.roundingStep ?? 0;
+  const leftAmount = (item, left) => (left >= item.quantity ? item.lineTotal : left > 0 ? lineAmount(item.unitPrice, left, step) : 0);
+  const refundOf = (item, before, after) =>
+    step
+      ? money(leftAmount(item, roundQty(item.quantity - before)) - leftAmount(item, roundQty(item.quantity - after)))
+      : money(share(item.lineTotal, item, after) - share(item.lineTotal, item, before));
   let cost = 0;
   const items = lines.map(({ item, quantity }) => {
     const before = item.returnedQuantity ?? 0;
@@ -551,7 +568,7 @@ router.post('/:id/returns', allow('returns'), async (req, res) => {
       mode: item.mode,
       packSize: item.packSize,
       quantity,
-      amount: money(share(item.lineTotal, item, after) - share(item.lineTotal, item, before)),
+      amount: refundOf(item, before, after),
     };
   });
   const entry = {

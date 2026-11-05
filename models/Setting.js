@@ -1,6 +1,6 @@
 import { Schema } from 'mongoose';
 import { logoProblem } from '../lib/logo.js';
-import { LOW_STOCK_MAX, RECEIPT_PAPERS, SETTING_DEFAULTS } from '../lib/shop-settings.js';
+import { LOW_STOCK_MAX, RECEIPT_PAPERS, ROUNDING_STEPS, SETTING_DEFAULTS } from '../lib/shop-settings.js';
 
 const validTimeZone = (value) => {
   try {
@@ -58,6 +58,15 @@ const settingSchema = new Schema(
       validate: { validator: Number.isInteger, message: 'حد التنبيه يجب أن يكون عددًا صحيحًا' },
     },
     defaultBlockWhenOut: { type: Boolean, default: D.defaultBlockWhenOut },
+
+    // «أصغر فئة نقدية»: every sale line from now on is rounded up to a multiple of it (0: as
+    // priced). Each sale keeps the step it was made with (models/Sale.js), so changing it
+    // never changes an invoice already made, nor what its returns give back.
+    roundingStep: {
+      type: Number,
+      default: D.roundingStep,
+      validate: { validator: (value) => ROUNDING_STEPS.includes(value), message: 'أصغر فئة نقدية غير صالحة' },
+    },
   },
   { timestamps: true, versionKey: false },
 );
