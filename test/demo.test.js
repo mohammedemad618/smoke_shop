@@ -671,6 +671,8 @@ test("reset keeps the owner's account, ends the staff's sessions, touches nothin
   await resetUserPassword(env.ctx, tenant._id, ali._id, FIRST_PASSWORD, { actor: 'test' });
   const cashier = await signedIn(tenant, 'ali');
   assert.strictEqual((await cashier.request('GET', '/api/auth/me')).status, 200);
+  // The owner turned rounding on while showing the shop: the new history is priced as is
+  assert.strictEqual((await client.request('PUT', '/api/settings', { roundingStep: 250 })).status, 200);
   const owner = await ownerOf(models);
   const marker = await readMarker(env.ctx, tenant);
   const others = await Promise.all(['plain-shop', 'demo-twin'].map(async (slug) => normalized(await env.db.tenantModels(await tenantOf(slug)))));
@@ -702,6 +704,8 @@ test("reset keeps the owner's account, ends the staff's sessions, touches nothin
   const { sales } = await raw(models);
   assert.strictEqual(sales[0].number, 1);
   assert.ok(sales[0].createdAt >= midnight(fresh.firstDay) && sales.at(-1).createdAt <= fresh.until);
+  assert.strictEqual((await models.Setting.findById('shop').lean()).roundingStep, 0);
+  assert.ok(sales.every((s) => s.roundingStep === undefined));
 
   // The control database: the cashier's session gone, the reset and its staff in the log, nothing else
   const after = await control();

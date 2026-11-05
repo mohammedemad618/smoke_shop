@@ -30,6 +30,8 @@ export const DEMO_SETTINGS = Object.freeze({
   defaultTrackStock: false,
   defaultLowStockAlert: 12,
   defaultBlockWhenOut: false,
+  // The history is priced as is: a reset after the owner turned rounding on starts it off again
+  roundingStep: 0,
 });
 
 /*
