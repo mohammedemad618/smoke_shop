@@ -5,6 +5,7 @@ import {
   formatQty,
   formatDateTime,
   escapeHtml,
+  roundTo,
   roundMoney,
   roundUpTo,
   lineAmount,
@@ -26,6 +27,7 @@ import {
 } from './common.js';
 import { scanBarcodes } from './scanner.js';
 import { isSaleOf } from './idempotency.js';
+import { fitsStep, maxDiscount } from './discount.js';
 import { receiptHtml, prepareReceipt, printPrepared, clearReceipt } from './receipt.js';
 
 const MAX_QTY = 10000;
@@ -53,6 +55,9 @@ const state = {
   // The id of the sale this cart becomes, made with its first item and sent with every try
   // to complete it, so trying again after a lost answer never records it twice
   clientSaleId: null,
+  // The line whose discount is being typed (its key), and what is wrong with what was typed
+  discountEdit: null,
+  discountError: '',
 };
 // The shop's «أصغر فئة نقدية» as this screen last read it; the server rounds by its own
 const step = () => state.shop.roundingStep || 0;
@@ -87,6 +92,8 @@ const els = {
   cartEmpty: $('cartEmpty'),
   itemCount: $('itemCount'),
   grandTotal: $('grandTotal'),
+  discountRow: $('discountRow'),
+  discountTotal: $('discountTotal'),
   paid: $('paidInput'),
   changeRow: $('changeRow'),
   changeLabel: $('changeLabel'),
@@ -288,9 +295,130 @@ const baseInCart = (productId, exceptKey) =>
   state.cart.reduce((sum, l) => (l.productId === productId && l.key !== exceptKey ? sum + l.qty * l.packSize : sum), 0);
 
 // Line by line, like the server: each line is rounded to the cent, and up to the shop's
-// «أصغر فئة نقدية» when it rounds, before adding up
-const lineTotal = (l) => lineAmount(l.price, l.qty, step());
+// «أصغر فئة نقدية» when it rounds, then its discount comes off, before adding up
+const lineGross = (l) => lineAmount(l.price, l.qty, step());
+const lineTotal = (l) => (l.discount ? roundMoney(lineGross(l) - l.discount) : lineGross(l));
 const cartTotal = () => roundMoney(state.cart.reduce((sum, l) => sum + lineTotal(l), 0));
+
+/* Discounts */
+
+// A discount (the «الخصم» permission) is money off a whole line, never taking it below
+// what its goods cost. The server decides (routes/sales.js); this screen only helps. It
+// knows a line's cost only for an account that sees costs (the server sends no one else a
+// purchase price): such an account is told the most it may take off, and the others only
+// that it is off the whole line. null: the cost is not known here.
+function knownCost(l) {
+  const purchasePrice = state.byId.get(l.productId)?.purchasePrice;
+  // As the server costs the line: the unit's cost to 6 decimals, then the line to the cent
+  return typeof purchasePrice === 'number' ? roundMoney(roundTo(purchasePrice * l.packSize, 6) * l.qty) : null;
+}
+// The most this screen lets a line take off: down to its cost when known, otherwise its
+// whole amount; a multiple of the shop's step either way
+const discountCap = (l) => maxDiscount(lineGross(l), knownCost(l) ?? 0, step());
+const downToStep = (amount) => (step() ? Math.floor(roundTo(amount / step(), 6)) * step() : amount);
+
+// A discount its line no longer allows (the quantity, the price or the shop's step changed,
+// or its cost has just become known) comes down to what the line allows, or goes, and the
+// cashier is told. What the server alone knows (the cost, for an account that does not
+// see it) it checks when the sale is completed.
+function fitDiscounts() {
+  const changed = [];
+  for (const l of state.cart) {
+    if (!l.discount) continue;
+    const fitted = Math.min(discountCap(l), downToStep(l.discount));
+    if (fitted === l.discount) continue;
+    if (fitted > 0) l.discount = fitted;
+    else delete l.discount;
+    changed.push(fitted > 0 ? `خُفّض خصم «${l.name}» إلى ${formatMoney(fitted)}` : `أُزيل خصم «${l.name}»`);
+  }
+  if (changed.length) toast(`${changed.join('، ')}، لأن مبلغ السطر تغيّر`, 'error');
+}
+
+function openDiscount(line) {
+  if (!can('discount')) return;
+  state.discountEdit = line.key;
+  state.discountError = '';
+  renderCart();
+  focusDiscount(true);
+}
+
+function closeDiscount() {
+  state.discountEdit = null;
+  state.discountError = '';
+  renderCart();
+}
+
+function focusDiscount(select = false) {
+  const input = els.cartLines.querySelector('[data-discount-input]');
+  input?.focus();
+  if (select) input?.select();
+}
+
+// 0 (or nothing typed) removes the line's discount
+function setDiscount(line, amount) {
+  if (amount > 0) line.discount = amount;
+  else delete line.discount;
+  closeDiscount();
+}
+
+// What the cashier typed, checked as far as this screen can before it goes on the line
+function applyDiscount(line, raw) {
+  const text = raw.trim();
+  const amount = text === '' ? 0 : roundMoney(parseNumber(text));
+  const gross = lineGross(line);
+  const cost = knownCost(line);
+  const most = maxDiscount(gross, cost ?? 0, step());
+  let problem = '';
+  if (!Number.isFinite(amount) || amount < 0) problem = 'اكتب الخصم بالأرقام';
+  else if (amount > 0 && !fitsStep(amount, step())) problem = `الخصم يكون من مضاعفات ${formatMoney(step())}، كما تُقرَّب الأسعار`;
+  else if (amount > gross) problem = `الخصم أكبر من مبلغ السطر (${formatMoney(gross)})`;
+  else if (cost !== null && amount > most) problem = most > 0 ? `أقصى خصم على هذا الصنف ${formatMoney(most)}` : 'هذا الصنف لا يقبل خصمًا: مبلغه لا يزيد على رأس ماله';
+  if (problem) {
+    state.discountError = problem;
+    renderCart();
+    focusDiscount();
+    return;
+  }
+  setDiscount(line, amount);
+  focusScan();
+}
+
+// Under a line: its discount, or the box to type it
+function discountHtml(l) {
+  if (state.discountEdit === l.key) {
+    const id = `discount-${l.key.replace(/\W/g, '-')}`;
+    const cost = knownCost(l);
+    const most = discountCap(l);
+    const help = [
+      cost === null ? 'من مبلغ السطر كله' : most > 0 ? `أقصى خصم ${formatMoney(most)}` : 'لا يقبل خصمًا: مبلغه لا يزيد على رأس ماله',
+      step() ? `من مضاعفات ${formatMoney(step())}` : '',
+    ].filter(Boolean).join('، ');
+    return `<form class="line-discount is-editing" data-discount-form>
+      <label class="line-discount-label" for="${id}">خصم</label>
+      <input id="${id}" class="input line-discount-input num" type="text" inputmode="decimal" autocomplete="off" placeholder="المبلغ" value="${l.discount ?? ''}" aria-describedby="${id}-hint" data-discount-input>
+      <button class="btn btn-sm btn-primary" type="submit">تطبيق</button>
+      ${l.discount ? '<button class="btn btn-sm btn-ghost danger" type="button" data-discount-remove>إزالة</button>' : ''}
+      <button class="btn btn-sm btn-ghost" type="button" data-discount-cancel>إلغاء</button>
+      <small class="line-discount-hint${state.discountError ? ' is-error' : ''}" id="${id}-hint"${state.discountError ? ' role="alert"' : ''}>${escapeHtml(state.discountError || help)}</small>
+    </form>`;
+  }
+  if (!l.discount) return '';
+  return `<div class="line-discount">
+      <span>خصم <span class="num">${formatMoney(l.discount)}</span></span>
+      <button class="link-btn" type="button" data-discount-edit data-need="discount" aria-label="تعديل خصم ${escapeHtml(l.name)}">تعديل</button>
+      <button class="link-btn" type="button" data-discount-remove aria-label="إزالة خصم ${escapeHtml(l.name)}">إزالة الخصم</button>
+    </div>`;
+}
+
+// A cart kept from before (or the session's account now known) on an account that may not
+// give discounts: they go, or the sale would only be refused
+async function dropDiscountsWithoutAccess() {
+  await session;
+  if (can('discount') || !state.cart.some((l) => l.discount)) return;
+  for (const l of state.cart) delete l.discount;
+  renderCart();
+  toast('أُزيلت خصومات الفاتورة: حسابك لا يملك صلاحية «الخصم»', 'error');
+}
 
 // Returns an error message instead of adding when the stock does not allow it
 function addToCart(product, qty = 1, mode = 'retail') {
@@ -343,6 +471,8 @@ function setMode(line, mode) {
   }
   if (other) {
     other.qty = qty;
+    // The line it joins takes its discount too, as the server would add them up
+    if (line.discount) other.discount = roundMoney((other.discount ?? 0) + line.discount);
     state.cart = state.cart.filter((l) => l !== line);
   } else {
     Object.assign(line, { key, mode, qty, weightUnit: line.weightUnit ?? preferredWeightUnit(product._id), ...fields });
@@ -386,10 +516,20 @@ function lineHtml(l) {
         <button type="button" data-line-mode="wholesale" aria-pressed="${l.mode === 'wholesale'}">جملة</button>
       </div>`
     : '';
+  const total = `<span class="line-total num">${formatMoney(lineTotal(l))}</span>`;
+  // A discounted line shows what it came to before, struck through, then what it comes to
+  const amounts = l.discount
+    ? `<span class="line-amounts"><s class="line-was num"><span class="sr-only">قبل الخصم </span>${formatMoney(lineGross(l))}</s>${total}</span>`
+    : total;
+  // Only for an account that may give discounts, on a line that has none yet
+  const discountButton =
+    !l.discount && state.discountEdit !== l.key
+      ? `<button type="button" class="line-discount-btn" data-discount-edit data-need="discount" aria-label="خصم على ${name}">خصم</button>`
+      : '';
   return `<li class="line${l.key === state.lastAdded ? ' is-new' : ''}" data-key="${l.key}">
     <div class="line-main">
       <span class="line-name">${name}${pack ? ` <small class="line-pack">${pack}</small>` : ''}</span>
-      <span class="line-total num">${formatMoney(lineTotal(l))}</span>
+      ${amounts}
     </div>
     <div class="line-sub">
       <div class="qty" role="group" aria-label="كمية ${name}">
@@ -398,18 +538,30 @@ function lineHtml(l) {
         <button type="button" class="qty-btn" data-dec aria-label="إنقاص الكمية"${l.qty <= qtyStep(l) ? ' disabled' : ''}>−</button>
       </div>
       ${weightSwitch}
-      ${priceAddsUp(l.price, l.qty, lineTotal(l)) ? `<span class="line-unit">× <span class="num">${formatMoney(l.price)}</span>${weighed ? ' للكيلو' : ''}</span>` : ''}
+      ${priceAddsUp(l.price, l.qty, lineGross(l)) ? `<span class="line-unit">× <span class="num">${formatMoney(l.price)}</span>${weighed ? ' للكيلو' : ''}</span>` : ''}
       ${modeSwitch}
+      ${discountButton}
       <button type="button" class="line-remove" data-remove aria-label="حذف ${name} من الفاتورة" title="حذف من الفاتورة">×</button>
     </div>
+    ${discountHtml(l)}
   </li>`;
 }
 
 function renderCart() {
   const hasItems = state.cart.length > 0;
+  fitDiscounts();
+  if (state.discountEdit && !state.cart.some((l) => l.key === state.discountEdit)) state.discountEdit = null;
+  // What is being typed in a line's discount box stays through the redraw
+  const typing = els.cartLines.querySelector('[data-discount-input]');
+  const draft = typing && { key: typing.closest('.line')?.dataset.key, value: typing.value };
   els.cartLines.hidden = !hasItems;
   els.cartEmpty.hidden = hasItems;
   els.cartLines.innerHTML = state.cart.map(lineHtml).join('');
+  const box = els.cartLines.querySelector('[data-discount-input]');
+  if (box && draft?.key === state.discountEdit) box.value = draft.value;
+  const discounts = roundMoney(state.cart.reduce((sum, l) => sum + (l.discount ?? 0), 0));
+  els.discountRow.hidden = !discounts;
+  els.discountTotal.textContent = formatMoney(discounts);
   // Pieces only (a box counts its pieces); weights are not pieces
   els.itemCount.textContent = formatQty(
     state.cart.reduce((sum, l) => (l.unit === 'kg' ? sum : sum + l.qty * l.packSize), 0),
@@ -493,6 +645,12 @@ function restoreCart() {
   }
   const lines = Array.isArray(saved?.cart) ? saved.cart.filter((l) => typeof l?.productId === 'string' && typeof l.key === 'string' && Number(l.qty) > 0) : [];
   if (!lines.length) return;
+  // A line's discount comes back with it, if it is an amount at all
+  for (const l of lines) {
+    const discount = roundMoney(Number(l.discount));
+    if (Number.isFinite(discount) && discount > 0) l.discount = discount;
+    else delete l.discount;
+  }
   state.cart = lines;
   state.clientSaleId = typeof saved.clientSaleId === 'string' ? saved.clientSaleId : newClientId();
   if (saved.payType === 'credit' && can('credit')) {
@@ -761,6 +919,17 @@ const lineFor = (el) => state.cart.find((l) => l.key === el.closest('.line')?.da
 els.cartLines.addEventListener('click', (e) => {
   const line = lineFor(e.target);
   if (!line) return;
+  // A line's discount: the box to type it stays focused; removing or leaving it goes back to scanning
+  if (e.target.closest('[data-discount-edit]')) {
+    openDiscount(line);
+    return;
+  }
+  if (e.target.closest('[data-discount-remove]') || e.target.closest('[data-discount-cancel]')) {
+    if (e.target.closest('[data-discount-remove]')) setDiscount(line, 0);
+    else closeDiscount();
+    focusScan();
+    return;
+  }
   const weightButton = e.target.closest('[data-weight-unit]');
   if (weightButton) {
     line.weightUnit = weightButton.dataset.weightUnit;
@@ -779,6 +948,21 @@ els.cartLines.addEventListener('click', (e) => {
   focusScan();
 });
 
+els.cartLines.addEventListener('submit', (e) => {
+  if (!e.target.matches('[data-discount-form]')) return;
+  e.preventDefault();
+  const line = lineFor(e.target);
+  if (line) applyDiscount(line, e.target.querySelector('[data-discount-input]').value);
+});
+
+// Escape leaves the discount box, not the invoice panel
+els.cartLines.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || !e.target.matches('[data-discount-input]')) return;
+  e.stopPropagation();
+  closeDiscount();
+  focusScan();
+});
+
 els.cartLines.addEventListener('change', (e) => {
   if (!e.target.matches('[data-qty]')) return;
   const line = lineFor(e.target);
@@ -793,6 +977,7 @@ els.clear.addEventListener('click', () => {
   if (!state.cart.length || !confirm('إلغاء الفاتورة الحالية وحذف كل أصنافها؟')) return;
   state.cart = [];
   state.clientSaleId = null;
+  state.discountEdit = null;
   els.paid.value = '';
   renderCart();
   focusScan();
@@ -813,6 +998,18 @@ els.checkout.addEventListener('click', checkout);
 
 async function checkout() {
   if (els.checkout.disabled) return;
+  // A discount typed and not applied would not be on the sale: said rather than dropped
+  const typing = els.cartLines.querySelector('[data-discount-input]');
+  if (typing) {
+    const line = lineFor(typing);
+    if (typing.value.trim() !== String(line?.discount ?? '')) {
+      toast('اضغط «تطبيق» ليُحسب الخصم الذي كتبته، أو «إلغاء»، ثم أتمم البيع', 'error');
+      openInvoiceSheet(true);
+      typing.focus();
+      return;
+    }
+    closeDiscount();
+  }
   const raw = els.paid.value.trim();
   const credit = state.payType === 'credit';
   let customer = credit ? typedCustomer() : null;
@@ -835,7 +1032,8 @@ async function checkout() {
   const shownStep = step();
   updatePayment();
   const body = {
-    items: state.cart.map((l) => ({ productId: l.productId, quantity: l.qty, mode: l.mode })),
+    // Prices come from the server; a line sends only the discount taken off it, if any
+    items: state.cart.map((l) => ({ productId: l.productId, quantity: l.qty, mode: l.mode, ...(l.discount ? { discount: l.discount } : {}) })),
     paid: raw === '' ? undefined : roundMoney(parseNumber(raw)),
     ...(credit ? { paymentType: 'credit', customerId: customer._id } : {}),
     clientId: state.clientSaleId,
@@ -851,7 +1049,7 @@ async function checkout() {
       state.clientSaleId = newClientId();
       saveCart();
       loadToday();
-      alert(`سُجّلت الفاتورة رقم ${sale.number} من قبل بأصناف غير أصناف السلة الحالية، ولم تُبَع هذه السلة بعد. راجع الفاتورة رقم ${sale.number} في صفحة المبيعات، واحذف من السلة ما بيع فيها، ثم أتمم البيع.`);
+      alert(`سُجّلت الفاتورة رقم ${sale.number} من قبل بأصناف أو خصومات غير التي في السلة الحالية، ولم تُبَع هذه السلة بعد. راجع الفاتورة رقم ${sale.number} في صفحة المبيعات، واحذف من السلة ما بيع فيها، ثم أتمم البيع.`);
       return;
     }
     state.cart = [];
@@ -1011,3 +1209,4 @@ restoreCart();
 loadCatalog().catch((err) => toast(err.message, 'error'));
 loadToday();
 loadCustomers();
+dropDiscountsWithoutAccess();

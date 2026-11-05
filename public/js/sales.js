@@ -4,7 +4,6 @@ import {
   formatMoney,
   roundMoney,
   roundQty,
-  lineAmount,
   priceAddsUp,
   formatQty,
   formatWeight,
@@ -25,6 +24,7 @@ import {
   can,
 } from './common.js';
 import { isReturnOf } from './idempotency.js';
+import { keptAmount } from './discount.js';
 
 const TIME_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -175,6 +175,7 @@ function renderSummary(s, period) {
       <div class="z-label">المبيعات</div>
       <div class="z-value num">${formatMoney(s.total)}</div>
       ${s.returns ? `<div class="z-note">بعد خصم مرتجعات <span class="num">${formatMoney(s.returns)}</span></div>` : ''}
+      ${s.discounts ? `<div class="z-note">بعد خصومات الأصناف <span class="num">${formatMoney(s.discounts)}</span></div>` : ''}
     </div>
     <div><div class="z-label">تكلفة البضاعة المباعة</div><div class="z-value num">${formatMoney(s.cost)}</div></div>
     <div>
@@ -242,7 +243,9 @@ function itemsDetail(sale) {
   const items = sale.items
     .map((i) => {
       const back = i.returnedQuantity ? ` <span class="returned-inline">أُرجع ${amountOf(i, i.returnedQuantity)}</span>` : '';
-      return `<li><span>${escapeHtml(i.name)} <span class="num">${qtyLabel(i)}</span>${back}</span><span class="num">${formatMoney(i.lineTotal)}</span></li>`;
+      // Its amount is after its discount, said beside it
+      const off = i.discount ? ` <span class="discount-inline">خصم <span class="num">${formatMoney(i.discount)}</span></span>` : '';
+      return `<li><span>${escapeHtml(i.name)} <span class="num">${qtyLabel(i)}</span>${off}${back}</span><span class="num">${formatMoney(i.lineTotal)}</span></li>`;
     })
     .join('');
   // Who returned it, for returns recorded with their account
@@ -533,16 +536,16 @@ function returnQuantities() {
 const validReturn = (r) =>
   Number.isFinite(r.quantity) && r.quantity >= 0 && r.quantity <= r.max && (!wholeOnly(r.item) || Number.isInteger(r.quantity));
 
-// Worked out like the server: a line gives back its share of what it was sold for, by
-// the part of it returned so far, so the amount shown is the amount refunded. A sale made
-// while the shop rounded up to its «أصغر فئة نقدية» gives back what was left of the line
-// before less what is left after, each rounded up at the sale's own step (routes/sales.js).
+// Worked out like the server: a line gives back its share of what it was sold for (after
+// its discount), by the part of it returned so far, so the amount shown is the amount
+// refunded. A sale made while the shop rounded up to its «أصغر فئة نقدية» gives back what
+// was left of the line before less what is left after, each rounded up at the sale's own
+// step, a discount's share off each (public/js/discount.js keptAmount, routes/sales.js).
 const share = (item, quantity) => roundMoney((item.lineTotal * quantity) / item.quantity);
-const leftAmount = (item, left, step) => (left >= item.quantity ? item.lineTotal : left > 0 ? lineAmount(item.unitPrice, left, step) : 0);
 function refundOf(item, before, quantity) {
   const step = returning.roundingStep ?? 0;
   if (!step) return roundMoney(share(item, before + quantity) - share(item, before));
-  return roundMoney(leftAmount(item, roundQty(item.quantity - before), step) - leftAmount(item, roundQty(item.quantity - roundQty(before + quantity)), step));
+  return roundMoney(keptAmount(item, roundQty(item.quantity - before), step) - keptAmount(item, roundQty(item.quantity - roundQty(before + quantity)), step));
 }
 function updateReturnAmount() {
   const amount = returnQuantities().reduce((sum, r) => {
@@ -566,10 +569,13 @@ function openReturn(sale) {
     .map((item, index) => {
       const left = Math.round((item.quantity - (item.returnedQuantity ?? 0)) * 1000) / 1000;
       const per = item.mode === 'wholesale' ? 'للجملة' : item.unit === 'kg' ? 'للكيلو' : 'للقطعة';
-      // No unit price on a line rounded up (3 x 600 sold for 2,000): it would not add up
-      const price = priceAddsUp(item.unitPrice, item.quantity, item.lineTotal) ? `<div class="pcat"><span class="num">${formatMoney(item.unitPrice)}</span> ${per}</div>` : '';
+      // No unit price on a line rounded up (3 x 600 sold for 2,000): it would not add up. A
+      // discounted line adds up before its discount, and says the discount.
+      const before = item.discount ? roundMoney(item.lineTotal + item.discount) : item.lineTotal;
+      const price = priceAddsUp(item.unitPrice, item.quantity, before) ? `<div class="pcat"><span class="num">${formatMoney(item.unitPrice)}</span> ${per}</div>` : '';
+      const off = item.discount ? `<div class="pcat">خصم <span class="num">${formatMoney(item.discount)}</span> من <span class="num">${formatMoney(before)}</span></div>` : '';
       return `<tr${left ? '' : ' class="is-quiet"'}>
-        <td><div class="pname">${escapeHtml(item.name)}</div>${price}</td>
+        <td><div class="pname">${escapeHtml(item.name)}</div>${price}${off}</td>
         <td><span class="num">${qtyLabel(item)}</span>${item.returnedQuantity ? ` <small class="returned-inline">أُرجع ${amountOf(item, item.returnedQuantity)}</small>` : ''}</td>
         <td>${
           wholeOnly(item)

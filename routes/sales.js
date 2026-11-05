@@ -8,9 +8,12 @@ import { roundingStepOf } from '../lib/shop-settings.js';
 import { DAY_MS, requestedRange, timeZoneParam } from '../lib/range.js';
 import { madeByOf } from '../lib/auth.js';
 import { allow, can, forbidden, saleFor, seesCosts } from '../lib/permissions.js';
+import { fitsStep, keptAmount, maxDiscount } from '../public/js/discount.js';
 
 const router = Router();
 const MAX_QUANTITY = 10000;
+// Amounts in a message as the cashier shows them: 1,250
+const moneyText = new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 });
 const MAX_LIST_RANGE_MS = 31 * DAY_MS;
 const MAX_REPORT_RANGE_MS = 3 * 366 * DAY_MS;
 const GROUP_FORMATS = { day: '%Y-%m-%d', month: '%Y-%m' };
@@ -111,7 +114,10 @@ async function collectedEvents(DebtEntry, end) {
 }
 
 // The figures of [start, end), in one row ('all') or one row per day or month of the shop's
-// time zone: invoices, pieces, sales, cost, profit, returns, credit, expenses, collected
+// time zone: invoices, pieces, sales, cost, profit, returns, credit, expenses, collected,
+// and discounts (what the cashier took off the lines of the sales made in it, which their
+// returns leave as it is) only in a row that has some, so a shop that gives none reads its
+// figures as before
 async function periodFigures(m, start, end, groupBy = null, timezone = 'UTC') {
   const { Sale, Expense, DebtEntry } = m;
   const format = GROUP_FORMATS[groupBy];
@@ -145,6 +151,8 @@ async function periodFigures(m, start, end, groupBy = null, timezone = 'UTC') {
           cost: { $sum: '$cost' },
           profit: { $sum: '$profit' },
           credit: { $sum: { $ifNull: ['$debt', 0] } },
+          // Each invoice's lines added up first ($sum of an array), then the invoices
+          discounts: { $sum: { $sum: '$items.discount' } },
         },
       },
     ]).option({ maxTimeMS: REPORT_MS }),
@@ -173,7 +181,10 @@ async function periodFigures(m, start, end, groupBy = null, timezone = 'UTC') {
     }
     return rows.get(key);
   };
-  for (const s of sold) Object.assign(rowFor(s._id), { count: s.count, pieces: s.pieces, total: s.total, cost: s.cost, profit: s.profit, credit: s.credit });
+  for (const s of sold) {
+    Object.assign(rowFor(s._id), { count: s.count, pieces: s.pieces, total: s.total, cost: s.cost, profit: s.profit, credit: s.credit });
+    if (s.discounts) rowFor(s._id).discounts = s.discounts;
+  }
   for (const r of returned) {
     const row = rowFor(r._id);
     row.pieces -= r.pieces;
@@ -195,6 +206,7 @@ async function periodFigures(m, start, end, groupBy = null, timezone = 'UTC') {
     .map((row) => {
       const figures = { ...row, pieces: roundQty(row.pieces) };
       for (const field of ['total', 'cost', 'profit', 'returns', 'credit', 'expenses', 'collected']) figures[field] = money(row[field]);
+      if (row.discounts) figures.discounts = money(row.discounts);
       return { ...figures, netProfit: netProfitOf(figures, figures.expenses, figures.collected) };
     });
 }
@@ -205,6 +217,9 @@ const sumFigures = (rows) => {
   for (const row of rows) for (const field of Object.keys(EMPTY_FIGURES)) sum[field] += row[field];
   for (const field of ['total', 'cost', 'profit', 'returns', 'credit', 'expenses', 'collected', 'netProfit']) sum[field] = money(sum[field]);
   sum.pieces = roundQty(sum.pieces);
+  // Like a row: only when some line of the period had a discount
+  const discounts = money(rows.reduce((total, row) => total + (row.discounts ?? 0), 0));
+  if (discounts) sum.discounts = discounts;
   return sum;
 };
 
@@ -358,8 +373,37 @@ const withBalance = async (req, sale) =>
 // from this mark: a repeated answer may be the first one to arrive (the earlier one lost)
 const repeated = async (req, sale) => ({ ...(await withBalance(req, sale)), repeated: true });
 
-// Every account sells for cash; selling on a customer's account needs `credit`. The sale
-// records who made it, from the session.
+/* Discounts */
+
+// A line's discount as sent: none (missing, empty or 0) is 0; anything else must be a money
+// amount above 0, to the fils
+function discountOf(value) {
+  if (value === undefined || value === null || value === '' || value === 0) return 0;
+  const discount = typeof value === 'number' || typeof value === 'string' ? Number(value) : NaN;
+  if (!Number.isFinite(discount) || discount <= 0 || money(discount) !== discount) {
+    throw httpError(400, 'الخصم يجب أن يكون مبلغًا أكبر من صفر', 'DISCOUNT_INVALID');
+  }
+  return discount;
+}
+
+// A discount on a line of `amount` (price x quantity, rounded up to the step) whose goods
+// cost `cost`: a multiple of the step, so the line stays one, and leaving the line no lower
+// than its cost. Only an account that sees costs is told the most it may take off; the
+// others are refused without the cost or anything worked out from it.
+function checkDiscount(user, { name, discount, amount, cost, step }) {
+  if (!fitsStep(discount, step)) {
+    throw httpError(400, `خصم «${name}» يجب أن يكون من مضاعفات ${moneyText.format(step)}، كما تُقرَّب أسعار المتجر`, 'DISCOUNT_STEP');
+  }
+  if (money(amount - discount) >= cost) return;
+  const most = maxDiscount(amount, cost, step);
+  let message = `خصم «${name}» أكبر من المسموح لهذا الصنف. قلّله أو أزله ثم أتمم البيع`;
+  if (seesCosts(user)) message = most > 0 ? `أقصى خصم على «${name}» ${moneyText.format(most)}` : `«${name}» لا يقبل خصمًا: مبلغه لا يزيد على رأس ماله`;
+  throw httpError(400, message, 'DISCOUNT_TOO_HIGH');
+}
+
+// Every account sells for cash; selling on a customer's account needs `credit`, and taking
+// money off a line needs `discount`. The sale records who made it (and so who gave its
+// discounts), from the session.
 router.post('/', allow('selling'), async (req, res) => {
   const { Product, Sale, Customer, DebtEntry, Counter, Setting } = req.models;
   // Sent again after an answer that never arrived: the invoice as it was recorded, and
@@ -372,7 +416,8 @@ router.post('/', allow('selling'), async (req, res) => {
   const lines = Array.isArray(req.body.items) ? req.body.items : [];
   if (lines.length === 0) throw httpError(400, 'أضف منتجًا واحدًا على الأقل إلى الفاتورة');
 
-  // Merge repeated lines of the same product and sale type, keeping cart order
+  // Merge repeated lines of the same product and sale type, keeping cart order (and adding
+  // up their discounts: the line they make takes them all)
   const merged = new Map();
   for (const line of lines) {
     const id = String(line?.productId ?? '');
@@ -381,12 +426,16 @@ router.post('/', allow('selling'), async (req, res) => {
     const quantity = roundQty(Number(line?.quantity));
     if (!mongoose.isObjectIdOrHexString(id)) throw httpError(400, 'الفاتورة تحتوي على منتج غير صالح');
     if (!Number.isFinite(quantity) || quantity <= 0) throw httpError(400, 'الكمية يجب أن تكون أكبر من صفر');
+    const discount = discountOf(line?.discount);
     const key = `${id}:${mode}`;
-    merged.set(key, { id, mode, quantity: roundQty((merged.get(key)?.quantity ?? 0) + quantity) });
+    const had = merged.get(key);
+    merged.set(key, { id, mode, quantity: roundQty((had?.quantity ?? 0) + quantity), discount: money((had?.discount ?? 0) + discount) });
   }
   if ([...merged.values()].some((l) => l.quantity > MAX_QUANTITY)) {
     throw httpError(400, `أقصى كمية للصنف الواحد ${MAX_QUANTITY}`);
   }
+  // Before anything is priced or costed: an account without it learns nothing from trying
+  if ([...merged.values()].some((l) => l.discount > 0) && !can(req.user, 'discount')) throw forbidden('discount');
 
   // Prices always come from the database, never from the client, and so does the step each
   // line is rounded up to (the shop's «أصغر فئة نقدية» now, 0 when it does not round)
@@ -400,7 +449,7 @@ router.post('/', allow('selling'), async (req, res) => {
   }
   const byId = new Map(products.map((p) => [String(p._id), p]));
 
-  const items = [...merged.values()].map(({ id, mode, quantity }) => {
+  const items = [...merged.values()].map(({ id, mode, quantity, discount }) => {
     const p = byId.get(id);
     const unit = p.unit ?? 'piece';
     const wholesale = mode === 'wholesale';
@@ -411,6 +460,11 @@ router.post('/', allow('selling'), async (req, res) => {
     }
     const packSize = wholesale ? p.wholesaleQty : 1;
     const unitPrice = wholesale ? p.wholesalePrice : p.salePrice;
+    const unitCost = precise(p.purchasePrice * packSize);
+    // The line, not each piece, goes up to the step: 3 x 600 is 2,000 at 250, not 2,250
+    const amount = lineAmount(unitPrice, quantity, step);
+    // Its discount comes off the whole line, at its cost as the sale records it
+    if (discount > 0) checkDiscount(req.user, { name: p.name, discount, amount, cost: money(unitCost * quantity), step });
     return {
       product: p._id,
       name: p.name,
@@ -420,9 +474,9 @@ router.post('/', allow('selling'), async (req, res) => {
       packSize,
       quantity,
       unitPrice,
-      unitCost: precise(p.purchasePrice * packSize),
-      // The line, not each piece, goes up to the step: 3 x 600 is 2,000 at 250, not 2,250
-      lineTotal: lineAmount(unitPrice, quantity, step),
+      unitCost,
+      lineTotal: discount > 0 ? money(amount - discount) : amount,
+      ...(discount > 0 ? { discount } : {}),
     };
   });
 
@@ -541,19 +595,21 @@ router.post('/:id/returns', allow('returns'), async (req, res) => {
     throw httpError(400, sale.returnStatus === 'full' ? 'هذه الفاتورة مرتجعة بالكامل' : 'حدّد كمية واحدة على الأقل للإرجاع');
   }
 
-  // A line gives back its share of what it was sold for, by the part of it returned so
-  // far, so a line returned in several goes adds up to exactly its total and cost
-  // (three returns of 0.111 kg of a 0.333 kg line make 443.89, not 3 x 147.96 = 443.88)
+  // A line gives back its share of what it was sold for (after its discount, if it had
+  // one), by the part of it returned so far, so a line returned in several goes adds up to
+  // exactly its total and cost (three returns of 0.111 kg of a 0.333 kg line make 443.89,
+  // not 3 x 147.96 = 443.88)
   const share = (value, item, quantity) => money((value * quantity) / item.quantity);
   // A sale made while the shop rounded up to its «أصغر فئة نقدية» gives back, for a line,
   // what was left of it before less what is left after, each rounded up as the line was
-  // sold, at the sale's own step: 3 x 600 sold for 2,000 at 250, one back leaves 2 = 1,250,
-  // so 750 comes back, and the other two then 1,250. Its cost still comes back by share.
+  // sold, at the sale's own step (public/js/discount.js keptAmount): 3 x 600 sold for 2,000
+  // at 250, one back leaves 2 = 1,250, so 750 comes back, and the other two then 1,250. A
+  // discounted line keeps its discount's share off what is left (with 250 off, 1,750: 500
+  // back, then 1,250). Its cost still comes back by share.
   const step = sale.roundingStep ?? 0;
-  const leftAmount = (item, left) => (left >= item.quantity ? item.lineTotal : left > 0 ? lineAmount(item.unitPrice, left, step) : 0);
   const refundOf = (item, before, after) =>
     step
-      ? money(leftAmount(item, roundQty(item.quantity - before)) - leftAmount(item, roundQty(item.quantity - after)))
+      ? money(keptAmount(item, roundQty(item.quantity - before), step) - keptAmount(item, roundQty(item.quantity - after), step))
       : money(share(item.lineTotal, item, after) - share(item.lineTotal, item, before));
   let cost = 0;
   const items = lines.map(({ item, quantity }) => {

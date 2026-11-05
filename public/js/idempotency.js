@@ -8,12 +8,17 @@
 // so the tests can run it.
 import { roundTo } from './rounding.js';
 
-// key -> { quantity, price }, the lines of one key added up as the server adds them
+// key -> { quantity, price, discount }, the lines of one key added up as the server adds
+// them (a line's discount too: none is 0)
 function tally(lines) {
   const out = new Map();
-  for (const { key, quantity, price } of lines) {
-    const had = out.get(key)?.quantity ?? 0;
-    out.set(key, { quantity: roundTo(had + Number(quantity), 3), price: price === undefined ? null : roundTo(Number(price), 2) });
+  for (const { key, quantity, price, discount } of lines) {
+    const had = out.get(key);
+    out.set(key, {
+      quantity: roundTo((had?.quantity ?? 0) + Number(quantity), 3),
+      price: price === undefined ? null : roundTo(Number(price), 2),
+      discount: roundTo((had?.discount ?? 0) + Number(discount ?? 0), 2),
+    });
   }
   return out;
 }
@@ -22,16 +27,17 @@ function same(sent, saved) {
   if (sent.size !== saved.size) return false;
   for (const [key, line] of sent) {
     const other = saved.get(key);
-    if (!other || other.quantity !== line.quantity || other.price !== line.price) return false;
+    if (!other || other.quantity !== line.quantity || other.price !== line.price || other.discount !== line.discount) return false;
   }
   return true;
 }
 
-// The cart sent ({ items: [{ productId, quantity, mode }] }) and the sale that came back
+// The cart sent ({ items: [{ productId, quantity, mode, discount? }] }) and the sale that came
+// back: the same lines, with the same discounts
 export const isSaleOf = (body, sale) =>
   same(
-    tally(body.items.map((l) => ({ key: `${l.productId}:${l.mode === 'wholesale' ? 'wholesale' : 'retail'}`, quantity: l.quantity }))),
-    tally((sale?.items ?? []).map((i) => ({ key: `${i.product}:${i.mode}`, quantity: i.quantity }))),
+    tally(body.items.map((l) => ({ key: `${l.productId}:${l.mode === 'wholesale' ? 'wholesale' : 'retail'}`, quantity: l.quantity, discount: l.discount }))),
+    tally((sale?.items ?? []).map((i) => ({ key: `${i.product}:${i.mode}`, quantity: i.quantity, discount: i.discount }))),
   );
 
 // The draft sent ({ items: [{ product, mode, quantity, price }] }) and the purchase that came back

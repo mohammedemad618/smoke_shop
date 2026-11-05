@@ -26,7 +26,13 @@ const saleItemSchema = new Schema(
     quantity: { type: Number, required: true, min: 0.001 },
     unitPrice: { type: Number, required: true },
     unitCost: { type: Number, required: true },
+    // What the line was sold for, after its discount if it had one
     lineTotal: { type: Number, required: true },
+    // Money taken off the whole line at the cashier (the «الخصم» permission), kept only when
+    // there was some: lineTotal is its amount before (price x quantity, rounded up to the
+    // sale's roundingStep) less this, never below what its goods cost (routes/sales.js). Who
+    // gave it is who made the sale (madeBy): only that account's session can send it.
+    discount: { type: Number, default: undefined },
     returnedQuantity: { type: Number, default: 0, min: 0 },
   },
   { _id: false },

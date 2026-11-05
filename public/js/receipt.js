@@ -6,7 +6,7 @@
 // The page size goes into the page's own stylesheet through CSSOM, which the shop's
 // Content-Security-Policy allows (no inline style). Text goes in through escapeHtml only;
 // the logo is a data: URL the server checked (lib/logo.js).
-import { formatMoney, formatQty, formatWeight, formatDateTime, escapeHtml, packName, priceAddsUp } from './common.js';
+import { formatMoney, formatQty, formatWeight, formatDateTime, escapeHtml, packName, priceAddsUp, roundMoney } from './common.js';
 
 // The paper choices of the settings (models/Setting.js RECEIPT_PAPERS), with the roll's width
 export const PAPERS = Object.freeze({
@@ -16,10 +16,13 @@ export const PAPERS = Object.freeze({
 });
 export const paperOf = (value) => (Object.hasOwn(PAPERS, value) ? value : '80');
 
+// What a line came to before its discount (lineTotal is after it)
+const beforeDiscount = (item) => (item.discount ? roundMoney(item.lineTotal + item.discount) : item.lineTotal);
+
 // "9,000 للعلبة (10 قطع)", "1,000 للكيلو", "250 للقطعة"; nothing for a line rounded up to
 // the shop's «أصغر فئة نقدية» (3 x 600 sold for 2,000): its quantity and amount say it all
 function receiptPrice(item) {
-  if (!priceAddsUp(item.unitPrice, item.quantity, item.lineTotal)) return '';
+  if (!priceAddsUp(item.unitPrice, item.quantity, beforeDiscount(item))) return '';
   const price = `<span class="num">${formatMoney(item.unitPrice)}</span>`;
   if (item.mode === 'wholesale') return `<small>${price} لل${packName(item.unit, item.packSize)}</small>`;
   return `<small>${price} ${item.unit === 'kg' ? 'للكيلو' : 'للقطعة'}</small>`;
@@ -45,15 +48,17 @@ export function receiptHtml(sale, shop, logo = '') {
     `<span>${formatDateTime(sale.createdAt)}</span>`,
     shop.receiptShowCashier && sale.madeBy?.name ? `<span>البائع: ${escapeHtml(sale.madeBy.name)}</span>` : '',
   ];
+  // A discounted line says its discount under its name; its amount is after it
   const lines = sale.items
     .map(
       (i) => `<tr>
-          <td>${escapeHtml(i.name)}${receiptPrice(i)}</td>
+          <td>${escapeHtml(i.name)}${receiptPrice(i)}${i.discount ? `<small>خصم <span class="num">${formatMoney(i.discount)}</span></small>` : ''}</td>
           <td class="end num">${i.unit === 'kg' && i.mode !== 'wholesale' ? formatWeight(i.quantity) : formatQty(i.quantity)}</td>
           <td class="end num">${formatMoney(i.lineTotal)}</td>
         </tr>`,
     )
     .join('');
+  const discounts = roundMoney(sale.items.reduce((sum, i) => sum + (i.discount ?? 0), 0));
   const payment =
     sale.paymentType === 'credit'
       ? `<div><dt>بالدين على</dt><dd>${escapeHtml(sale.customerName)}</dd></div>
@@ -69,7 +74,7 @@ export function receiptHtml(sale, shop, logo = '') {
       <tbody>${lines}</tbody>
     </table>
     <dl class="slip-sum">
-      <div class="grand"><dt>الإجمالي</dt><dd>${amount(sale.total, shop.currency)}</dd></div>
+      ${discounts ? `<div><dt>الخصم</dt><dd class="num">${formatMoney(discounts)}</dd></div>\n      ` : ''}<div class="grand"><dt>الإجمالي</dt><dd>${amount(sale.total, shop.currency)}</dd></div>
       ${payment}
     </dl>
     <p class="slip-foot">${escapeHtml(shop.receiptNote || 'شكرًا لزيارتكم')}</p>

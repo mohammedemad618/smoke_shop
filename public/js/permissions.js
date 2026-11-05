@@ -9,6 +9,7 @@
 export const PERMISSIONS = Object.freeze({
   credit: 'البيع بالدين ودفعات العملاء',
   returns: 'المرتجعات',
+  discount: 'الخصم',
   products: 'المنتجات والأقسام والجرد',
   purchases: 'المشتريات والمصاريف',
   reports: 'المبيعات والتقارير والأرباح',
@@ -19,12 +20,15 @@ export const PERMISSION_KEYS = Object.freeze(Object.keys(PERMISSIONS));
 export const PERMISSION_HINTS = Object.freeze({
   credit: 'البيع على حساب زبون، وصفحة الديون، وإضافة زبون، وتسجيل تسديده',
   returns: 'إرجاع أصناف من فاتورة أو إلغاؤها وإعادة المبلغ',
+  discount: 'خصم مبلغ من سعر صنف في الكاشير، دون رأس ماله',
   products: 'إضافة المنتجات وتعديل أسعارها وأقسامها، والجرد',
   purchases: 'فواتير الموردين ودفعاتها، والمصاريف',
   reports: 'المبيعات والتقارير والملخص، وأسعار الشراء والأرباح أينما ظهرت',
 });
 
-// The two quick choices on the staff card
+// The two quick choices on the staff card: a cashier gives no discounts, a supervisor has
+// every permission. An account keeps the permissions it was given: a key added to the list
+// later reaches no existing account by itself.
 export const PRESETS = Object.freeze({
   cashier: Object.freeze({ label: 'كاشير', permissions: Object.freeze(['credit', 'returns']) }),
   supervisor: Object.freeze({ label: 'مشرف', permissions: PERMISSION_KEYS }),
