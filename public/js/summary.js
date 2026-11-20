@@ -1,30 +1,45 @@
-import { api, formatMoney, formatDateTime, escapeHtml, arCount, dayQuery, addMonths, monthKey, can, canOpen, session } from './common.js';
+import { api, formatMoney, formatDateTime, escapeHtml, arCount, dayKey, dayQuery, addMonths, monthKey, can, canOpen, session } from './common.js';
+import { debtActivity } from './debt-activity.js';
 
 const LOCALE = 'ar-u-nu-latn';
 const TIME_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
 const longDay = new Intl.DateTimeFormat(LOCALE, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
 const monthName = new Intl.DateTimeFormat(LOCALE, { month: 'long' });
 const DAY_MS = 24 * 60 * 60 * 1000;
-// A customer who owes and whose account has not moved for this long needs a reminder
-const OVERDUE_DAYS = 30;
 // A stocktake older than this is worth repeating
 const STOCKTAKE_DAYS = 30;
 const DEFAULT_LOW_STOCK = 5;
 const INVOICE_COUNT = { one: 'فاتورة واحدة', two: 'فاتورتين', few: 'فواتير', many: 'فاتورة', single: 'فاتورة' };
 const DAYS = { one: 'يوم', two: 'يومين', few: 'أيام', many: 'يومًا', single: 'يوم' };
+const EMPTY_SALES = { count: 0, total: 0, cost: 0, profit: 0, expenses: 0, credit: 0, collected: 0, netProfit: 0 };
 
 const $ = (id) => document.getElementById(id);
 const els = { date: $('summaryDate'), view: $('summary') };
+const payments = {
+  dialog: $('summaryPayments'),
+  period: $('summaryPaymentsPeriod'),
+  status: $('summaryPaymentsStatus'),
+  table: $('summaryPaymentsTable'),
+  rows: $('summaryPaymentsRows'),
+  more: $('summaryPaymentsMore'),
+  range: '',
+  cursor: null,
+  request: 0,
+};
+let periods;
+let cashPeriod = 'today';
+let cashRequest = 0;
+const cashCache = new Map();
 
 // The page is `reports`; what it loads is open to `reports`, but for the customers who owe
 // (`credit`) and the open stocktake (`products`). An account without one of those gets
 // `fallback` in its place and the page without that reminder, rather than no page at all
 // on the 403 (FORBIDDEN as well when the permission was taken away since the page loaded).
-async function optional(key, path, fallback) {
+async function optional(key, path, fallback, query) {
   await session;
   if (!can(key)) return fallback;
   try {
-    return await api(path);
+    return await api(query ? `${path}?${query}` : path);
   } catch (err) {
     if (err.code === 'FORBIDDEN') return fallback;
     throw err;
@@ -37,40 +52,69 @@ const link = (href) => (canOpen(new URL(href, location.href).pathname) ? href : 
 async function load() {
   const now = new Date();
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-  const monthQuery = new URLSearchParams({
+  const monthRange = new URLSearchParams({
     from: monthStart.toISOString(),
     to: addMonths(monthStart, 1).toISOString(),
-    groupBy: 'day',
-    tz: TIME_ZONE,
   });
-  const [today, month, valuation, products, customers, openCount] = await Promise.all([
-    api(`/sales?${dayQuery(now)}`),
+  const monthQuery = new URLSearchParams(monthRange);
+  monthQuery.set('groupBy', 'day');
+  monthQuery.set('tz', TIME_ZONE);
+  const [month, valuation, products, customers, openCount] = await Promise.all([
     api(`/sales/report?${monthQuery}`),
     api('/products/valuation'),
     api('/products'),
     optional('credit', '/customers', []),
     optional('products', '/stockcounts/current', null),
   ]);
+  periods = {
+    today: { label: 'اليوم', range: dayQuery(now) },
+    month: { label: `هذا الشهر (${monthName.format(now)})`, range: monthRange.toString() },
+  };
+  cashCache.clear();
+  const today = month.periods.find((day) => day.key === dayKey(now)) ?? EMPTY_SALES;
   els.date.textContent = longDay.format(now);
-  els.view.innerHTML = `${salesBlock(today.summary, month.summary, now)}
+  els.view.innerHTML = `${salesBlock(today, month.summary, now)}
+    ${cashBlock()}
     <div class="summary-pair">
       ${moneyBlock(valuation)}
       ${attentionBlock({ now, products, customers, openCount, lastCountAt: valuation.lastCountAt, counts: can('products') })}
     </div>`;
+  loadCash();
 }
 
 /* How the selling goes */
 
+function profitDetails(s, title) {
+  const rows = [
+    ['صافي المبيعات', s.total],
+    ['تكلفة البضاعة المباعة (FIFO)', -s.cost, true],
+    ['ربح المبيعات', s.profit],
+    ['المصاريف', -s.expenses, true],
+    ['البيع بالدين بعد تسويات المرتجعات', -s.credit, true],
+    ['المحصَّل من ديون المبيعات', s.collected, true],
+    ['صافي الربح', s.netProfit],
+  ];
+  return `<details class="profit-details">
+    <summary aria-label="كيف حُسب صافي ربح ${title}؟">كيف حُسب؟</summary>
+    <dl class="sale-lines">${rows.map(([label, value, change]) =>
+      `<div><dt>${label}</dt><dd class="num${value < 0 ? ' loss' : ''}">${change && value > 0 ? '+' : ''}${formatMoney(value)}</dd></div>`,
+    ).join('')}</dl>
+  </details>`;
+}
+
 function salesCard({ title, href, s }) {
-  return `<a class="sale-card" href="${href}">
-    <span class="z-label">${title}</span>
-    <strong class="sale-total num">${formatMoney(s.total)}</strong>
-    <span class="z-note">${s.count ? `مبيعات في ${arCount(s.count, INVOICE_COUNT)}` : 'لا مبيعات بعد'}</span>
+  return `<article class="sale-card">
+    <a class="sale-card-link" href="${href}">
+      <span class="z-label">${title}</span>
+      <strong class="sale-total num">${formatMoney(s.total)}</strong>
+      <span class="z-note">${s.count ? `مبيعات في ${arCount(s.count, INVOICE_COUNT)}` : 'لا مبيعات بعد'}</span>
+    </a>
     <dl class="sale-lines">
       <div><dt>ربح المبيعات</dt><dd class="num${s.profit < 0 ? ' loss' : ''}">${formatMoney(s.profit)}</dd></div>
       <div><dt>صافي الربح</dt><dd class="num${s.netProfit < 0 ? ' loss' : ''}">${formatMoney(s.netProfit)}</dd></div>
     </dl>
-  </a>`;
+    ${profitDetails(s, title)}
+  </article>`;
 }
 
 function salesBlock(today, month, now) {
@@ -81,33 +125,152 @@ function salesBlock(today, month, now) {
     </div>
     <div class="sales-pair">
       ${salesCard({ title: 'اليوم', href: '/sales.html', s: today })}
-      ${salesCard({ title: `هذا الشهر (${monthName.format(now)})`, href: `/sales.html?month=${monthKey(now)}`, s: month })}
+      ${salesCard({ title: periods.month.label, href: `/sales.html?month=${monthKey(now)}`, s: month })}
     </div>
-    <p class="hint">صافي الربح = ربح المبيعات − المصاريف − ما بيع بالدين + ما حُصِّل من الديون.</p>
   </section>`;
 }
 
+function cashBlock() {
+  return `<section class="summary-block" aria-labelledby="cashTitle">
+    <div class="section-head summary-cash-head">
+      <h2 id="cashTitle">حركة الصندوق</h2>
+      <div class="segmented segmented-sm" role="group" aria-label="فترة حركة الصندوق">
+        <button type="button" data-cash-period="today" aria-pressed="${cashPeriod === 'today'}">اليوم</button>
+        <button type="button" data-cash-period="month" aria-pressed="${cashPeriod === 'month'}">هذا الشهر</button>
+      </div>
+    </div>
+    <div id="summaryCashBody" aria-live="polite"></div>
+  </section>`;
+}
+
+async function loadCash() {
+  const request = ++cashRequest;
+  const period = periods[cashPeriod];
+  const body = $('summaryCashBody');
+  body.innerHTML = '<p class="hint">جارٍ تحميل حركة الصندوق…</p>';
+  try {
+    const cash = cashCache.get(period.range) ?? await api(`/summary/cash?${period.range}`);
+    if (request !== cashRequest) return;
+    cashCache.set(period.range, cash);
+    const showPayments = cash.customerPayments > 0 && can('credit');
+    const rows = [
+      ledgerRow({ label: 'رصيد بداية الفترة', value: cash.openingBalance }),
+      ledgerRow({ sign: '+', label: 'النقد المقبوض عند البيع', value: cash.salesReceived }),
+      ledgerRow({ sign: '+', label: 'تسديدات الزبائن', value: cash.customerPayments, showPayments }),
+      ledgerRow({ sign: '−', label: 'المرتجعات النقدية', value: cash.refunds }),
+      ledgerRow({ sign: '−', label: 'مدفوعات الموردين', value: cash.supplierPayments }),
+      ledgerRow({ sign: '−', label: 'المصاريف', value: cash.expenses }),
+      ledgerRow({ sign: '=', label: 'رصيد نهاية الفترة', value: cash.closingBalance, tone: 'ledger-total' }),
+    ];
+    body.innerHTML = `<div class="ledger">${rows.join('')}</div>`;
+  } catch (err) {
+    if (request !== cashRequest) return;
+    body.innerHTML = `<p class="form-error" role="alert">${escapeHtml(err.message)}</p>
+      <button class="btn" type="button" data-cash-retry>إعادة تحميل حركة الصندوق</button>`;
+  }
+}
+
+function paymentRow(payment) {
+  const customer = escapeHtml(payment.customerName || 'زبون');
+  const note = payment.note ? `<small class="pct">${escapeHtml(payment.note)}</small>` : '';
+  const other = [
+    payment.appliedToOtherDebt > 0 ? `دين مضاف ${formatMoney(payment.appliedToOtherDebt)}` : '',
+    payment.advance > 0 ? `مقدّم ${formatMoney(payment.advance)}` : '',
+  ].filter(Boolean).join('، ');
+  const balance = payment.balanceAfter;
+  const balanceText = balance === undefined ? '—' : balance === 0 ? 'مسدّد' : `${balance > 0 ? 'عليه' : 'له'} ${formatMoney(Math.abs(balance))}`;
+  return `<tr>
+    <td class="cell-title"><a class="z-link" href="/debts.html?customer=${encodeURIComponent(payment.customer)}">${customer}</a>
+      <small class="pct">${formatDateTime(payment.date)}</small>${note}</td>
+    <td class="end" data-label="الدفعة"><strong class="num">${formatMoney(payment.amount)}</strong>${other ? `<small class="pct">${other}</small>` : ''}</td>
+    <td class="end num" data-label="منها لديون المبيعات">${formatMoney(payment.appliedToSales)}</td>
+    <td class="end" data-label="الرصيد بعد الدفعة">${balanceText}</td>
+  </tr>`;
+}
+
+async function loadPayments() {
+  const request = ++payments.request;
+  const query = new URLSearchParams(payments.range);
+  if (payments.cursor) query.set('before', payments.cursor);
+  payments.more.disabled = true;
+  payments.status.textContent = 'جارٍ تحميل التسديدات…';
+  try {
+    const data = await optional('credit', '/customers/payments', null, query);
+    if (request !== payments.request) return;
+    if (!data) {
+      payments.rows.replaceChildren();
+      payments.table.hidden = true;
+      payments.more.hidden = true;
+      payments.status.textContent = 'عرض التسديدات يتطلب صلاحية البيع بالدين ودفعات العملاء.';
+      return;
+    }
+    payments.rows.insertAdjacentHTML('beforeend', data.payments.map(paymentRow).join(''));
+    payments.cursor = data.next;
+    payments.table.hidden = !payments.rows.children.length;
+    payments.status.textContent = payments.table.hidden ? 'لا توجد تسديدات في هذه الفترة.' : '';
+    payments.more.hidden = !payments.cursor;
+    payments.more.textContent = 'عرض المزيد';
+  } catch (err) {
+    if (request !== payments.request) return;
+    payments.status.textContent = err.message;
+    payments.more.hidden = false;
+    payments.more.textContent = 'إعادة المحاولة';
+  } finally {
+    if (request === payments.request) payments.more.disabled = false;
+  }
+}
+
+function openPayments() {
+  const period = periods[cashPeriod];
+  payments.range = period.range;
+  payments.period.textContent = period.label;
+  payments.cursor = null;
+  payments.rows.replaceChildren();
+  payments.table.hidden = true;
+  payments.more.hidden = true;
+  payments.dialog.showModal();
+  loadPayments();
+}
+
+payments.more.addEventListener('click', loadPayments);
+payments.dialog.addEventListener('close', () => { payments.request++; });
+els.view.addEventListener('click', (event) => {
+  const button = event.target.closest('button');
+  if (!button) return;
+  const period = button.dataset.cashPeriod;
+  if (period && period !== cashPeriod) {
+    cashPeriod = period;
+    for (const choice of els.view.querySelectorAll('[data-cash-period]')) {
+      choice.setAttribute('aria-pressed', String(choice.dataset.cashPeriod === period));
+    }
+    loadCash();
+  } else if (button.hasAttribute('data-cash-payments')) openPayments();
+  else if (button.hasAttribute('data-cash-retry')) loadCash();
+});
+
 /* What the shop owns, as a sum anyone can follow */
 
-function ledgerRow({ sign, label, note, value, href, tone = '' }) {
-  const tag = href ? 'a' : 'div';
-  return `<${tag} class="ledger-row ${tone}"${href ? ` href="${href}"` : ''}>
+function ledgerRow({ sign = '', label, note, value, href, tone = '', showPayments = false }) {
+  const tag = href ? 'a' : showPayments ? 'button' : 'div';
+  const attributes = href ? ` href="${href}"` : showPayments ? ' type="button" data-cash-payments aria-haspopup="dialog"' : '';
+  const detail = showPayments ? 'عرض التفاصيل' : note;
+  return `<${tag} class="ledger-row ${tone}"${attributes}>
     <span class="ledger-sign" aria-hidden="true">${sign}</span>
-    <span class="ledger-label">${label}${note ? `<small>${note}</small>` : ''}</span>
+    <span class="ledger-label">${label}${detail ? `<small>${detail}</small>` : ''}</span>
     <span class="num">${formatMoney(value)}</span>
   </${tag}>`;
 }
 
 function moneyBlock(v) {
   const { owedToShop, owedByShop, owedToSuppliers } = v.debts;
-  const capital = v.capital + owedToShop - owedByShop - owedToSuppliers;
   const rows = [
-    ledgerRow({ sign: '', label: 'البضاعة على الرفوف', note: 'بسعر الشراء', value: v.capital, href: link('/') }),
-    ledgerRow({ sign: '+', label: 'ديون لك عند الزبائن', value: owedToShop, href: link('/debts.html') }),
+    ledgerRow({ sign: '', label: 'البضاعة على الرفوف', note: 'بتكلفة الدفعات المتبقية', value: v.capital, href: link('/') }),
+    ledgerRow({ sign: '+', label: 'رصيد الصندوق', note: 'يشمل الرصيد الافتتاحي', value: v.cashBalance }),
+    ledgerRow({ sign: '+', label: 'ديون لك عند الزبائن', value: owedToShop, href: link('/debts.html?balance=owing') }),
   ];
-  if (owedByShop) rows.push(ledgerRow({ sign: '−', label: 'رصيد دفعه زبائن مقدمًا', value: owedByShop, href: link('/debts.html') }));
+  if (owedByShop) rows.push(ledgerRow({ sign: '−', label: 'رصيد دفعه زبائن مقدمًا', value: owedByShop, href: link('/debts.html?balance=advance') }));
   rows.push(ledgerRow({ sign: '−', label: 'ديون عليك للموردين', value: owedToSuppliers, href: link('/purchases.html') }));
-  rows.push(ledgerRow({ sign: '=', label: 'رأس مال المحل', value: capital, tone: 'ledger-total' }));
+  rows.push(ledgerRow({ sign: '=', label: 'رأس مال المحل', value: v.shopCapital, tone: 'ledger-total' }));
 
   const notes = [];
   if (v.tracked) {
@@ -133,14 +296,14 @@ function attentionBlock({ now, products, customers, openCount, lastCountAt, coun
   const low = tracked.filter((p) => p.stock > 0 && p.stock <= (p.lowStockAlert ?? DEFAULT_LOW_STOCK)).length;
   const untracked = products.length - tracked.length;
   const overdue = customers.filter(
-    (c) => c.balance > 0 && c.lastActivity && now - new Date(c.lastActivity) > OVERDUE_DAYS * DAY_MS,
+    (c) => c.balance > 0 && debtActivity(c.lastActivity, now) === 'stale',
   ).length;
 
   const items = [];
   const add = (tone, text, href, count) => items.push({ tone, text, href: link(href), count });
   if (out) add('is-stop', 'منتجات نفدت كميتها', '/?stock=out', out);
   if (low) add('is-warn', 'منتجات قاربت على النفاد', '/?stock=low', low);
-  if (overdue) add('is-warn', 'زبائن عليهم دين وحسابهم بلا حركة منذ أكثر من شهر', '/debts.html', overdue);
+  if (overdue) add('is-warn', 'زبائن عليهم دين وحسابهم بلا حركة منذ أكثر من 30 يومًا', '/debts.html?balance=owing&activity=stale', overdue);
   if (untracked) add('is-info', 'منتجات بلا كمية مسجّلة، تُسجَّل بالجرد أو بفاتورة شراء', '/?stock=untracked', untracked);
   if (counts && openCount) {
     add('is-info', `جرد مفتوح منذ ${formatDateTime(openCount.createdAt)} لم يُعتمد بعد`, '/stocktake.html');

@@ -1,10 +1,10 @@
 // The «البيع والمخزون» card of the settings page, for the owner: the currency shown next to
-// totals, the «أصغر فئة نقدية» each sale line is rounded up to, and what a new product
-// starts with in the product form (PUT /api/settings).
+// totals, the cash drawer's opening balance, rounding for each sale line, and the
+// defaults for a new product (PUT /api/settings).
 // Products already made keep their own values until the owner applies a saved default to
 // them with «تطبيق على كل المنتجات الحالية» (routes/settings.js): first how many tracked
 // products it changes, in the confirmation, then one update of that field alone.
-import { api, toast, withSignIn, rememberShop, parseNumber, arCount, formatMoney, lineAmount, PRODUCTS } from './common.js';
+import { api, toast, withSignIn, rememberShop, parseNumber, arCount, formatMoney, roundMoney, lineAmount, PRODUCTS } from './common.js';
 
 const LOW_STOCK_MAX = 100000;
 
@@ -15,6 +15,7 @@ const els = {
   currency: $('currency'),
   roundingStep: $('roundingStep'),
   roundingHint: $('roundingHint'),
+  openingCashBalance: $('openingCashBalance'),
   trackStock: $('defaultTrackStock'),
   lowStock: $('defaultLowStockAlert'),
   blockWhenOut: $('defaultBlockWhenOut'),
@@ -61,6 +62,9 @@ function showRounding() {
 export function fillStock(settings) {
   els.currency.value = settings.currency;
   els.roundingStep.value = String(settings.roundingStep ?? 0);
+  const openingCashBalance = settings.openingCashBalance ?? 0;
+  els.openingCashBalance.defaultValue = String(openingCashBalance);
+  els.openingCashBalance.value = String(openingCashBalance);
   showRounding();
   els.trackStock.checked = settings.defaultTrackStock;
   els.lowStock.value = settings.defaultLowStockAlert;
@@ -120,9 +124,15 @@ export function initStockCard() {
     showError('');
     const currency = els.currency.value.trim();
     const lowStock = typedLowStock();
+    const openingCashBalance = parseNumber(els.openingCashBalance.value);
     if (!currency) {
       showError('اكتب العملة، مثل: د.ع');
       els.currency.focus();
+      return;
+    }
+    if (!Number.isSafeInteger(Math.round(openingCashBalance * 100)) || roundMoney(openingCashBalance) !== openingCashBalance) {
+      showError('أدخل رصيدًا افتتاحيًا صالحًا من صفر فأكثر، بمنزلتين عشريتين كحد أقصى');
+      els.openingCashBalance.focus();
       return;
     }
     if (!Number.isFinite(lowStock)) {
@@ -137,6 +147,7 @@ export function initStockCard() {
       defaultLowStockAlert: lowStock,
       defaultBlockWhenOut: els.blockWhenOut.checked,
     };
+    if (openingCashBalance !== Number(els.openingCashBalance.defaultValue)) body.openingCashBalance = openingCashBalance;
     const button = els.form.querySelector('[type="submit"]');
     button.disabled = true;
     try {

@@ -26,6 +26,68 @@ test('every calculation, worked by hand, in two shops at once', { concurrency: t
   await Promise.all(SHOPS.map((slug) => t.test(slug, (shop) => everyCalculation(shop, shops[slug].client, shops[slug].db))));
 });
 
+test('FIFO values opening stock, mixed sales, partial returns and purchase cancellation by lot', async () => {
+  const { client, db } = await env.createShop('fifo');
+  const call = (method, route, body) => client.request(method, `/api${route}`, body);
+  const ok = async (method, route, body) => {
+    const result = await call(method, route, body);
+    assert.ok(result.status < 300, result.text);
+    return result.data;
+  };
+  const [category] = await ok('GET', '/categories');
+  const addProduct = (barcode, stock) => ok('POST', '/products', {
+    name: barcode, barcode, category: category._id, trackStock: true, blockWhenOut: true,
+    stock, purchasePrice: 1000, salePrice: 1400,
+  });
+  const product = await addProduct('FIFO-1', 10);
+  assert.equal((await db.collection('products').findOne({ barcode: 'FIFO-1' })).stockLots, undefined);
+  const purchase = await ok('POST', '/purchases', { items: [{ product: product._id, quantity: 5, price: 1200, salePrice: 1500 }] });
+  const valuation = () => ok('GET', '/products/valuation');
+  assert.equal((await valuation()).capital, 16000);
+
+  const sell = (productId, quantity) => ok('POST', '/sales', { items: [{ productId, quantity }] });
+  const sale = await sell(product._id, 12);
+  assert.deepEqual([sale.total, sale.cost, sale.profit], [18000, 12400, 5600]);
+  assert.deepEqual(sale.items[0].costLots.map((lot) => [lot.quantity, lot.unitCost]), [[10, 1000], [2, 1200]]);
+  assert.equal((await valuation()).capital, 3600);
+
+  const refused = await call('POST', `/purchases/${purchase._id}/cancel`);
+  assert.deepEqual([refused.status, refused.data.code], [409, 'STOCK_LOT_USED']);
+  assert.equal((await ok('GET', `/purchases/${purchase._id}`)).status, 'active');
+  assert.equal((await valuation()).capital, 3600);
+
+  const returns = `/sales/${sale._id}/returns`;
+  const partial = await ok('POST', returns, { items: [{ line: 0, quantity: 2 }] });
+  assert.deepEqual([partial.refunded, partial.sale.returnedCost, (await valuation()).capital], [3000, 2000, 5600]);
+  const range = new URLSearchParams({ from: new Date(Date.now() - 864e5).toISOString(), to: new Date(Date.now() + 864e5).toISOString() });
+  const [report] = await ok('GET', `/sales/products?${range}`);
+  assert.deepEqual([report.quantity, report.total, report.cost, report.profit], [10, 15000, 10400, 4600]);
+
+  const full = await ok('POST', returns);
+  assert.deepEqual([full.refunded, full.sale.returnedCost, (await valuation()).capital], [15000, 12400, 16000]);
+  await ok('POST', `/purchases/${purchase._id}/cancel`);
+  assert.equal((await valuation()).capital, 10000);
+
+  const other = await addProduct('FIFO-2', 1);
+  await ok('POST', '/purchases', { items: [{ product: other._id, quantity: 1, price: 1200, salePrice: 1500 }] });
+  const sales = await Promise.all([sell(other._id, 1), sell(other._id, 1)]);
+  sales.sort((a, b) => a.number - b.number);
+  assert.deepEqual(sales.map(({ total, cost, profit }) => [total, cost, profit]), [[1500, 1000, 500], [1500, 1200, 300]]);
+
+  const weighed = await ok('POST', '/products', {
+    name: 'FIFO-3', barcode: 'FIFO-3', category: category._id, trackStock: true, blockWhenOut: true,
+    unit: 'kg', stock: 0.75, purchasePrice: 1000, salePrice: 1500, hasWholesale: true, wholesaleQty: 1, wholesalePrice: 1400,
+  });
+  await ok('POST', '/purchases', { items: [{ product: weighed._id, quantity: 0.75, price: 1200 }] });
+  const mixed = await ok('POST', '/sales', {
+    items: [{ productId: weighed._id, quantity: 0.5 }, { productId: weighed._id, quantity: 1, mode: 'wholesale' }],
+  });
+  assert.deepEqual(mixed.items.map((item) => item.lineCost), [500, 1150]);
+  const returned = await ok('POST', `/sales/${mixed._id}/returns`, { items: [{ line: 1, quantity: 1 }] });
+  assert.equal(returned.sale.returnedCost, 1150);
+  assert.equal((await sell(weighed._id, 0.25)).cost, 250);
+});
+
 // `app` sends requests to one shop's address and `db` is that shop's database
 async function everyCalculation(t, app, db) {
   // Each check is a subtest, so a wrong figure is reported and the next checks still run
@@ -42,6 +104,7 @@ async function everyCalculation(t, app, db) {
   const pick = (obj, keys) => Object.fromEntries(keys.map((k) => [k, obj[k]]));
   const products = async () => new Map((await ok('GET', '/products')).map((p) => [p.barcode, p]));
   const stockOf = async (barcode) => (await products()).get(barcode).stock;
+  const valuation = () => ok('GET', '/products/valuation');
 
   /* Setup */
   const cat = await ok('POST', '/categories', { name: 'اختبار' });
@@ -88,6 +151,7 @@ async function everyCalculation(t, app, db) {
   await check('S1 totals', pick(S1, ['total', 'cost', 'profit', 'paid', 'change']), { total: 48250, cost: 39433.33, profit: 8816.67, paid: 100000, change: 51750 });
   await check('S1 line totals', S1.items.map((i) => i.lineTotal), [3000, 18000, 3750, 23000, 500]);
   await check('S1 stock', [await stockOf('A1'), await stockOf('A2')], [77, 14.25]);
+  await check('cash sale adds the amount kept after change', (await valuation()).cashBalance, 48250);
 
   /* S_m: two lines of the same weighed product merge: 0.2 + 0.133 = 0.333 kg
      0.333 x 1333 = 443.889 -> 443.89 ; cost 0.333 x 1000 = 333 ; P5 10 - 0.333 = 9.667 */
@@ -135,8 +199,16 @@ async function everyCalculation(t, app, db) {
   // S2: 5 x P1 = 5000 (cost 3500), paid 1000 now -> debt 4000
   const S2 = await ok('POST', '/sales', { paymentType: 'credit', customerId: C1._id, paid: 1000, items: [{ productId: P1._id, quantity: 5 }] });
   await check('S2 debt', [S2.debt, S2.customerBalance], [4000, 4000]);
+  const beforePayment = await valuation();
+  await check('cash includes just the part paid at checkout', [beforePayment.cashBalance, beforePayment.debts.owedToShop], [1300, 4000]);
   await ok('POST', `/customers/${C1._id}/entries`, { kind: 'payment', amount: 1500 });
   await check('balance after payment', await balance(C1), 2500);
+  const afterPayment = await valuation();
+  await check(
+    'payment moves 1500 from debt to cash and leaves capital unchanged',
+    [afterPayment.cashBalance, afterPayment.debts.owedToShop, beforePayment.shopCapital, afterPayment.shopCapital],
+    [2800, 2500, 161800, 161800],
+  );
   /* Return 3 of S2 (3000, cost 2100) after the customer paid 1500 of the 4000:
      they owe 2500, so 2500 comes off the debt and 500 is paid back in cash; owing 0 after.
      (Putting all 3000 on the account would leave the shop owing them 500.) */
@@ -172,6 +244,7 @@ async function everyCalculation(t, app, db) {
   const dayFrom = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const dayTo = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
   const expectedDay = { count: 3, total: 3300, cost: 2300, profit: 1000, returns: 56693.89, credit: 2500, expenses: 700, collected: 2500, netProfit: 300 };
+  await check('cash after cash refunds, debt adjustments and expenses', (await valuation()).cashBalance, 2600);
   const day = await ok('GET', `/sales?from=${dayFrom.toISOString()}&to=${dayTo.toISOString()}`);
   await check("today's list summary", pick(day.summary, Object.keys(expectedDay)), expectedDay);
   const monthFrom = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -228,24 +301,33 @@ async function everyCalculation(t, app, db) {
   await check('I1 stock', [ps.get('A1').stock, ps.get('A2').stock, ps.get('A3').stock, ps.get('A3').trackStock], [p1Before + 30, p2Before + 10, 4, true]);
   await check('I1 prices', [ps.get('A1').purchasePrice, ps.get('A2').purchasePrice, ps.get('A2').salePrice, ps.get('A3').purchasePrice], [650, 4200, 5200, 333.33]);
   await check('pay more than owed refused', (await call('POST', `/purchases/${I1._id}/payments`, { amount: 41500.01 })).status, 400);
+  const beforeSupplierPayment = await valuation();
+  await check('cash after the initial payment to the supplier', beforeSupplierPayment.cashBalance, -17400);
   const pay1 = await ok('POST', `/purchases/${I1._id}/payments`, { amount: 41500 });
   await check('paid off', [pay1.paid, pay1.remaining], [61500, 0]);
+  const afterSupplierPayment = await valuation();
+  await check(
+    'supplier payment reduces cash and debt by the same amount',
+    [afterSupplierPayment.cashBalance, afterSupplierPayment.debts.owedToSuppliers, afterSupplierPayment.shopCapital],
+    [-58900, 0, beforeSupplierPayment.shopCapital],
+  );
   /* A price typed with more than two decimals is kept to the cent: 333.33 x 3 = 999.99 */
   const odd = await ok('POST', '/purchases', { items: [{ product: P1._id, quantity: 3, price: 1000 / 3 }] });
   await check('odd price line total', [odd.items[0].price, odd.total], [333.33, 999.99]);
   await ok('POST', `/purchases/${odd._id}/cancel`);
   ps = await products();
   await check('cancel restores stock and price', [ps.get('A1').stock, ps.get('A1').purchasePrice], [p1Before + 30, 650]);
+  await check('cancelling a purchase keeps the cash paid to its supplier', (await valuation()).cashBalance, -59899.99);
 
   /* Stocktake: count P1 2 short and P4 1 over; a sale of P1 between counting and applying stays */
   const sc = await ok('POST', '/stockcounts');
   const p1Now = await stockOf('A1');
-  const p1pp = (await products()).get('A1').purchasePrice; // 650
   await ok('PUT', `/stockcounts/${sc._id}/lines/${P1._id}`, { counted: p1Now - 2 });
   await ok('PUT', `/stockcounts/${sc._id}/lines/${P4._id}`, { counted: 1 }); // P4 was 0
   await ok('POST', '/sales', { items: [{ productId: P1._id, quantity: 1 }] });
   const applied = await ok('POST', `/stockcounts/${sc._id}/apply`);
-  await check('stocktake summary', pick(applied.summary, ['shortItems', 'shortValue', 'overItems', 'overValue']), { shortItems: 1, shortValue: 2 * p1pp, overItems: 1, overValue: 100 });
+  // The two missing P1 units still come from the opening lot at 700.
+  await check('stocktake summary', pick(applied.summary, ['shortItems', 'shortValue', 'overItems', 'overValue']), { shortItems: 1, shortValue: 1400, overItems: 1, overValue: 100 });
   await check('stocktake keeps the sale made meanwhile', [await stockOf('A1'), await stockOf('A4')], [p1Now - 2 - 1, 1]);
 
   /* ---------- Second round: the cases found by the review ---------- */
@@ -267,9 +349,8 @@ async function everyCalculation(t, app, db) {
   const may = await ok('GET', `/sales/report?from=2025-04-30T21:00:00Z&to=2025-05-31T21:00:00Z&groupBy=month&tz=Asia/Baghdad`);
   await check('May 2025 stays as it closed', may.periods.map((p) => [p.key, p.total, p.profit, p.returns, p.count]), [['2025-05', 2000, 600, 0, 1]]);
   const todayProducts = await ok('GET', `/sales/products?from=${dayFrom.toISOString()}&to=${dayTo.toISOString()}`);
-  // P1 today before the refund: S2 kept 2 (2000/1400), S3 kept 1 (1000/700), the stocktake sale 1 (1000/650)
-  // = 4 pieces, 4000, 2750; less the refund of 2 (2000/1400) = 2 pieces, 2000, 1350
-  await check('products report takes the refund too', pick(todayProducts.find((p) => p.name === 'P1'), ['quantity', 'total', 'cost']), { quantity: 2, total: 2000, cost: 1350 });
+  // Four pieces at the opening lot's 700, less two from the old invoice at 700.
+  await check('products report takes the refund too', pick(todayProducts.find((p) => p.name === 'P1'), ['quantity', 'total', 'cost']), { quantity: 2, total: 2000, cost: 1400 });
   await Sale.deleteOne({ number: 910001 });
 
   /* Only payments towards credit sales count as collected.
@@ -280,17 +361,30 @@ async function everyCalculation(t, app, db) {
   const s0 = await todaySummary();
   const C2 = await ok('POST', '/customers', { name: 'زبون سلفة' });
   await ok('POST', `/customers/${C2._id}/entries`, { kind: 'manual', amount: 1000 });
+  const beforeManualPayment = await valuation();
   await ok('POST', `/customers/${C2._id}/entries`, { kind: 'payment', amount: 1000 });
   const s1 = await todaySummary();
   await check('repaying money lent is not profit', [s1.collected - s0.collected, s1.netProfit - s0.netProfit], [0, 0]);
+  const afterManualPayment = await valuation();
+  await check(
+    'repaying a manual debt adds cash and leaves capital unchanged',
+    [afterManualPayment.cashBalance, afterManualPayment.shopCapital],
+    [beforeManualPayment.cashBalance + 1000, beforeManualPayment.shopCapital],
+  );
   const C3 = await ok('POST', '/customers', { name: 'زبون دفع مقدمًا' });
   await ok('POST', `/customers/${C3._id}/entries`, { kind: 'payment', amount: 500 });
   const s2 = await todaySummary();
   await check('money paid ahead is not profit yet', [s2.collected - s1.collected, s2.netProfit - s1.netProfit], [0, 0]);
+  const afterAdvance = await valuation();
+  await check(
+    'an advance adds cash and an equal liability',
+    [afterAdvance.cashBalance, afterAdvance.debts.owedByShop, afterAdvance.shopCapital],
+    [afterManualPayment.cashBalance + 500, 500, afterManualPayment.shopCapital],
+  );
   await ok('POST', '/sales', { paymentType: 'credit', customerId: C3._id, items: [{ productId: P1._id, quantity: 1 }] });
   const s3 = await todaySummary();
-  // P1 now costs 650: profit 350, net 350 - 1000 + 500 = -150 (cash 500 in, goods costing 650 out)
-  await check('advance used by a credit sale', [s3.credit - s2.credit, s3.collected - s2.collected, s3.profit - s2.profit, s3.netProfit - s2.netProfit], [1000, 500, 350, -150]);
+  // FIFO still uses the opening lot at 700. Profit is 300 and net is 300 - 1000 + 500.
+  await check('advance used by a credit sale', [s3.credit - s2.credit, s3.collected - s2.collected, s3.profit - s2.profit, s3.netProfit - s2.netProfit], [1000, 500, 300, -200]);
   await check('C3 owes 500', await balance(C3), 500);
   // Paying a debt partly made by hand: C4 owes 300 by hand (older) and 1000 on a sale; pays 800:
   // the hand debt is settled first, so only 500 counts as collected
@@ -379,16 +473,17 @@ async function everyCalculation(t, app, db) {
 
   /* Valuation, summed here product by product */
   ps = await products();
-  let capital = 0;
   let saleValue = 0;
   for (const p of ps.values()) {
     if (p.trackStock && p.stock > 0) {
-      capital += p.stock * p.purchasePrice;
       saleValue += p.stock * p.salePrice;
     }
   }
-  const v = await ok('GET', '/products/valuation');
-  await check('capital', v.capital, Math.round(capital * 100) / 100);
+  const v = await valuation();
+  // P1: 92 opening + 2 from the old return at 700, plus 30 at 650. P2: 20 at
+  // 4000 and 10 at 4200. P4: 100, P5: 10000, P7: 1000, P9: 1500. P3 and P8
+  // only have free receipts on the shelf, and P6 sold out.
+  await check('capital at the remaining lot costs', v.capital, (92 + 2) * 700 + 30 * 650 + 20 * 4000 + 10 * 4200 + 100 + 10000 + 1000 + 1500);
   await check('sale value', v.saleValue, Math.round(saleValue * 100) / 100);
   // C3 owes 500, C4 owes 300 + 1000 - 800 = 500; nothing owed to suppliers (all paid or cancelled... except
   // the purchases made above without "paid", which default to fully paid)

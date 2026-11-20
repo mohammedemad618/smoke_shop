@@ -22,6 +22,8 @@ const debtEntrySchema = new Schema(
   { timestamps: true },
 );
 
+debtEntrySchema.index({ kind: 1, date: -1, _id: -1 });
+
 debtEntrySchema.statics.balanceOf = async function balanceOf(customerId) {
   const [row] = await this.aggregate([
     { $match: { customer: new mongoose.Types.ObjectId(String(customerId)) } },
@@ -30,19 +32,30 @@ debtEntrySchema.statics.balanceOf = async function balanceOf(customerId) {
   return money(row?.balance ?? 0);
 };
 
-// Across all customers: what they owe the shop, and what it owes those who paid ahead
+// The balances and cash received come from the same entries.
 debtEntrySchema.statics.totals = async function totals() {
   const [row] = await this.aggregate([
-    { $group: { _id: '$customer', balance: { $sum: '$amount' } } },
+    {
+      $group: {
+        _id: '$customer',
+        balance: { $sum: '$amount' },
+        payments: { $sum: { $cond: [{ $eq: ['$kind', 'payment'] }, '$amount', 0] } },
+      },
+    },
     {
       $group: {
         _id: null,
         owedToShop: { $sum: { $cond: [{ $gt: ['$balance', 0] }, '$balance', 0] } },
         owedByShop: { $sum: { $cond: [{ $lt: ['$balance', 0] }, { $multiply: ['$balance', -1] }, 0] } },
+        payments: { $sum: '$payments' },
       },
     },
   ]);
-  return { owedToShop: money(row?.owedToShop ?? 0), owedByShop: money(row?.owedByShop ?? 0) };
+  return {
+    owedToShop: money(row?.owedToShop ?? 0),
+    owedByShop: money(row?.owedByShop ?? 0),
+    receivedFromCustomers: money(-(row?.payments ?? 0)),
+  };
 };
 
 export default debtEntrySchema;

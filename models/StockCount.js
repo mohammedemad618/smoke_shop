@@ -13,6 +13,7 @@ const lineSchema = new Schema(
     expected: { type: Number, default: null },
     counted: { type: Number, required: true, min: 0 },
     purchasePrice: Number,
+    adjustmentValue: Number,
     salePrice: Number,
     countedAt: { type: Date, default: Date.now },
   },

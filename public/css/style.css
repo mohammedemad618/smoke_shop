@@ -398,13 +398,19 @@ h1, h2, h3 { line-height: 1.25; }
 /* Summary: the shop's figures in one place */
 .summary-date { font-size: 14px; color: var(--ink-2); }
 .summary-block { margin-bottom: 28px; }
-.sales-pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; margin-bottom: 8px; }
+.sales-pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; gap: 12px; margin-bottom: 8px; }
 .sale-card {
   display: grid; gap: 2px; padding: 16px 20px;
   background: var(--paper); border: 1px solid var(--line); border-radius: var(--r-m);
   color: var(--ink); text-decoration: none;
 }
 .sale-card:hover { border-color: var(--ink-2); }
+.sale-card-link { display: grid; gap: 2px; color: inherit; text-decoration: none; }
+.sale-card-link:hover .z-label { text-decoration: underline; }
+.profit-details { margin-top: 9px; }
+.profit-details summary { cursor: pointer; color: var(--focus); font-size: 14px; font-weight: 600; }
+.profit-details[open] .sale-lines { gap: 7px; }
+.profit-details .sale-lines div:last-child { padding-top: 8px; border-top: 1px solid var(--line); }
 /* right, not start: the number is left-to-right */
 .sale-total { font-size: 30px; font-weight: 600; line-height: 1.2; text-align: right; }
 .sale-lines { display: grid; gap: 4px; margin: 10px 0 0; padding-top: 10px; border-top: 1px dashed var(--line); }
@@ -412,13 +418,16 @@ h1, h2, h3 { line-height: 1.25; }
 .sale-lines dt { font-size: 14px; color: var(--ink-2); }
 .sale-lines dd { margin: 0; font-weight: 600; }
 .summary-pair { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); align-items: start; gap: 0 24px; }
-/* What the shop owns, written as a sum: goods + owed to it − owed by it = capital */
+/* What the shop owns, written as a sum: goods + cash + owed to it − owed by it = capital */
 .ledger { overflow: hidden; background: var(--paper); border: 1px solid var(--line); border-radius: var(--r-m); }
 .ledger-row {
   display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; align-items: center; gap: 10px;
   padding: 12px 16px; border-bottom: 1px solid var(--line-soft); color: var(--ink); text-decoration: none;
 }
-a.ledger-row:hover { background: var(--paper-2); }
+a.ledger-row:hover, button.ledger-row:hover { background: var(--paper-2); }
+button.ledger-row { width: 100%; text-align: start; font: inherit; background: var(--paper); border-width: 0 0 1px; cursor: pointer; }
+button.ledger-row .ledger-label small { color: var(--focus); }
+button.ledger-row:focus-visible { outline-offset: -3px; }
 .ledger-row:last-child { border-bottom: 0; }
 .ledger-sign { font-size: 18px; font-weight: 600; text-align: center; color: var(--muted); }
 .ledger-label small { display: block; font-size: 12px; color: var(--muted); }
@@ -426,6 +435,11 @@ a.ledger-row:hover { background: var(--paper-2); }
 .ledger-total { background: var(--paper-2); border-top: 2px solid var(--ink); }
 .ledger-total .ledger-label { font-weight: 600; }
 .ledger-total .num { font-size: 22px; }
+.summary-payments { padding: 18px 20px; }
+.summary-payments .section-head { padding: 0; }
+.summary-payments .hint:empty { display: none; }
+.summary-payments .ptable { margin-bottom: 12px; }
+.summary-payments .pct { overflow-wrap: anywhere; }
 .attention { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
 .attention-row {
   display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 10px 14px;
@@ -443,6 +457,12 @@ a.attention-row:hover { border-color: var(--ink-2); }
 .credit-text { color: var(--go); }
 .clear-text { color: var(--muted); }
 .debt-total { display: inline-block; min-width: 260px; margin-bottom: 20px; padding: 16px 20px; background: var(--paper); border: 1px solid var(--line); border-radius: var(--r-m); }
+.debt-customer-filters { display: grid; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--line-soft); }
+.debt-customer-filters .filter-field { flex-direction: column; align-items: stretch; gap: 4px; min-width: 0; }
+.debt-customer-filters .input { width: 100%; }
+.debt-customer-filters .btn { justify-self: start; }
+.debt-back { padding-inline: 0; margin-bottom: 4px; color: var(--focus); }
+.catalog-filters.debt-entry-filters { padding: 0 0 12px; align-items: end; }
 .rail-name .pcat { display: block; font-weight: 400; }
 .ledger .pcat { display: block; }
 .rail-empty { padding: 12px; font-size: 14px; color: var(--muted); }
@@ -564,7 +584,7 @@ select.input { padding-block: 7px; }
 .default-row .input { width: 120px; }
 .default-row + .hint { margin: 6px 0 14px; }
 .settings-card .currency-field .input { max-width: 160px; }
-.settings-card .rounding-field .input { max-width: 200px; }
+.settings-card :is(.rounding-field, .opening-cash-field) .input { max-width: 200px; }
 
 /* Camera scanner */
 .scanner-dialog { width: min(640px, calc(100vw - 32px)); }
@@ -859,6 +879,8 @@ select.input { padding-block: 7px; }
   .rail { border-inline-end: 0; border-bottom: 1px solid var(--line); }
   .rail h2 { display: none; }
   .rail-add { padding: 12px 16px; border-bottom: 0; }
+  .debt-customer-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 0 16px 12px; border-bottom: 0; }
+  .debt-customer-filters .btn { grid-column: 1 / -1; }
   /* The list turns into a row of pill buttons, like the cashier's categories */
   .rail-list { display: flex; gap: 8px; padding: 0 16px 12px; overflow-x: auto; scrollbar-width: none; }
   .rail-list::-webkit-scrollbar { display: none; }
@@ -1106,6 +1128,8 @@ select.input { padding-block: 7px; }
   .catalog-filters { gap: 8px; padding: 0 16px 12px; }
   .filter-field { flex: 1 1 0; min-width: 0; flex-direction: column; align-items: stretch; gap: 4px; font-size: 12px; }
   .filter-field .input { width: 100%; }
+  .debt-entry-filters .filter-field { flex-basis: calc(50% - 4px); }
+  .debt-entry-filters .filter-field:first-child { flex-basis: 100%; }
   .head-actions { width: 100%; }
   .head-actions .btn { flex: 1; }
   .count-intro { padding: 16px; }
@@ -1138,6 +1162,8 @@ select.input { padding-block: 7px; }
   .ptable.purchase-table td.cell-title { padding-inline-end: 48px; }
   /* The quantity with its box or piece choice gets a line of its own */
   .ptable.purchase-table td:has(.qty-field) { grid-column: 1 / -1; }
+  .ptable.purchase-table td.purchase-line-total { grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: baseline; }
+  .purchase-table [data-info="total"] { padding-top: 0; }
   .purchase-table [data-field="price"],
   .purchase-table [data-field="salePrice"] { width: 100%; }
   .purchase-table [data-field="quantity"] { width: 64px; flex: none; }

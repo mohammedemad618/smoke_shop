@@ -18,6 +18,7 @@ const itemSchema = new Schema(
     total: { type: Number, required: true },
     stockQty: { type: Number, required: true },
     unitCost: { type: Number, required: true },
+    lotOrder: Number,
     // A free item (price 0) leaves the product's purchase price as it was
     priceUpdated: { type: Boolean, default: false },
     prevPurchasePrice: Number,
@@ -58,13 +59,19 @@ const purchaseSchema = new Schema(
 
 purchaseSchema.index({ clientId: 1 }, { unique: true, sparse: true });
 
-// What the shop still owes its suppliers on the invoices that stand
-purchaseSchema.statics.owedToSuppliers = async function owedToSuppliers() {
+// Cancelled invoices clear the debt. Their recorded payments stay because cancelling
+// an invoice does not refund the cash.
+purchaseSchema.statics.totals = async function totals() {
   const [row] = await this.aggregate([
-    { $match: { status: 'active' } },
-    { $group: { _id: null, owed: { $sum: { $subtract: ['$total', '$paid'] } } } },
+    {
+      $group: {
+        _id: null,
+        owed: { $sum: { $cond: [{ $eq: ['$status', 'active'] }, { $subtract: ['$total', '$paid'] }, 0] } },
+        paid: { $sum: '$paid' },
+      },
+    },
   ]);
-  return money(row?.owed ?? 0);
+  return { owedToSuppliers: money(row?.owed ?? 0), paidToSuppliers: money(row?.paid ?? 0) };
 };
 
 export default purchaseSchema;

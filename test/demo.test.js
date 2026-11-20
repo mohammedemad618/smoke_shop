@@ -248,8 +248,7 @@ test("the shop's figures, rebuilt from its records, are exactly the app's", asyn
   const { sales, entries, purchases, products } = data;
   assert.ok(sales.length > 200 && purchases.length >= 3 && data.expenses.length >= 3 && entries.length >= 2, 'a shop in use');
 
-  // Each invoice adds up, at the prices of its moment: the product's sale price, and its
-  // purchase price from the last supplier invoice before it (a dish: its own)
+  // Each invoice adds up at its sale prices and recorded lot costs.
   const productById = new Map(products.map((p) => [String(p._id), p]));
   const lastCost = (id, at) => purchases.filter((p) => p.createdAt <= at).flatMap((p) => p.items).filter((i) => String(i.product) === id).at(-1)?.unitCost;
   const prices = new Map();
@@ -257,12 +256,17 @@ test("the shop's figures, rebuilt from its records, are exactly the app's", asyn
     for (const i of s.items) {
       const p = productById.get(String(i.product));
       assert.strictEqual(i.lineTotal, money(i.unitPrice * i.quantity));
-      assert.strictEqual(i.unitCost, p.trackStock ? lastCost(String(i.product), s.createdAt) : p.purchasePrice, `${i.name} on invoice ${s.number}`);
+      if (p.trackStock) {
+        assert.strictEqual(qty(i.costLots.reduce((sum, lot) => sum + lot.quantity, 0)), i.quantity, i.name);
+        assert.strictEqual(i.lineCost, money(i.costLots.reduce((sum, lot) => sum + lot.quantity * lot.unitCost, 0)), i.name);
+      } else {
+        assert.strictEqual(i.unitCost, p.purchasePrice, `${i.name} on invoice ${s.number}`);
+      }
       if (s.createdAt >= p.updatedAt || p.trackStock) assert.strictEqual(i.unitPrice, p.salePrice, `${i.name} on invoice ${s.number}`);
       prices.set(i.name, new Set([...(prices.get(i.name) ?? []), i.unitPrice]));
     }
     assert.strictEqual(s.total, money(s.items.reduce((sum, i) => sum + i.lineTotal, 0)));
-    assert.strictEqual(s.cost, money(s.items.reduce((sum, i) => sum + money(i.unitCost * i.quantity), 0)));
+    assert.strictEqual(s.cost, money(s.items.reduce((sum, i) => sum + i.lineCost, 0)));
     assert.strictEqual(s.profit, money(s.total - s.cost));
     assert.strictEqual(s.returnedTotal ?? 0, money(s.returns.reduce((sum, x) => sum + x.amount, 0)));
   }
@@ -318,7 +322,8 @@ test("the shop's figures, rebuilt from its records, are exactly the app's", asyn
     assert.strictEqual(listed.get(id).stock, stock.get(id), p.name);
     assert.strictEqual(p.purchasePrice, lastCost(id, new Date()), p.name);
     if (stock.get(id) > 0) {
-      capital += stock.get(id) * p.purchasePrice;
+      assert.strictEqual(qty(p.stockLots.reduce((sum, lot) => sum + lot.quantity, 0)), p.stock, p.name);
+      capital += p.stockLots.reduce((sum, lot) => sum + lot.quantity * lot.unitCost, 0);
       saleValue += stock.get(id) * p.salePrice;
     }
   }

@@ -92,6 +92,7 @@ const omit = (object, keys) => Object.fromEntries(Object.entries(object).filter(
 test('a new shop prints as before: 80 mm, phone and address shown, no seller, no logo, no printing by itself', async () => {
   const settings = await ok(owner, 'GET', '/settings');
   assert.deepStrictEqual(pick(settings, Object.keys(DEFAULTS)), DEFAULTS);
+  assert.strictEqual(settings.openingCashBalance, 0);
   assert.deepStrictEqual([settings.receiptLogo, settings.logoVersion, settings.receiptNote], ['', '', '']);
   for (const client of [owner, cashier, supervisor]) {
     const read = await ok(client, 'GET', '/shop');
@@ -106,7 +107,7 @@ test('only the owner changes the settings; every account reads what the cashier 
   for (const client of [cashier, supervisor]) {
     for (const [method, path, body] of [
       ['GET', '/settings'],
-      ['PUT', '/settings', { autoPrint: true, currency: '$' }],
+      ['PUT', '/settings', { autoPrint: true, currency: '$', openingCashBalance: 500 }],
       ['GET', '/settings/product-defaults'],
       ['POST', '/settings/product-defaults/apply', { field: 'lowStockAlert', value: 5 }],
     ]) {
@@ -115,6 +116,7 @@ test('only the owner changes the settings; every account reads what the cashier 
     }
   }
   assert.deepStrictEqual(pick(await ok(owner, 'GET', '/settings'), ['autoPrint', 'currency']), { autoPrint: false, currency: 'د.ع' }, 'nothing changed');
+  assert.strictEqual((await ok(owner, 'GET', '/settings')).openingCashBalance, 0);
 
   const saved = await ok(owner, 'PUT', '/settings', {
     receiptPaper: '58',
@@ -151,6 +153,11 @@ test('each setting is checked, and a refused change changes nothing', async () =
     [{ currency: '   ' }, 'اكتب العملة، مثل: د.ع'],
     [{ currency: 'دينار عراقي جديد' }, 'اسم العملة طويل جدًا'],
     [{ currency: 5 }, 'البيانات المرسلة غير صالحة'],
+    [{ openingCashBalance: -0.01 }, /رصيدًا افتتاحيًا/],
+    [{ openingCashBalance: 10.001 }, /رصيدًا افتتاحيًا/],
+    [{ openingCashBalance: '1000' }, /رصيدًا افتتاحيًا/],
+    [{ openingCashBalance: null }, /رصيدًا افتتاحيًا/],
+    [{ openingCashBalance: 1e100 }, /رصيدًا افتتاحيًا/],
     [{ receiptNote: 'ن'.repeat(121) }, 'ملاحظة الإيصال طويلة جدًا'],
     // One bad field refuses the whole request
     [{ autoPrint: true, receiptPaper: 'a5' }, 'مقاس الورق غير صالح'],
@@ -322,7 +329,7 @@ test('a sale sent again is marked repeated and recorded once, with the seller fr
 
 test('a settings document from before these settings reads as the receipt always was, and saves', async () => {
   await ok(owner, 'PUT', '/settings', { receiptNote: 'أهلًا', phone: '07700000000' });
-  const fields = [...Object.keys(DEFAULTS).filter((key) => key !== 'currency'), 'receiptLogo'];
+  const fields = [...Object.keys(DEFAULTS).filter((key) => key !== 'currency'), 'receiptLogo', 'openingCashBalance'];
   await shop.db.collection('settings').updateOne({ _id: 'shop' }, { $unset: Object.fromEntries(fields.map((key) => [key, 1])) });
   const doc = await shop.db.collection('settings').findOne({ _id: 'shop' });
   assert.ok(fields.every((key) => !(key in doc)));
@@ -333,8 +340,39 @@ test('a settings document from before these settings reads as the receipt always
   assert.deepStrictEqual(await ok(cashier, 'GET', '/shop/logo'), { receiptLogo: '' });
   assert.deepStrictEqual(pick(await ok(owner, 'GET', '/settings'), Object.keys(DEFAULTS)), DEFAULTS);
   assert.deepStrictEqual((await ok(owner, 'GET', '/settings/product-defaults')).lowStockAlert.value, 5);
+  assert.strictEqual((await ok(owner, 'GET', '/settings')).openingCashBalance, 0);
   // One field saved; the rest still read as before
   const saved = await ok(owner, 'PUT', '/settings', { autoPrint: true });
   assert.deepStrictEqual(pick(saved, Object.keys(DEFAULTS)), { ...DEFAULTS, autoPrint: true });
   await ok(owner, 'PUT', '/settings', { autoPrint: false });
+});
+
+test('opening cash is included once in the drawer and capital alongside recorded payments', async () => {
+  const { client } = await env.createShop('opening-cash');
+  const [category] = await ok(client, 'GET', '/categories');
+  const product = await ok(client, 'POST', '/products', {
+    name: 'منتج الصندوق', barcode: 'OPENING-1', category: category._id, purchasePrice: 60, salePrice: 100, trackStock: true, stock: 2,
+  });
+  const customer = await ok(client, 'POST', '/customers', { name: 'زبون الصندوق' });
+  await ok(client, 'POST', '/sales', {
+    paymentType: 'credit', customerId: customer._id, paid: 20, items: [{ productId: product._id, quantity: 1 }],
+  });
+  const totals = async () => pick(await ok(client, 'GET', '/products/valuation'), ['cashBalance', 'shopCapital']);
+  assert.deepStrictEqual(await totals(), { cashBalance: 20, shopCapital: 160 });
+
+  const saved = await ok(client, 'PUT', '/settings', { openingCashBalance: 1250.25 });
+  assert.strictEqual(saved.openingCashBalance, 1250.25);
+  await ok(client, 'PUT', '/settings', { currency: 'IQD' });
+  assert.strictEqual((await ok(client, 'GET', '/settings')).openingCashBalance, 1250.25);
+  assert.strictEqual((await ok(owner, 'GET', '/settings')).openingCashBalance, 0);
+  assert.ok(!('openingCashBalance' in await ok(client, 'GET', '/shop')));
+  assert.deepStrictEqual(await totals(), { cashBalance: 1270.25, shopCapital: 1410.25 });
+
+  await ok(client, 'POST', `/customers/${customer._id}/entries`, { kind: 'payment', amount: 30 });
+  assert.deepStrictEqual(await totals(), { cashBalance: 1300.25, shopCapital: 1410.25 });
+
+  await ok(client, 'PUT', '/settings', { openingCashBalance: 500 });
+  assert.deepStrictEqual(await totals(), { cashBalance: 550, shopCapital: 660 });
+  await ok(client, 'PUT', '/settings', { openingCashBalance: 0 });
+  assert.deepStrictEqual(await totals(), { cashBalance: 50, shopCapital: 160 });
 });

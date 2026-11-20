@@ -1,4 +1,5 @@
-import { api, toast, formatMoney, formatDateTime, escapeHtml, arCount, normalizeArabic, dayKey, parseKey } from './common.js';
+import { api, toast, formatMoney, formatDateTime, escapeHtml, arCount, normalizeArabic, latinDigits, dayKey, parseKey, roundMoney } from './common.js';
+import { debtActivity } from './debt-activity.js';
 
 const CUSTOMERS = { one: 'زبون واحد', two: 'زبونان', few: 'زبائن', many: 'زبونًا', single: 'زبون' };
 const ENTRY_LABELS = {
@@ -11,6 +12,9 @@ const ENTRY_LABELS = {
 const $ = (id) => document.getElementById(id);
 const els = {
   search: $('customerSearch'),
+  balanceFilter: $('customerBalanceFilter'),
+  activityFilter: $('customerActivityFilter'),
+  clearFilters: $('clearCustomerFilters'),
   add: $('addCustomerBtn'),
   list: $('customerList'),
   panel: $('customerPanel'),
@@ -33,7 +37,9 @@ const els = {
   entrySubmit: $('entrySubmit'),
 };
 
-const state = { customers: [], selectedId: null, detail: null, editingCustomer: null, entryKind: null };
+const emptyEntryFilters = () => ({ kind: '', from: '', to: '' });
+const state = { customers: [], selectedId: null, detail: null, editingCustomer: null, entryKind: null, entryFilters: emptyEntryFilters() };
+let detailRequest = 0;
 
 // What a balance means for the shop: + they owe us, - we owe them (they paid ahead)
 function balanceText(balance) {
@@ -47,22 +53,22 @@ const balanceClass = (balance) => (balance > 0 ? 'owes' : balance < 0 ? 'credit'
 
 async function loadCustomers() {
   state.customers = await api('/customers');
-  renderList();
+  renderCustomers();
 }
 
 async function loadDetail() {
-  if (!state.selectedId) {
-    state.detail = null;
-    renderOverview();
-    return;
-  }
+  const request = ++detailRequest;
+  const id = state.selectedId;
+  if (!id) return;
   try {
-    state.detail = await api(`/customers/${state.selectedId}`);
+    const customer = await api(`/customers/${encodeURIComponent(id)}`);
+    if (request !== detailRequest) return;
+    state.detail = customer;
     renderDetail();
   } catch (err) {
+    if (request !== detailRequest) return;
     toast(err.message, 'error');
-    state.selectedId = null;
-    renderOverview();
+    select(null);
   }
 }
 
@@ -75,26 +81,67 @@ async function refresh() {
   }
 }
 
+function updateLocation() {
+  const url = new URL(location.href);
+  for (const [key, value] of [
+    ['customer', state.selectedId],
+    ['balance', els.balanceFilter.value],
+    ['activity', els.activityFilter.value],
+  ]) {
+    if (value) url.searchParams.set(key, value);
+    else url.searchParams.delete(key);
+  }
+  history.replaceState(null, '', url);
+}
+
 function select(id) {
+  if (id !== state.selectedId) {
+    state.detail = null;
+    state.entryFilters = emptyEntryFilters();
+    if (id) els.panel.innerHTML = '<div class="table-wrap"><p class="hint">جارٍ تحميل كشف الحساب…</p></div>';
+  }
   state.selectedId = id;
-  history.replaceState(null, '', id ? `?customer=${id}` : location.pathname);
-  renderList();
+  updateLocation();
+  renderCustomers();
   loadDetail();
 }
 
 /* Rendering */
 
 // Who owes the most first, then by name
-const sortedCustomers = () =>
-  [...state.customers].sort((a, b) => b.balance - a.balance || a.name.localeCompare(b.name, 'ar'));
+const BALANCES = { owing: 'owes', advance: 'credit', clear: 'clear' };
 
-function renderList() {
-  const q = normalizeArabic(els.search.value.trim());
-  const list = sortedCustomers().filter(
-    (c) => !q || normalizeArabic(c.name).includes(q) || (c.phone ?? '').includes(q),
+function searchMatches() {
+  const q = normalizeArabic(latinDigits(els.search.value.trim()));
+  const phone = /^[+\d\s()-]+$/.test(q) ? q.replace(/\D/g, '') : '';
+  return (customer) => (
+    !q ||
+    normalizeArabic(latinDigits(customer.name)).includes(q) ||
+    (phone && latinDigits(customer.phone).replace(/\D/g, '').includes(phone))
   );
+}
+
+function filteredCustomers() {
+  const matches = searchMatches();
+  const balance = BALANCES[els.balanceFilter.value];
+  const activity = els.activityFilter.value;
+  const now = Date.now();
+  return state.customers
+    .filter((c) => matches(c) && (!balance || balanceClass(c.balance) === balance) && (!activity || debtActivity(c.lastActivity, now) === activity))
+    .sort((a, b) => b.balance - a.balance || a.name.localeCompare(b.name, 'ar'));
+}
+
+function renderCustomers() {
+  const list = filteredCustomers();
+  for (const filter of [els.balanceFilter, els.activityFilter]) filter.classList.toggle('is-active', Boolean(filter.value));
+  els.clearFilters.hidden = !(els.search.value || els.balanceFilter.value || els.activityFilter.value);
+  renderList(list);
+  if (!state.selectedId) renderOverview(list);
+}
+
+function renderList(list) {
   if (!list.length) {
-    els.list.innerHTML = `<li class="rail-empty">${state.customers.length ? 'لا يوجد زبون بهذا الاسم' : 'لا يوجد زبائن بعد'}</li>`;
+    els.list.innerHTML = `<li class="rail-empty">${state.customers.length ? 'لا توجد نتائج مطابقة' : 'لا يوجد زبائن بعد'}</li>`;
     return;
   }
   els.list.innerHTML = list
@@ -110,44 +157,44 @@ function renderList() {
     .join('');
 }
 
-function renderOverview() {
-  const debtors = sortedCustomers().filter((c) => c.balance > 0);
-  const total = debtors.reduce((sum, c) => sum + c.balance, 0);
+function renderOverview(customers) {
+  const advance = els.balanceFilter.value === 'advance';
+  const showTotal = els.balanceFilter.value !== 'clear' && customers.length > 0;
+  const total = customers.reduce((sum, c) => sum + Math.max(advance ? -c.balance : c.balance, 0), 0);
   els.panel.innerHTML = `<div class="catalog-head">
       <div>
         <h1>الديون</h1>
-        <span class="catalog-count">${state.customers.length ? arCount(state.customers.length, CUSTOMERS) : ''}</span>
+        <span class="catalog-count">${customers.length ? arCount(customers.length, CUSTOMERS) : ''}</span>
       </div>
     </div>
     <div class="table-wrap">
-      <div class="debt-total">
-        <div class="z-label">مجموع الديون على الزبائن</div>
+      ${showTotal ? `<div class="debt-total">
+        <div class="z-label">${advance ? 'مجموع الأرصدة المقدّمة' : 'مجموع الديون في النتائج'}</div>
         <div class="z-value num">${formatMoney(total)}</div>
-        <div class="z-note">${debtors.length ? `على ${arCount(debtors.length, CUSTOMERS)}` : 'لا توجد ديون حاليًا'}</div>
-      </div>
+      </div>` : ''}
       ${
-        debtors.length
+        customers.length
           ? `<div class="table-scroll"><table class="ptable">
               <thead><tr>
                 <th scope="col">الزبون</th>
                 <th scope="col">الهاتف</th>
                 <th scope="col">آخر حركة</th>
-                <th scope="col" class="end">عليه</th>
+                <th scope="col" class="end">الرصيد</th>
               </tr></thead>
-              <tbody>${debtors
+              <tbody>${customers
                 .map(
                   (c) => `<tr>
-                  <td><button class="drill" type="button" data-select="${c._id}">${escapeHtml(c.name)}</button></td>
-                  <td class="num">${escapeHtml(c.phone || '–')}</td>
-                  <td>${c.lastActivity ? formatDateTime(c.lastActivity) : '–'}</td>
-                  <td class="end num owes-text">${formatMoney(c.balance)}</td>
+                  <td class="cell-title"><button class="drill" type="button" data-select="${c._id}">${escapeHtml(c.name)}</button></td>
+                  <td class="num" data-label="الهاتف">${escapeHtml(c.phone || '–')}</td>
+                  <td data-label="آخر حركة">${c.lastActivity ? formatDateTime(c.lastActivity) : '–'}</td>
+                  <td class="end" data-label="الرصيد"><span class="debt-chip ${balanceClass(c.balance)}">${balanceText(c.balance)}</span></td>
                 </tr>`,
                 )
                 .join('')}</tbody>
             </table></div>`
           : `<div class="empty">
-              <h3>${state.customers.length ? 'كل الزبائن بلا ديون' : 'أضف أول زبون'}</h3>
-              <p>أضف الزبائن من زر «إضافة»، أو اكتب اسم الزبون في الكاشير عند البيع بالدين فيُضاف تلقائيًا.</p>
+              <h3>${state.customers.length ? 'لا توجد نتائج مطابقة' : 'أضف أول زبون'}</h3>
+              ${state.customers.length ? '' : '<p>أضف زبونًا من زر «إضافة» أو عند البيع بالدين في الكاشير.</p>'}
             </div>`
       }
     </div>`;
@@ -155,14 +202,10 @@ function renderOverview() {
 
 function renderDetail() {
   const c = state.detail;
-  // Running balance from the oldest entry, shown newest first
-  let running = 0;
-  const rows = c.entries.map((e) => {
-    running += e.amount;
-    return { ...e, after: running };
-  });
+  const { kind, from, to } = state.entryFilters;
   els.panel.innerHTML = `<div class="catalog-head">
       <div>
+        <button class="btn btn-sm btn-ghost debt-back" type="button" data-customer-overview>العودة إلى قائمة الزبائن</button>
         <h1>${escapeHtml(c.name)}</h1>
         <span class="catalog-count">${[c.phone && `<span class="num">${escapeHtml(c.phone)}</span>`, c.note && escapeHtml(c.note)].filter(Boolean).join('، ') || 'بدون هاتف'}</span>
       </div>
@@ -178,10 +221,66 @@ function renderDetail() {
         <div class="z-label">الرصيد</div>
         <div class="z-value ${balanceClass(c.balance)}-text">${balanceText(c.balance)}</div>
       </div>
-      ${
-        rows.length
-          ? `<div class="section-head"><h2>كشف الحساب</h2></div>
-            <div class="table-scroll"><table class="ptable ledger">
+      <div class="section-head"><h2>كشف الحساب</h2><span class="catalog-count" id="customerEntryCount" aria-live="polite"></span></div>
+      <div class="catalog-filters debt-entry-filters" role="group" aria-label="فلترة كشف الحساب"${c.entries.length ? '' : ' hidden'}>
+        <label class="filter-field">
+          <span>نوع الحركة</span>
+          <select class="input" id="customerEntryKind" data-entry-filter="kind">
+            <option value="">كل الحركات</option>
+            <option value="sale"${kind === 'sale' ? ' selected' : ''}>شراء بالدين</option>
+            <option value="payment"${kind === 'payment' ? ' selected' : ''}>تسديد</option>
+            <option value="manual"${kind === 'manual' ? ' selected' : ''}>دين مضاف</option>
+            <option value="return"${kind === 'return' ? ' selected' : ''}>إرجاع</option>
+          </select>
+        </label>
+        <label class="filter-field">
+          <span>من تاريخ</span>
+          <input class="input" type="date" data-entry-filter="from" value="${escapeHtml(from)}">
+        </label>
+        <label class="filter-field">
+          <span>إلى تاريخ</span>
+          <input class="input" type="date" data-entry-filter="to" value="${escapeHtml(to)}">
+        </label>
+        <button class="btn btn-sm" type="button" data-clear-entry-filters>مسح الفلاتر</button>
+      </div>
+      <div id="customerEntries"></div>
+    </div>`;
+  renderEntries();
+}
+
+function renderEntries() {
+  const { kind, from, to } = state.entryFilters;
+  const { entries } = state.detail;
+  const area = $('customerEntries');
+  const count = $('customerEntryCount');
+  for (const filter of els.panel.querySelectorAll('[data-entry-filter]')) filter.classList.toggle('is-active', Boolean(filter.value));
+  els.panel.querySelector('[data-clear-entry-filters]').disabled = !(kind || from || to);
+  if (from && to && from > to) {
+    count.textContent = '';
+    area.innerHTML = '<p class="form-error" role="alert">اختر تاريخ نهاية يساوي تاريخ البداية أو يأتي بعده.</p>';
+    return;
+  }
+
+  let running = 0;
+  const rows = [];
+  for (const entry of entries) {
+    running = roundMoney(running + entry.amount);
+    if (kind && entry.kind !== kind) continue;
+    if (from || to) {
+      const date = dayKey(new Date(entry.date));
+      if ((from && date < from) || (to && date > to)) continue;
+    }
+    rows.push({ ...entry, after: running });
+  }
+  count.textContent = kind || from || to ? `عرض ${rows.length} من ${entries.length}` : '';
+  if (!rows.length) {
+    area.innerHTML = entries.length
+      ? '<div class="empty"><h3>لا توجد حركات مطابقة</h3></div>'
+      : '<div class="empty"><h3>لا توجد سجلات بعد</h3><p>البيع بالدين من الكاشير يُسجَّل هنا تلقائيًا<span data-need="owner">، أو أضف دينًا سابقًا من زر «إضافة دين»</span>.</p></div>';
+    return;
+  }
+
+  area.innerHTML = `<div class="table-scroll"><table class="ptable ledger">
               <thead><tr>
                 <th scope="col">التاريخ</th>
                 <th scope="col">البيان</th>
@@ -193,12 +292,12 @@ function renderDetail() {
                 .reverse()
                 .map(
                   (e) => `<tr>
-                  <td>${formatDateTime(e.date)}</td>
-                  <td>${ENTRY_LABELS[e.kind](e)}${e.note ? `<small class="pcat">${escapeHtml(e.note)}</small>` : ''}${
+                  <td data-label="التاريخ">${formatDateTime(e.date)}</td>
+                  <td class="cell-title">${ENTRY_LABELS[e.kind](e)}${e.note ? `<small class="pcat">${escapeHtml(e.note)}</small>` : ''}${
                     e.madeBy?.name ? `<small class="pcat">بواسطة ${escapeHtml(e.madeBy.name)}</small>` : ''
                   }</td>
-                  <td class="end num ${e.amount > 0 ? 'owes-text' : 'credit-text'}">${e.amount > 0 ? '+' : '−'}${formatMoney(Math.abs(e.amount))}</td>
-                  <td class="end num">${formatMoney(e.after)}</td>
+                  <td class="end num ${e.amount > 0 ? 'owes-text' : 'credit-text'}" data-label="المبلغ">${e.amount > 0 ? '+' : '−'}${formatMoney(Math.abs(e.amount))}</td>
+                  <td class="end num" data-label="الرصيد بعده">${formatMoney(e.after)}</td>
                   <td class="row-actions">${
                     e.kind === 'payment' || e.kind === 'manual'
                       ? `<button class="btn btn-sm btn-ghost danger" type="button" data-delete-entry="${e._id}" data-need="owner">حذف</button>`
@@ -207,10 +306,7 @@ function renderDetail() {
                 </tr>`,
                 )
                 .join('')}</tbody>
-            </table></div>`
-          : `<div class="empty"><h3>لا توجد سجلات بعد</h3><p>البيع بالدين من الكاشير يُسجَّل هنا تلقائيًا<span data-need="owner">، أو أضف دينًا سابقًا من زر «إضافة دين»</span>.</p></div>`
-      }
-    </div>`;
+            </table></div>`;
 }
 
 /* Customer dialog */
@@ -243,9 +339,8 @@ els.customerForm.addEventListener('submit', async (e) => {
     els.customerDialog.close();
     toast(editing ? 'تم حفظ بيانات الزبون' : `تمت إضافة ${body.name}`);
     els.search.value = '';
-    state.selectedId = saved._id;
-    history.replaceState(null, '', `?customer=${saved._id}`);
-    await refresh();
+    select(saved._id);
+    await loadCustomers();
   } catch (err) {
     els.customerError.textContent = err.message;
     els.customerError.hidden = false;
@@ -319,17 +414,45 @@ els.entryForm.addEventListener('submit', async (e) => {
 document.querySelectorAll('dialog [data-close]').forEach((b) => b.addEventListener('click', () => b.closest('dialog').close()));
 
 els.add.addEventListener('click', () => openCustomerDialog());
-els.search.addEventListener('input', renderList);
+els.search.addEventListener('input', renderCustomers);
+for (const filter of [els.balanceFilter, els.activityFilter]) {
+  filter.addEventListener('change', () => select(null));
+}
+els.clearFilters.addEventListener('click', () => {
+  els.search.value = '';
+  els.balanceFilter.value = '';
+  els.activityFilter.value = '';
+  select(null);
+  els.search.focus();
+});
 els.search.addEventListener('keydown', (e) => {
   // Enter opens the only match, or offers to add the typed name
   if (e.key !== 'Enter') return;
   e.preventDefault();
-  const matches = els.list.querySelectorAll('[data-select]');
-  if (matches.length === 1) select(matches[0].dataset.select);
-  else if (!matches.length && els.search.value.trim()) openCustomerDialog();
+  const matches = filteredCustomers();
+  if (matches.length === 1) select(matches[0]._id);
+  else if (!matches.length && els.search.value.trim() && !state.customers.some(searchMatches())) openCustomerDialog();
+});
+
+els.panel.addEventListener('change', (e) => {
+  const key = e.target.dataset.entryFilter;
+  if (!key) return;
+  state.entryFilters[key] = e.target.value;
+  renderEntries();
 });
 
 document.addEventListener('click', async (e) => {
+  if (e.target.closest('[data-customer-overview]')) {
+    select(null);
+    return;
+  }
+  if (e.target.closest('[data-clear-entry-filters]')) {
+    state.entryFilters = emptyEntryFilters();
+    for (const field of els.panel.querySelectorAll('[data-entry-filter]')) field.value = '';
+    renderEntries();
+    $('customerEntryKind').focus();
+    return;
+  }
   const pick = e.target.closest('[data-select]');
   if (pick) {
     select(pick.dataset.select);
@@ -376,5 +499,10 @@ document.addEventListener('click', async (e) => {
   }
 });
 
-state.selectedId = new URLSearchParams(location.search).get('customer');
+const query = new URLSearchParams(location.search);
+state.selectedId = query.get('customer');
+for (const [control, key] of [[els.balanceFilter, 'balance'], [els.activityFilter, 'activity']]) {
+  const value = query.get(key);
+  if ([...control.options].some((option) => option.value === value)) control.value = value;
+}
 refresh();

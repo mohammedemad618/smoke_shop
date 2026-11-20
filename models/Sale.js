@@ -11,6 +11,8 @@ export const madeBySchema = new Schema(
   { _id: false },
 );
 
+const costLotSchema = new Schema({ order: Number, quantity: Number, unitCost: Number }, { _id: false });
+
 // Items keep a snapshot of name and prices, so editing or deleting a product
 // later never changes past invoices.
 const saleItemSchema = new Schema(
@@ -26,6 +28,8 @@ const saleItemSchema = new Schema(
     quantity: { type: Number, required: true, min: 0.001 },
     unitPrice: { type: Number, required: true },
     unitCost: { type: Number, required: true },
+    lineCost: Number,
+    costLots: { type: [costLotSchema], default: undefined },
     // What the line was sold for, after its discount if it had one
     lineTotal: { type: Number, required: true },
     // Money taken off the whole line at the cashier (the «الخصم» permission), kept only when
@@ -52,6 +56,7 @@ const returnSchema = new Schema(
         packSize: Number,
         quantity: Number,
         amount: Number,
+        cost: Number,
       },
     ],
     amount: { type: Number, required: true },

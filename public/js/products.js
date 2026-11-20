@@ -1,6 +1,7 @@
 import { api, toast, formatMoney, formatQty, escapeHtml, arCount, packName, roundUpTo, PRODUCTS, can, shopInfo } from './common.js';
 import { randomStoreBarcode } from './barcode.js';
 import { scanBarcode } from './scanner.js';
+import { estimatedStockCost } from './stock-cost.js';
 
 const ICONS = {
   edit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>',
@@ -208,8 +209,9 @@ function salePriceCell(p) {
 }
 
 function profitCell(p) {
-  const profit = p.salePrice - p.purchasePrice;
-  const pct = p.purchasePrice > 0 ? `${Math.round((profit / p.purchasePrice) * 100)}%` : '';
+  const cost = estimatedStockCost(p, 1);
+  const profit = (p.unit === 'kg' ? p.salePrice : roundUpTo(p.salePrice, roundingStep)) - cost;
+  const pct = cost > 0 ? `${Math.round((profit / cost) * 100)}%` : '';
   return `<span class="num${profit < 0 ? ' loss' : ''}">${formatMoney(profit)}</span>${pct ? `<small class="pct num">${pct}</small>` : ''}`;
 }
 
@@ -307,7 +309,7 @@ function renderProducts() {
       <th scope="col">المخزن</th>
       <th scope="col" class="end" data-need="reports">سعر الشراء</th>
       <th scope="col" class="end">سعر البيع</th>
-      <th scope="col" class="end" data-need="reports">الربح</th>
+      <th scope="col" class="end" data-need="reports">ربح الوحدة التالية</th>
       <th scope="col"><span class="sr-only">إجراءات</span></th>
     </tr></thead>
     <tbody>${products

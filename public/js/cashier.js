@@ -28,6 +28,7 @@ import {
 import { scanBarcodes } from './scanner.js';
 import { isSaleOf } from './idempotency.js';
 import { fitsStep, maxDiscount } from './discount.js';
+import { estimatedStockCost } from './stock-cost.js';
 import { receiptHtml, prepareReceipt, printPrepared, clearReceipt } from './receipt.js';
 
 const MAX_QTY = 10000;
@@ -308,9 +309,16 @@ const cartTotal = () => roundMoney(state.cart.reduce((sum, l) => sum + lineTotal
 // purchase price): such an account is told the most it may take off, and the others only
 // that it is off the whole line. null: the cost is not known here.
 function knownCost(l) {
-  const purchasePrice = state.byId.get(l.productId)?.purchasePrice;
-  // As the server costs the line: the unit's cost to 6 decimals, then the line to the cent
-  return typeof purchasePrice === 'number' ? roundMoney(roundTo(purchasePrice * l.packSize, 6) * l.qty) : null;
+  const product = state.byId.get(l.productId);
+  if (typeof product?.purchasePrice !== 'number') return null;
+  const quantity = roundQty(l.qty * l.packSize);
+  if (!product.trackStock || !quantity) return roundMoney(roundTo(product.purchasePrice * l.packSize, 6) * l.qty);
+  let before = 0;
+  for (const line of state.cart) {
+    if (line.key === l.key) break;
+    if (line.productId === l.productId) before += roundQty(line.qty * line.packSize);
+  }
+  return estimatedStockCost(product, quantity, before);
 }
 // The most this screen lets a line take off: down to its cost when known, otherwise its
 // whole amount; a multiple of the shop's step either way

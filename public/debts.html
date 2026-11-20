@@ -39,6 +39,27 @@
         <input class="input" id="customerSearch" type="search" placeholder="ابحث بالاسم أو الهاتف" aria-label="بحث في الزبائن">
         <button class="btn btn-primary" id="addCustomerBtn" type="button">إضافة</button>
       </div>
+      <div class="debt-customer-filters" role="group" aria-label="فلترة الزبائن">
+        <label class="filter-field">
+          <span>حالة الرصيد</span>
+          <select class="input" id="customerBalanceFilter">
+            <option value="">كل الأرصدة</option>
+            <option value="owing">عليهم دين</option>
+            <option value="advance">لديهم رصيد مقدّم</option>
+            <option value="clear">رصيدهم صفر</option>
+          </select>
+        </label>
+        <label class="filter-field">
+          <span>آخر حركة</span>
+          <select class="input" id="customerActivityFilter">
+            <option value="">كل الحركات</option>
+            <option value="recent">آخر 30 يومًا</option>
+            <option value="stale">أقدم من 30 يومًا</option>
+            <option value="none">بلا حركات مسجّلة</option>
+          </select>
+        </label>
+        <button class="btn btn-sm" id="clearCustomerFilters" type="button" hidden>مسح البحث والفلاتر</button>
+      </div>
       <ul class="rail-list" id="customerList"></ul>
     </aside>
     <section class="catalog-main debt-main" id="customerPanel"></section>

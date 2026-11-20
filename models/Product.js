@@ -4,6 +4,8 @@ import { money } from '../lib/util.js';
 // Numbers like 1e400 parse to Infinity, which Mongoose would otherwise store
 const finite = (label) => ({ validator: (v) => v === undefined || v === null || Number.isFinite(v), message: `قيمة ${label} غير صالحة` });
 
+const stockLotSchema = new Schema({ order: Number, quantity: Number, unitCost: Number }, { _id: false });
+
 const productSchema = new Schema(
   {
     name: {
@@ -47,6 +49,8 @@ const productSchema = new Schema(
     // in pieces or kilograms (whole pieces are enforced by the route, which knows the unit)
     trackStock: { type: Boolean, default: false },
     stock: { type: Number, default: 0, validate: finite('كمية المخزن') },
+    stockLots: { type: [stockLotSchema], default: undefined },
+    lotSequence: Number,
     lowStockAlert: { type: Number, default: 5, min: [0, 'حد التنبيه لا يمكن أن يكون سالبًا'], validate: finite('حد التنبيه') },
     // On: the cashier cannot sell more than what is in stock. Off: stock may go below zero.
     blockWhenOut: { type: Boolean, default: false },
@@ -60,6 +64,13 @@ productSchema.index({ name: 1 });
 // at retail. Only tracked products have a quantity; stock below zero counts as none.
 productSchema.statics.valuation = async function valuation(match = {}) {
   const inStock = { $and: ['$trackStock', { $gt: ['$stock', 0] }] };
+  const cost = {
+    $cond: [
+      { $isArray: '$stockLots' },
+      { $sum: { $map: { input: '$stockLots', as: 'lot', in: { $multiply: ['$$lot.quantity', '$$lot.unitCost'] } } } },
+      { $multiply: ['$stock', '$purchasePrice'] },
+    ],
+  };
   const [row] = await this.aggregate([
     { $match: match },
     {
@@ -68,7 +79,7 @@ productSchema.statics.valuation = async function valuation(match = {}) {
         products: { $sum: 1 },
         tracked: { $sum: { $cond: ['$trackStock', 1, 0] } },
         belowZero: { $sum: { $cond: [{ $and: ['$trackStock', { $lt: ['$stock', 0] }] }, 1, 0] } },
-        capital: { $sum: { $cond: [inStock, { $multiply: ['$stock', '$purchasePrice'] }, 0] } },
+        capital: { $sum: { $cond: [inStock, cost, 0] } },
         saleValue: { $sum: { $cond: [inStock, { $multiply: ['$stock', '$salePrice'] }, 0] } },
       },
     },

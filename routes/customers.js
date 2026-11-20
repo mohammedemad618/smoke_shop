@@ -1,13 +1,18 @@
 import { Router } from 'express';
+import mongoose from 'mongoose';
 import { httpError } from '../lib/errors.js';
 import { money } from '../lib/util.js';
 import { madeByOf } from '../lib/auth.js';
 import { allow, forbidden, isOwner } from '../lib/permissions.js';
+import { DAY_MS, requestedRange } from '../lib/range.js';
+import { REPORT_MS, runReport } from '../lib/limits.js';
+import { replayDebts } from '../lib/debt-ledger.js';
 
 const router = Router();
 const EDITABLE = ['name', 'phone', 'note'];
 // Entries added from the debts page; sale and return entries belong to invoices
 const MANUAL_KINDS = { payment: -1, manual: 1 };
+const PAYMENT_PAGE_SIZE = 25;
 
 const pickEditable = (body) =>
   Object.fromEntries(EDITABLE.filter((key) => body[key] !== undefined).map((key) => [key, body[key]]));
@@ -36,11 +41,58 @@ router.get('/', allow('credit'), async (req, res) => {
   );
 });
 
+// The cash report may show names and balances to an account that can open customer records.
+router.get('/payments', allow('credit'), async (req, res) => {
+  const { Customer, DebtEntry } = req.models;
+  const { start, end } = requestedRange(req.query, 32 * DAY_MS);
+  const filter = { kind: 'payment', date: { $gte: start, $lt: end } };
+  if (req.query.before !== undefined) {
+    const [when, id, ...extra] = String(req.query.before).split('_');
+    const date = new Date(when);
+    if (extra.length || date < start || date >= end || Number.isNaN(date.getTime()) || !mongoose.isObjectIdOrHexString(id)) {
+      throw httpError(400, 'موضع عرض التسديدات غير صالح');
+    }
+    filter.$or = [{ date: { $lt: date } }, { date, _id: { $lt: id } }];
+  }
+
+  const result = await runReport(req.tenant._id, async () => {
+    const records = await DebtEntry.find(filter).select('customer date amount note')
+      .sort({ date: -1, _id: -1 }).limit(PAYMENT_PAGE_SIZE + 1).maxTimeMS(REPORT_MS).lean();
+    if (!records.length) return { payments: [], next: null };
+    const page = records.slice(0, PAYMENT_PAGE_SIZE);
+    const ids = [...new Set(page.map((p) => String(p.customer)))];
+    const splits = new Map(page.map((p) => [String(p._id), null]));
+    const [customers] = await Promise.all([
+      Customer.find({ _id: { $in: ids } }).select('name').lean(),
+      replayDebts(DebtEntry, end, {
+        customers: ids,
+        onPayment(entry, details) {
+          const id = String(entry._id);
+          if (splits.has(id)) splits.set(id, details);
+        },
+      }),
+    ]);
+    const names = new Map(customers.map((c) => [String(c._id), c.name]));
+    const last = page.at(-1);
+    const next = records.length > PAYMENT_PAGE_SIZE ? `${last.date.toISOString()}_${last._id}` : null;
+    const payments = page.map((p) => ({
+      date: p.date,
+      customer: p.customer,
+      customerName: names.get(String(p.customer)) ?? '',
+      note: p.note,
+      amount: money(-p.amount),
+      ...splits.get(String(p._id)),
+    }));
+    return { payments, next };
+  });
+  res.json(result);
+});
+
 // One customer with their account, oldest entry first
 router.get('/:id', allow('credit'), async (req, res) => {
   const { Customer, DebtEntry } = req.models;
   const customer = await findCustomer(Customer, req.params.id);
-  const entries = await DebtEntry.find({ customer: customer._id }).sort({ date: 1, createdAt: 1 }).lean();
+  const entries = await DebtEntry.find({ customer: customer._id }).sort({ date: 1, createdAt: 1, _id: 1 }).lean();
   const balance = money(entries.reduce((sum, e) => sum + e.amount, 0));
   res.json({ ...customer, balance, entries });
 });

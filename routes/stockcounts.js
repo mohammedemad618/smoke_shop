@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { httpError } from '../lib/errors.js';
-import { money, roundQty, stockChange } from '../lib/util.js';
+import { money, roundQty } from '../lib/util.js';
+import { addStock, commitInventory, inventoryOf, inventoryWrite, takeStock } from '../lib/inventory.js';
+import { lotCost } from '../public/js/stock-cost.js';
 import { allow, stockCountFor } from '../lib/permissions.js';
 
 const router = Router();
@@ -10,6 +12,20 @@ async function findOpenCount(StockCount, id) {
   if (!count) throw httpError(404, 'الجرد غير موجود');
   if (count.status !== 'open') throw httpError(409, 'هذا الجرد اعتُمد من قبل');
   return count;
+}
+
+function stockAdjustment(product, line) {
+  const difference = roundQty(line.counted - (line.expected ?? 0));
+  const unitCost = line.purchasePrice ?? product.purchasePrice;
+  const set = { ...inventoryOf(product), trackStock: true };
+  if (!product.trackStock) {
+    const opening = line.expected === null ? 0 : set.stock;
+    set.stock = Math.min(opening, 0);
+    if (opening > 0) addStock(set, opening, product.purchasePrice);
+  }
+  const value = difference < 0 ? -lotCost(takeStock(set, -difference, unitCost)) : difference * unitCost;
+  if (difference > 0) addStock(set, difference, unitCost);
+  return { set, adjustmentValue: money(value) };
 }
 
 // Stocktakes are part of `products`; their values (at purchase price) are left out without
@@ -42,7 +58,7 @@ router.post('/', allow('products'), async (req, res) => {
 });
 
 // Records how many of a product are on the shelf, replacing an earlier count of it
-router.put('/:id/lines/:productId', allow('products'), async (req, res) => {
+router.put('/:id/lines/:productId', allow('products'), inventoryWrite(async (req, res) => {
   const { Product, StockCount } = req.models;
   const count = await findOpenCount(StockCount, req.params.id);
   const product = await Product.findById(req.params.productId).lean();
@@ -67,6 +83,7 @@ router.put('/:id/lines/:productId', allow('products'), async (req, res) => {
     salePrice: product.salePrice,
     countedAt: new Date(),
   };
+  if (line.expected !== null) line.adjustmentValue = stockAdjustment(product, line).adjustmentValue;
   const replaced = await StockCount.updateOne(
     { _id: count._id, status: 'open', 'lines.product': product._id },
     { $set: { 'lines.$': line } },
@@ -79,79 +96,68 @@ router.put('/:id/lines/:productId', allow('products'), async (req, res) => {
     if (!added.matchedCount) throw httpError(409, 'تغيّر الجرد في نفس اللحظة. حدّث الصفحة وأعد المحاولة');
   }
   res.json(stockCountFor(req.user, { lines: [line] }).lines[0]);
-});
+}));
 
-router.delete('/:id/lines/:productId', allow('products'), async (req, res) => {
+router.delete('/:id/lines/:productId', allow('products'), inventoryWrite(async (req, res) => {
   const { StockCount } = req.models;
   const count = await findOpenCount(StockCount, req.params.id);
   await StockCount.updateOne({ _id: count._id, status: 'open' }, { $pull: { lines: { product: req.params.productId } } });
   res.status(204).end();
-});
+}));
 
 // Corrects the stock of every counted product and keeps the stocktake as a record.
 // Products that were not counted keep their quantities.
-router.post('/:id/apply', allow('products'), async (req, res) => {
+router.post('/:id/apply', allow('products'), inventoryWrite(async (req, res) => {
   const { Product, StockCount } = req.models;
   const open = await findOpenCount(StockCount, req.params.id);
   if (!open.lines.length) throw httpError(400, 'لم يُعدّ أي منتج بعد');
-  const count = await StockCount.findOneAndUpdate(
-    { _id: open._id, status: 'open' },
-    { $set: { status: 'applied', appliedAt: new Date() } },
-    { returnDocument: 'after' },
-  ).lean();
-  if (!count) throw httpError(409, 'هذا الجرد اعتُمد من قبل');
-
-  // A product counted while untracked may have started being tracked since (a supplier
-  // invoice starts it from what was bought); the count is then what was already on the
-  // shelf, so it is added rather than overwriting what came in after
-  const untrackedIds = count.lines.filter((l) => l.expected === null).map((l) => l.product);
-  const trackedSince = new Set(
-    (await Product.find({ _id: { $in: untrackedIds }, trackStock: true }, '_id').lean()).map((p) => String(p._id)),
-  );
-  const summary = { counted: count.lines.length, shortItems: 0, shortValue: 0, overItems: 0, overValue: 0, newlyTracked: 0 };
-  const updates = count.lines.map((line) => {
+  const products = await Product.find({ _id: { $in: open.lines.map((line) => line.product) } }).lean();
+  const byId = new Map(products.map((product) => [String(product._id), product]));
+  const summary = { counted: open.lines.length, shortItems: 0, shortValue: 0, overItems: 0, overValue: 0, newlyTracked: 0 };
+  const changes = [];
+  for (const line of open.lines) {
+    const product = byId.get(String(line.product));
+    if (!product) continue;
+    const { set, adjustmentValue } = stockAdjustment(product, line);
+    changes.push({ product, set });
     if (line.expected === null) {
       summary.newlyTracked++;
-      if (trackedSince.has(String(line.product))) {
-        return { updateOne: { filter: { _id: line.product }, update: stockChange(line.counted) } };
-      }
-      return {
-        updateOne: {
-          filter: { _id: line.product, trackStock: { $ne: true } },
-          update: { $set: { trackStock: true, stock: line.counted } },
-        },
-      };
+      continue;
     }
-    const diff = roundQty(line.counted - line.expected);
-    if (diff < 0) {
+    line.adjustmentValue = adjustmentValue;
+    if (line.counted < line.expected) {
       summary.shortItems++;
-      summary.shortValue += -diff * line.purchasePrice;
-    } else if (diff > 0) {
+      summary.shortValue -= adjustmentValue;
+    } else if (line.counted > line.expected) {
       summary.overItems++;
-      summary.overValue += diff * line.purchasePrice;
+      summary.overValue += adjustmentValue;
     }
-    return { updateOne: { filter: { _id: line.product }, update: stockChange(diff, { trackStock: true }) } };
-  });
-  await Product.bulkWrite(updates);
-
-  const { capital, saleValue } = await Product.valuation();
-  Object.assign(summary, {
-    shortValue: money(summary.shortValue),
-    overValue: money(summary.overValue),
-    capital,
-    saleValue,
-  });
-  await StockCount.updateOne({ _id: count._id }, { $set: { summary } });
-  res.json(stockCountFor(req.user, { ...count, summary }));
-});
+  }
+  const undoStock = await commitInventory(Product, changes);
+  let count;
+  try {
+    const { capital, saleValue } = await Product.valuation();
+    Object.assign(summary, { shortValue: money(summary.shortValue), overValue: money(summary.overValue), capital, saleValue });
+    count = await StockCount.findOneAndUpdate(
+      { _id: open._id, status: 'open' },
+      { $set: { status: 'applied', appliedAt: new Date(), lines: open.lines, summary } },
+      { returnDocument: 'after' },
+    ).lean();
+    if (!count) throw httpError(409, 'هذا الجرد اعتُمد من قبل');
+  } catch (err) {
+    await undoStock();
+    throw err;
+  }
+  res.json(stockCountFor(req.user, count));
+}));
 
 // Throws the stocktake away; nothing in the stock has changed yet, so it is part of counting
 // rather than deleting a record
-router.delete('/:id', allow('products'), async (req, res) => {
+router.delete('/:id', allow('products'), inventoryWrite(async (req, res) => {
   const { StockCount } = req.models;
   const { deletedCount } = await StockCount.deleteOne({ _id: req.params.id, status: 'open' });
   if (!deletedCount) await findOpenCount(StockCount, req.params.id);
   res.status(204).end();
-});
+}));
 
 export default router;

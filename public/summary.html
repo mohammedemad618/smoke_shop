@@ -40,6 +40,26 @@
     <div id="summary"><p class="hint">جارٍ التحميل…</p></div>
   </main>
 
+  <dialog class="dialog history-dialog summary-payments" id="summaryPayments" aria-labelledby="summaryPaymentsTitle">
+    <form class="section-head" method="dialog">
+      <h2 id="summaryPaymentsTitle">تسديدات الزبائن</h2>
+      <button class="btn btn-ghost" type="submit">إغلاق</button>
+    </form>
+    <p class="hint" id="summaryPaymentsPeriod"></p>
+    <p class="hint" id="summaryPaymentsStatus" role="status"></p>
+    <table class="ptable" id="summaryPaymentsTable" hidden>
+      <thead><tr>
+        <th scope="col">الزبون والوقت</th>
+        <th scope="col" class="end">الدفعة</th>
+        <th scope="col" class="end">منها لديون المبيعات</th>
+        <th scope="col" class="end">الرصيد بعد الدفعة</th>
+      </tr></thead>
+      <tbody id="summaryPaymentsRows"></tbody>
+    </table>
+    <p class="hint">تدخل الدفعة المقدّمة في تحصيل المبيعات عند استخدامها في فاتورة بيع بالدين.</p>
+    <button class="btn" id="summaryPaymentsMore" type="button" hidden>عرض المزيد</button>
+  </dialog>
+
   <div class="toasts" id="toasts"></div>
   <script type="module" src="/js/summary.js"></script>
 </body>

@@ -51,6 +51,7 @@ const EXPECTED = {
   'GET /api/sales': ['reports', 'returns'],
   'GET /api/sales/report': ['reports'],
   'GET /api/sales/products': ['reports'],
+  'GET /api/summary/cash': ['reports'],
   'POST /api/sales': ['selling'],
   'POST /api/sales/:id/returns': ['returns'],
   'GET /api/expenses': ['purchases'],
@@ -59,6 +60,7 @@ const EXPECTED = {
   'PUT /api/expenses/:id': ['purchases'],
   'DELETE /api/expenses/:id': ['owner'],
   'GET /api/customers': ['credit'],
+  'GET /api/customers/payments': ['credit'],
   'GET /api/customers/:id': ['credit'],
   'POST /api/customers': ['credit'],
   'PUT /api/customers/:id': ['credit'],
@@ -86,7 +88,7 @@ const EXPECTED = {
 
 // What an account without `reports` must never be sent, at any depth. Supplier invoices
 // (/api/purchases) are their prices, and are closed to accounts without `purchases`.
-const COST_KEYS = ['purchasePrice', 'unitCost', 'cost', 'profit', 'returnedCost', 'capital', 'saleValue', 'shortValue', 'overValue', 'owedToSuppliers', 'prevPurchasePrice', 'netProfit'];
+const COST_KEYS = ['purchasePrice', 'unitCost', 'lineCost', 'stockLots', 'costLots', 'adjustmentValue', 'cost', 'profit', 'returnedCost', 'capital', 'saleValue', 'shortValue', 'overValue', 'owedToSuppliers', 'prevPurchasePrice', 'netProfit'];
 
 let env;
 let shop;

@@ -144,13 +144,26 @@ test('the pages tell the record of their own request from one made earlier under
   assert.ok(isSaleOf(cart, replay.data), 'the same cart again is the same sale');
   assert.ok(!isSaleOf({ items: [{ productId: sugar._id, quantity: 3, mode: 'wholesale' }] }, replay.data), 'sold by the pack is another line');
 
-  const draft = { items: [{ product: tea._id, quantity: 4, price: 80.004 }], clientId: 'purchase-same-01' };
+  const productLine = { product: tea._id, quantity: 4, price: 80.004, salePrice: 300.004 };
+  const draft = { items: [productLine], clientId: 'purchase-same-01' };
   const bought = await call('POST', '/purchases', draft);
   assert.ok(isPurchaseOf(draft, bought.data));
-  const edited = { ...draft, items: [{ product: tea._id, quantity: 4, price: 85 }] };
+  const edited = { ...draft, items: [{ ...productLine, price: 85 }] };
   const again = await call('POST', '/purchases', edited);
   assert.deepStrictEqual([again.status, again.data.number], [200, bought.data.number]);
   assert.ok(!isPurchaseOf(edited, again.data));
+  const newSalePrice = { ...draft, items: [{ ...productLine, salePrice: 325 }] };
+  const replayedPurchase = await call('POST', '/purchases', newSalePrice);
+  assert.strictEqual(replayedPurchase.status, 200);
+  assert.ok(!isPurchaseOf(newSalePrice, replayedPurchase.data));
+  assert.ok(!isPurchaseOf({ items: [{ ...productLine, salePrice: undefined }] }, replayedPurchase.data));
+  const repriced = await ok('GET', '/products/barcode/SAME-2');
+  assert.deepStrictEqual([repriced.purchasePrice, repriced.salePrice, repriced.stock], [80, 300, 54]);
+
+  const sameSalePrice = { items: [{ ...productLine, salePrice: 300 }], clientId: 'purchase-same-02' };
+  const unchanged = await ok('POST', '/purchases', sameSalePrice);
+  assert.strictEqual(unchanged.items[0].salePrice, null);
+  assert.ok(isPurchaseOf(sameSalePrice, unchanged));
 
   const back = { items: [{ line: 0, quantity: 1 }], clientId: 'return-same-001' };
   const returned = await call('POST', `/sales/${sold.data._id}/returns`, back);

@@ -1,8 +1,11 @@
 import { Router } from 'express';
 import mongoose from 'mongoose';
 import { httpError } from '../lib/errors.js';
-import { escapeRegex, roundQty } from '../lib/util.js';
+import { escapeRegex, money, roundQty } from '../lib/util.js';
 import { allow, productFor } from '../lib/permissions.js';
+import { SETTING_DEFAULTS } from '../lib/shop-settings.js';
+import { addStock, inventoryOf, inventoryWrite, takeStock } from '../lib/inventory.js';
+import { cashAfter, refundCash, saleCash } from '../services/cash.js';
 
 const router = Router();
 const EDITABLE = [
@@ -72,24 +75,54 @@ router.get('/', allow('selling'), async (req, res) => {
   res.json(products.map((p) => productFor(req.user, p)));
 });
 
-// What the whole shop is owed and owes: customers' debts, and unpaid supplier invoices
-async function debtTotals({ DebtEntry, Purchase }) {
-  const [customers, owedToSuppliers] = await Promise.all([DebtEntry.totals(), Purchase.owedToSuppliers()]);
-  return { ...customers, owedToSuppliers };
+// Start from the opening balance and include the shop's recorded cash movements. A refund only
+// takes cash out for the part the shop paid back to the customer.
+async function shopFinances({ DebtEntry, Purchase, Sale, Expense, Setting }) {
+  const [customers, suppliers, [sales], [expenses], settings] = await Promise.all([
+    DebtEntry.totals(),
+    Purchase.totals(),
+    Sale.aggregate([
+      {
+        $group: {
+          _id: null,
+          received: { $sum: saleCash },
+          refunded: { $sum: refundCash({ $sum: '$returns.amount' }, { $sum: '$returns.toAccount' }) },
+        },
+      },
+    ]),
+    Expense.aggregate([{ $group: { _id: null, paid: { $sum: '$amount' } } }]),
+    Setting.findById('shop').select('openingCashBalance').lean(),
+  ]);
+  const { owedToShop, owedByShop, receivedFromCustomers } = customers;
+  const { owedToSuppliers, paidToSuppliers } = suppliers;
+  const openingCashBalance = settings?.openingCashBalance ?? SETTING_DEFAULTS.openingCashBalance;
+  const cashBalance = cashAfter(openingCashBalance, {
+    salesReceived: sales?.received ?? 0,
+    customerPayments: receivedFromCustomers,
+    refunds: sales?.refunded ?? 0,
+    supplierPayments: paidToSuppliers,
+    expenses: expenses?.paid ?? 0,
+  });
+  return { cashBalance, debts: { owedToShop, owedByShop, owedToSuppliers } };
 }
 
-// What the stock is worth, for the products page. For the whole shop it also brings the
-// debts both ways, which are part of the shop's capital.
+// Value of the stock. The shop-wide summary also includes its cash, debts and capital.
 router.get('/valuation', allow('reports'), async (req, res) => {
   const { Product, StockCount } = req.models;
   const category = String(req.query.category ?? '');
   if (category && !mongoose.isObjectIdOrHexString(category)) throw httpError(400, 'اختر القسم');
-  const [stock, debts, lastCount] = await Promise.all([
+  const [stock, finances, lastCount] = await Promise.all([
     Product.valuation(category ? { category: new mongoose.Types.ObjectId(category) } : {}),
-    category ? null : debtTotals(req.models),
+    category ? null : shopFinances(req.models),
     StockCount.findOne({ status: 'applied' }).sort({ appliedAt: -1 }).select('appliedAt').lean(),
   ]);
-  res.json({ ...stock, debts, lastCountAt: lastCount?.appliedAt ?? null });
+  const result = { ...stock, debts: finances?.debts ?? null, lastCountAt: lastCount?.appliedAt ?? null };
+  if (finances) {
+    const { cashBalance, debts: { owedToShop, owedByShop, owedToSuppliers } } = finances;
+    result.cashBalance = cashBalance;
+    result.shopCapital = money(stock.capital + cashBalance + owedToShop - owedByShop - owedToSuppliers);
+  }
+  res.json(result);
 });
 
 router.get('/barcode/:code', allow('selling'), async (req, res) => {
@@ -111,26 +144,43 @@ router.post('/', allow('products'), async (req, res) => {
   res.status(201).json(productFor(req.user, product));
 });
 
-router.put('/:id', allow('products'), async (req, res) => {
+router.put('/:id', allow('products'), inventoryWrite(async (req, res) => {
   const { Product, Category } = req.models;
   const data = pickEditable(req.body);
   const existing = await Product.findById(req.params.id).lean();
   if (!existing) throw httpError(404, 'المنتج غير موجود');
   checkUnits(data, existing);
   await assertCategoryExists(Category, data.category);
+  if ('stock' in data || 'trackStock' in data || 'purchasePrice' in data) {
+    const track = 'trackStock' in data ? Product.schema.path('trackStock').cast(data.trackStock) : existing.trackStock;
+    if (track) {
+      const inventory = inventoryOf(existing);
+      if (!existing.trackStock) inventory.stock = 0;
+      const stock = Number('stock' in data ? data.stock : existing.stock ?? 0);
+      if (Number.isFinite(stock)) {
+        const difference = roundQty(stock - inventory.stock);
+        const unitCost = Number(data.purchasePrice ?? existing.purchasePrice);
+        if (difference < 0) takeStock(inventory, -difference, unitCost);
+        if (difference > 0) addStock(inventory, difference, unitCost);
+        Object.assign(data, inventory);
+      }
+    } else if (existing.trackStock) {
+      data.stockLots = [];
+    }
+  }
   const product = await Product.findByIdAndUpdate(req.params.id, data, {
     returnDocument: 'after',
     runValidators: true,
   }).populate('category', 'name');
   if (!product) throw httpError(404, 'المنتج غير موجود');
   res.json(productFor(req.user, product));
-});
+}));
 
-router.delete('/:id', allow('owner'), async (req, res) => {
+router.delete('/:id', allow('owner'), inventoryWrite(async (req, res) => {
   const { Product } = req.models;
   const deleted = await Product.findByIdAndDelete(req.params.id);
   if (!deleted) throw httpError(404, 'المنتج غير موجود');
   res.status(204).end();
-});
+}));
 
 export default router;

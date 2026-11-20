@@ -1,6 +1,6 @@
 import { Schema } from 'mongoose';
 import { logoProblem } from '../lib/logo.js';
-import { LOW_STOCK_MAX, RECEIPT_PAPERS, ROUNDING_STEPS, SETTING_DEFAULTS } from '../lib/shop-settings.js';
+import { LOW_STOCK_MAX, OPENING_CASH_BALANCE_ERROR, RECEIPT_PAPERS, ROUNDING_STEPS, SETTING_DEFAULTS, validOpeningCashBalance } from '../lib/shop-settings.js';
 
 const validTimeZone = (value) => {
   try {
@@ -30,6 +30,11 @@ const settingSchema = new Schema(
       validate: { validator: validTimeZone, message: 'المنطقة الزمنية غير صالحة' },
     },
     currency: { type: String, trim: true, maxlength: [10, 'اسم العملة طويل جدًا'], default: D.currency },
+    openingCashBalance: {
+      type: Number,
+      default: D.openingCashBalance,
+      validate: { validator: validOpeningCashBalance, message: OPENING_CASH_BALANCE_ERROR },
+    },
     phone: { type: String, trim: true, maxlength: [30, 'رقم الهاتف طويل جدًا'], default: D.phone },
     address: { type: String, trim: true, maxlength: [120, 'عنوان المحل طويل جدًا'], default: D.address },
 

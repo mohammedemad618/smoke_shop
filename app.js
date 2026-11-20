@@ -22,6 +22,7 @@ import shopRouter from './routes/shop.js';
 import categoriesRouter from './routes/categories.js';
 import productsRouter from './routes/products.js';
 import salesRouter from './routes/sales.js';
+import summaryRouter from './routes/summary.js';
 import expensesRouter from './routes/expenses.js';
 import customersRouter from './routes/customers.js';
 import stockCountsRouter from './routes/stockcounts.js';
@@ -103,6 +104,7 @@ export function createTenantRouter({ db, registry, config }) {
   mount(api, '/categories', categoriesRouter);
   mount(api, '/products', productsRouter);
   mount(api, '/sales', salesRouter);
+  mount(api, '/summary', summaryRouter);
   mount(api, '/expenses', expensesRouter);
   mount(api, '/customers', customersRouter);
   mount(api, '/stockcounts', stockCountsRouter);

@@ -9,6 +9,7 @@ import {
   roundMoney,
   roundTo,
   roundQty,
+  parseNumber,
   normalizeArabic,
   dayKey,
   monthKey,
@@ -89,6 +90,7 @@ const els = {
 /* Helpers */
 
 const num = (value) => (String(value ?? '').trim() === '' ? NaN : Number(value));
+const priceInput = (value) => (/^(\d+\.?\d*|\.\d+)e[+-]?\d+$/i.test(String(value).trim()) ? Number(value) : parseNumber(value));
 const unitOf = (p) => p.unit ?? 'piece';
 const hasPack = (p) => Boolean(p.hasWholesale && p.wholesaleQty > 0);
 const packSizeOf = (line) => (line.mode === 'pack' ? line.product.wholesaleQty : 1);
@@ -116,7 +118,7 @@ function dayToIso(key) {
 function lineCalc(line) {
   const packSize = packSizeOf(line);
   const qty = roundQty(num(line.quantity));
-  const price = roundMoney(num(line.price));
+  const price = roundMoney(priceInput(line.price));
   const valid = Number.isFinite(qty) && qty > 0 && Number.isFinite(price) && price >= 0;
   return {
     packSize,
@@ -348,6 +350,8 @@ function renderDetail() {
           (i) => `<tr>
           <td><div class="pname">${escapeHtml(i.name)}</div>${
             i.startedTracking ? '<div class="pcat">بدأت متابعة كميته من هذه الفاتورة</div>' : ''
+          }${
+            i.salePrice != null ? `<div class="pcat">سعر البيع المحدد <span class="num">${formatMoney(i.salePrice)}</span> ${perWord(i.unit, 'unit')}</div>` : ''
           }</td>
           <td><span>${boughtLabel(i)}</span>${
             i.mode === 'pack' ? `<small class="pct">دخل المخزن ${qtyIn(i.stockQty, i.unit)}</small>` : ''
@@ -545,7 +549,7 @@ function restoreDraft() {
       continue;
     }
     const mode = l.mode === 'pack' && hasPack(product) ? 'pack' : 'unit';
-    state.draft.lines.push({ key: ++lineSeq, product, mode, quantity: l.quantity, price: l.price, salePrice: l.salePrice });
+    state.draft.lines.push({ key: ++lineSeq, product, mode, quantity: l.quantity, price: l.price, salePrice: String(l.salePrice ?? '') });
   }
   renderLines();
   if (state.draft.lines.length) toast(`عدت إلى الفاتورة التي لم تُحفظ (${arCount(state.draft.lines.length, ITEMS)})`);
@@ -676,7 +680,7 @@ function addProduct(product, { focus = true } = {}) {
       quantity: '1',
       // An account without `reports` is not sent the purchase price: typed from the invoice
       price: Number.isFinite(product.purchasePrice) ? String(roundMoney(product.purchasePrice * (mode === 'pack' ? product.wholesaleQty : 1))) : '',
-      salePrice: String(product.salePrice),
+      salePrice: '',
     };
     d.lines.unshift(line); // newest on top, next to the scan box
   }
@@ -707,30 +711,31 @@ function lineRow(line) {
     : `<span class="unit-word">${unitWord}</span>`;
   const step = line.mode === 'pack' || unit === 'piece' ? '1' : 'any';
   return `<tr data-key="${line.key}">
-    <td>
+    <td class="cell-title">
       <div class="pname">${escapeHtml(p.name)}</div>
       <small class="line-hint" data-info="stock"></small>
     </td>
-    <td>
+    <td data-label="الكمية">
       <div class="qty-field">
         <input class="input num" data-field="quantity" type="number" min="0" step="${step}" inputmode="${step === '1' ? 'numeric' : 'decimal'}" value="${escapeHtml(line.quantity)}" aria-label="كمية ${escapeHtml(p.name)}">
         ${unitControl}
       </div>
     </td>
-    <td>
-      <input class="input num" data-field="price" type="number" min="0" step="any" inputmode="decimal" value="${escapeHtml(line.price)}" aria-label="سعر شراء ${escapeHtml(p.name)}">
-      <small class="line-hint" data-info="cost"></small>
+    <td data-label="سعر الشراء">
+      <input class="input num" data-field="price" inputmode="decimal" autocomplete="off" value="${escapeHtml(line.price)}" aria-label="سعر شراء ${escapeHtml(p.name)}" aria-describedby="purchase-cost-${line.key}">
+      <small class="line-hint" data-info="cost" id="purchase-cost-${line.key}"></small>
     </td>
-    <td class="end"><strong class="num" data-info="total"></strong></td>
-    <td>
+    <td data-label="سعر البيع">
       ${
         // A new sale price needs `products`, as in the product form: shown, not changed, without it
         can('products')
-          ? `<input class="input num" data-field="salePrice" type="number" min="0" step="any" inputmode="decimal" value="${escapeHtml(line.salePrice)}" aria-label="سعر بيع ${escapeHtml(p.name)}">`
+          ? `<input class="input num" data-field="salePrice" inputmode="decimal" autocomplete="off" value="${escapeHtml(line.salePrice)}" placeholder="اختياري" aria-label="سعر بيع ${escapeHtml(p.name)}" aria-describedby="purchase-sale-${line.key}">`
           : `<span class="num sale-now">${formatMoney(p.salePrice)}</span>`
       }
+      <small class="line-hint" data-info="sale" id="purchase-sale-${line.key}"></small>
       <small class="line-hint" data-info="margin"></small>
     </td>
+    <td class="end purchase-line-total" data-label="الإجمالي"><strong class="num" data-info="total"></strong></td>
     <td class="row-actions"><button class="icon-btn danger" type="button" data-remove title="إزالة" aria-label="إزالة ${escapeHtml(p.name)}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button></td>
   </tr>`;
 }
@@ -748,8 +753,8 @@ function renderLines() {
         <th scope="col">المنتج</th>
         <th scope="col">الكمية</th>
         <th scope="col">سعر الشراء</th>
-        <th scope="col" class="end">الإجمالي</th>
         <th scope="col">سعر البيع</th>
+        <th scope="col" class="end">الإجمالي</th>
         <th scope="col"><span class="sr-only">إزالة</span></th>
       </tr></thead>
       <tbody>${lines.map(lineRow).join('')}</tbody>
@@ -777,24 +782,28 @@ function updateLineInfo(line) {
   const cost = row.querySelector('[data-info="cost"]');
   // Unknown to an account without `reports`: no «كان …», no up or down
   const before = Number.isFinite(p.purchasePrice) ? p.purchasePrice : null;
-  const parts = [];
+  const parts = [perWord(unit, line.mode)];
   if (line.mode === 'pack' && Number.isFinite(c.unitCost)) parts.push(`أي ${formatMoney(c.unitCost)} ${perWord(unit, 'unit')}`);
-  if (c.price === 0) parts.push('مجاني، لا يغيّر سعر الشراء');
+  if (c.price === 0) parts.push('مجاني، يبقى سعر الشراء الحالي');
   else if (before !== null && Number.isFinite(c.unitCost) && c.unitCost !== before) parts.push(`كان ${formatMoney(before)} ${perWord(unit, 'unit')}`);
   cost.textContent = parts.join('، ');
   cost.className = `line-hint${before !== null && c.price > 0 && c.unitCost > before ? ' is-up' : before !== null && c.price > 0 && c.unitCost < before ? ' is-down' : ''}`;
 
   row.querySelector('[data-info="total"]').textContent = formatMoney(c.total);
 
+  const editSalePrice = can('products');
+  const sale = editSalePrice && line.salePrice.trim() ? roundMoney(priceInput(line.salePrice)) : p.salePrice;
+  row.querySelector('[data-info="sale"]').textContent = editSalePrice
+    ? `السعر الحالي ${formatMoney(p.salePrice)} ${perWord(unit, 'unit')}`
+    : perWord(unit, 'unit');
   const margin = row.querySelector('[data-info="margin"]');
-  const sale = can('products') ? num(line.salePrice) : p.salePrice;
-  const unitCost = c.price === 0 ? (before ?? NaN) : c.unitCost;
+  const unitCost = c.unitCost;
   if (Number.isFinite(sale) && Number.isFinite(unitCost)) {
     const profit = roundMoney(sale - unitCost);
     margin.textContent =
       profit < 0
-        ? `خسارة ${formatMoney(-profit)} ${inThe(unit)}`
-        : `ربح ${formatMoney(profit)} ${inThe(unit)}${unitCost > 0 ? ` (${Math.round((profit / unitCost) * 100)}%)` : ''}`;
+        ? `خسارة الدفعة ${formatMoney(-profit)} ${inThe(unit)}`
+        : `ربح الدفعة ${formatMoney(profit)} ${inThe(unit)}${unitCost > 0 ? ` (${Math.round((profit / unitCost) * 100)}%)` : ''}`;
     margin.className = `line-hint${profit < 0 ? ' is-up' : ''}`;
   } else {
     margin.textContent = '';
@@ -918,8 +927,7 @@ function checkDraft() {
       return { message: `كمية «${p.name}» يجب أن تكون عددًا صحيحًا`, input: row.querySelector('[data-field="quantity"]') };
     }
     if (!(c.price >= 0)) return { message: `أدخل سعر شراء «${p.name}»`, input: row.querySelector('[data-field="price"]') };
-    const sale = num(line.salePrice);
-    if (can('products') && String(line.salePrice).trim() !== '' && !(sale >= 0)) {
+    if (can('products') && line.salePrice.trim() && !Number.isFinite(priceInput(line.salePrice))) {
       return { message: `سعر بيع «${p.name}» غير صالح`, input: row.querySelector('[data-field="salePrice"]') };
     }
   }
@@ -952,8 +960,8 @@ els.save.addEventListener('click', async () => {
       product: l.product._id,
       mode: l.mode,
       quantity: num(l.quantity),
-      price: num(l.price),
-      salePrice: !can('products') || String(l.salePrice).trim() === '' ? undefined : num(l.salePrice),
+      price: priceInput(l.price),
+      salePrice: can('products') && l.salePrice.trim() ? priceInput(l.salePrice) : undefined,
     })),
   };
   els.save.disabled = true;
@@ -965,7 +973,7 @@ els.save.addEventListener('click', async () => {
       // stays, with an id of its own, to be checked against that invoice.
       d.clientId = newClientId();
       saveDraft();
-      showError(`حُفظت فاتورة الشراء رقم ${purchase.number} من قبل بأصناف غير أصناف هذه الفاتورة، ولم تُحفظ هذه بعد. راجع الفاتورة رقم ${purchase.number} أولًا، ثم احفظ هذه إن كانت فاتورة أخرى.`);
+      showError(`حُفظت فاتورة الشراء رقم ${purchase.number} من قبل بتفاصيل مختلفة. راجع أصنافها وأسعارها قبل حفظ هذه المسودة كفاتورة أخرى.`);
       return;
     }
     clearDraft();

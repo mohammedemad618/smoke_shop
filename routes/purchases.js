@@ -2,7 +2,8 @@ import { Router } from 'express';
 import mongoose from 'mongoose';
 import { httpError } from '../lib/errors.js';
 import { clientIdOf, isDuplicateOf } from '../lib/idempotency.js';
-import { money, precise, roundQty, stockChange } from '../lib/util.js';
+import { money, precise, roundQty } from '../lib/util.js';
+import { addStock, commitInventory, inventoryOf, inventoryWrite, removeStockLot } from '../lib/inventory.js';
 import { DAY_MS, requestedRange } from '../lib/range.js';
 import { allow, can, forbidden, purchaseFor } from '../lib/permissions.js';
 
@@ -68,19 +69,15 @@ function buildItem(raw, product) {
   };
 }
 
-// Puts a line's goods into the stock and makes its prices the product's prices. A product
-// whose quantity was not tracked starts from what was bought; if another invoice started it
-// in the meantime, this one adds to it instead of overwriting it.
-async function receive(Product, item) {
-  const set = { trackStock: true };
+// Each invoice line creates its own lot. The catalogue purchase price is also kept
+// as the reference for future purchases and for products sold without tracked stock.
+function receive(product, item) {
+  const set = { ...inventoryOf(product), trackStock: true };
+  if (!product.trackStock) set.stock = 0;
+  item.lotOrder = addStock(set, item.stockQty, item.unitCost);
   if (item.priceUpdated) set.purchasePrice = item.unitCost;
   if (item.salePrice !== null) set.salePrice = item.salePrice;
-  if (item.startedTracking) {
-    const started = await Product.updateOne({ _id: item.product, trackStock: { $ne: true } }, { $set: { ...set, stock: item.stockQty } });
-    if (started.matchedCount) return;
-    item.startedTracking = false;
-  }
-  await Product.updateOne({ _id: item.product }, stockChange(item.stockQty, set), { updatePipeline: true });
+  return { product, set };
 }
 
 /*
@@ -90,27 +87,27 @@ async function receive(Product, item) {
  * newer invoice still standing keeps its price. A product whose tracking this invoice
  * started goes back to untracked, unless a newer invoice or a stocktake has counted it since.
  */
-async function giveBack(m, purchase) {
+async function cancellationChanges(m, purchase) {
   const { Product, Purchase, StockCount } = m;
   const ids = purchase.items.map((i) => i.product);
   const [products, others, counts] = await Promise.all([
     Product.find({ _id: { $in: ids } }).lean(),
-    Purchase.find({ _id: { $ne: purchase._id }, 'items.product': { $in: ids } }, 'status createdAt items').lean(),
+    Purchase.find({ _id: { $ne: purchase._id }, 'items.product': { $in: ids } }, 'status number items').lean(),
     StockCount.find({ status: 'applied', appliedAt: { $gt: purchase.createdAt }, 'lines.product': { $in: ids } }, 'lines.product').lean(),
   ]);
   const byId = new Map(products.map((p) => [String(p._id), p]));
   const countedSince = new Set(counts.flatMap((c) => c.lines.map((l) => String(l.product))));
-  const at = purchase.createdAt;
+  const changes = [];
 
   for (const item of purchase.items) {
     const id = String(item.product);
     const product = byId.get(id);
     if (!product) continue; // deleted since
     const lines = others.flatMap((p) =>
-      p.items.filter((i) => String(i.product) === id).map((i) => ({ ...i, status: p.status, createdAt: p.createdAt })),
+      p.items.filter((i) => String(i.product) === id).map((i) => ({ ...i, status: p.status, number: p.number })),
     );
-    const newer = lines.filter((l) => l.status === 'active' && l.createdAt > at);
-    const olderCancelled = lines.filter((l) => l.status === 'cancelled' && l.createdAt < at).sort((a, b) => b.createdAt - a.createdAt);
+    const newer = lines.filter((l) => l.status === 'active' && l.number > purchase.number);
+    const olderCancelled = lines.filter((l) => l.status === 'cancelled' && l.number < purchase.number).sort((a, b) => b.number - a.number);
     const restore = (current, mine, before, changedBy, valueOf, beforeOf) => {
       if (current !== mine || newer.some(changedBy)) return undefined;
       let price = before;
@@ -118,7 +115,9 @@ async function giveBack(m, purchase) {
       return price;
     };
 
-    const set = {};
+    const set = inventoryOf(product);
+    // Invoices made before lot tracking can draw only from the opening lot.
+    removeStockLot(set, item.lotOrder ?? 0, item.stockQty, item.name);
     if (item.priceUpdated) {
       const price = restore(product.purchasePrice, item.unitCost, item.prevPurchasePrice, (l) => l.priceUpdated, (l) => l.unitCost, (l) => l.prevPurchasePrice);
       if (price !== undefined) set.purchasePrice = price;
@@ -127,13 +126,10 @@ async function giveBack(m, purchase) {
       const price = restore(product.salePrice, item.salePrice, item.prevSalePrice, (l) => l.salePrice != null, (l) => l.salePrice, (l) => l.prevSalePrice);
       if (price !== undefined) set.salePrice = price;
     }
-    const untrack = item.startedTracking && newer.length === 0 && !countedSince.has(id);
-    if (untrack) {
-      await Product.updateOne({ _id: item.product }, { $set: { ...set, trackStock: false, stock: 0 } });
-    } else {
-      await Product.updateOne({ _id: item.product }, stockChange(-item.stockQty, set), { updatePipeline: true });
-    }
+    if (item.startedTracking && set.stock === 0 && newer.length === 0 && !countedSince.has(id)) set.trackStock = false;
+    changes.push({ product, set });
   }
+  return changes;
 }
 
 // Every route here needs `purchases`. A supplier's invoice is its prices, so its answers
@@ -145,9 +141,9 @@ async function giveBack(m, purchase) {
 router.get('/', allow('purchases'), async (req, res) => {
   const { Purchase } = req.models;
   const { start, end } = requestedRange(req.query, MAX_RANGE_MS);
-  const [purchases, owedToSuppliers] = await Promise.all([
+  const [purchases, { owedToSuppliers }] = await Promise.all([
     Purchase.find({ date: { $gte: start, $lt: end } }).sort({ date: -1, number: -1 }).lean(),
-    Purchase.owedToSuppliers(),
+    Purchase.totals(),
   ]);
   const active = purchases.filter((p) => p.status === 'active');
   const total = money(active.reduce((sum, p) => sum + p.total, 0));
@@ -180,7 +176,7 @@ router.get('/:id', allow('purchases'), async (req, res) => {
   res.json(answer(req, purchase));
 });
 
-router.post('/', allow('purchases'), async (req, res) => {
+router.post('/', allow('purchases'), inventoryWrite(async (req, res) => {
   const { Product, Purchase, Counter } = req.models;
   const body = req.body;
   // Saved again after an answer that never arrived: the invoice as it was saved, and its
@@ -214,12 +210,8 @@ router.post('/', allow('purchases'), async (req, res) => {
   if (paid > total) throw httpError(400, 'المدفوع أكبر من إجمالي الفاتورة');
   const date = parseDate(body.date, 'تاريخ الفاتورة');
 
-  const received = [];
+  const undoStock = await commitInventory(Product, items.map((item) => receive(byId.get(String(item.product)), item)));
   try {
-    for (const item of items) {
-      await receive(Product, item);
-      received.push(item);
-    }
     const purchase = await Purchase.create({
       number: await Counter.next('purchase'),
       date,
@@ -234,18 +226,12 @@ router.post('/', allow('purchases'), async (req, res) => {
     });
     res.status(201).json(answer(req, purchase.toObject()));
   } catch (err) {
-    // Saved twice at once: the other request saved it, and its invoice stands with the
-    // prices it set (the same ones). This one's goods come back out as if put in just
-    // before that invoice, so they leave its prices alone instead of putting back the ones
-    // both requests read before either ran.
+    await undoStock();
     const done = clientId && isDuplicateOf(err, 'clientId') ? await Purchase.findOne({ clientId }).lean() : null;
-    // Nothing half done: the goods already put in come back out
-    const at = done ? new Date(done.createdAt.getTime() - 1) : new Date();
-    await giveBack(req.models, { _id: new mongoose.Types.ObjectId(), createdAt: at, items: received });
     if (done) return res.json(answer(req, done));
     throw err;
   }
-});
+}));
 
 // Pays off part or all of what is owed on an invoice
 router.post('/:id/payments', allow('purchases'), async (req, res) => {
@@ -266,19 +252,26 @@ router.post('/:id/payments', allow('purchases'), async (req, res) => {
 // Cancels an invoice entered by mistake or returned to the supplier: its goods leave
 // the stock again. Money already paid is between the shop and the supplier. The invoice
 // stays, marked cancelled, so this is part of `purchases` rather than a deletion.
-router.post('/:id/cancel', allow('purchases'), async (req, res) => {
-  const { Purchase } = req.models;
-  const purchase = await Purchase.findOneAndUpdate(
-    { _id: req.params.id, status: 'active' },
-    { $set: { status: 'cancelled', cancelledAt: new Date() }, $inc: { __v: 1 } },
-    { returnDocument: 'after' },
-  ).lean();
-  if (!purchase) {
-    if (!(await Purchase.exists({ _id: req.params.id }))) throw httpError(404, 'فاتورة الشراء غير موجودة');
-    throw httpError(409, 'هذه الفاتورة ملغاة من قبل');
+router.post('/:id/cancel', allow('purchases'), inventoryWrite(async (req, res) => {
+  const { Purchase, Product } = req.models;
+  const purchase = await Purchase.findById(req.params.id).lean();
+  if (!purchase) throw httpError(404, 'فاتورة الشراء غير موجودة');
+  if (purchase.status !== 'active') throw httpError(409, 'هذه الفاتورة ملغاة من قبل');
+  const changes = await cancellationChanges(req.models, purchase);
+  const undoStock = await commitInventory(Product, changes);
+  let cancelled;
+  try {
+    cancelled = await Purchase.findOneAndUpdate(
+      { _id: purchase._id, status: 'active' },
+      { $set: { status: 'cancelled', cancelledAt: new Date() }, $inc: { __v: 1 } },
+      { returnDocument: 'after' },
+    ).lean();
+    if (!cancelled) throw httpError(409, 'هذه الفاتورة ملغاة من قبل');
+  } catch (err) {
+    await undoStock();
+    throw err;
   }
-  await giveBack(req.models, purchase);
-  res.json(answer(req, purchase));
-});
+  res.json(answer(req, cancelled));
+}));
 
 export default router;

@@ -3,7 +3,10 @@ import mongoose from 'mongoose';
 import { httpError } from '../lib/errors.js';
 import { clientIdOf, isDuplicateOf } from '../lib/idempotency.js';
 import { REPORT_MS, runReport } from '../lib/limits.js';
-import { lineAmount, money, precise, roundQty, stockChange } from '../lib/util.js';
+import { lineAmount, money, precise, roundQty } from '../lib/util.js';
+import { addStock, commitInventory, inventoryOf, inventoryWrite, takeStock } from '../lib/inventory.js';
+import { lotCost, lotPortion } from '../public/js/stock-cost.js';
+import { collectedEvents } from '../lib/debt-ledger.js';
 import { roundingStepOf } from '../lib/shop-settings.js';
 import { DAY_MS, requestedRange, timeZoneParam } from '../lib/range.js';
 import { madeByOf } from '../lib/auth.js';
@@ -23,36 +26,6 @@ const GROUP_FORMATS = { day: '%Y-%m-%d', month: '%Y-%m' };
 // towards credit sales. Over time it adds up to the profit on sales minus expenses.
 const netProfitOf = ({ profit, credit }, expenses, collected) => money(profit - expenses - credit + collected);
 
-/* Stock */
-
-async function putBackInStock(Product, entries) {
-  if (!entries.length) return;
-  await Product.bulkWrite(
-    entries.map(([id, quantity]) => ({
-      updateOne: { filter: { _id: id, trackStock: true }, update: stockChange(quantity) },
-    })),
-  );
-}
-
-// Takes sold quantities off tracked products. Products that block overselling only go
-// down when enough is left; on a shortfall everything taken so far is put back.
-async function takeFromStock(Product, products, quantities) {
-  const taken = [];
-  for (const p of products.filter((x) => x.trackStock)) {
-    const quantity = quantities.get(String(p._id));
-    const filter = p.blockWhenOut ? { _id: p._id, stock: { $gte: quantity } } : { _id: p._id };
-    const { matchedCount } = await Product.updateOne(filter, stockChange(-quantity), { updatePipeline: true });
-    if (!matchedCount) {
-      await putBackInStock(Product, taken);
-      const fresh = await Product.findById(p._id, 'stock').lean();
-      const left = Math.max(fresh?.stock ?? 0, 0);
-      throw httpError(409, left ? `المتوفر من «${p.name}» ${left} فقط` : `نفدت كمية «${p.name}» من المخزن`);
-    }
-    taken.push([p._id, quantity]);
-  }
-  return taken;
-}
-
 /* Reports */
 
 // A period's figures follow the money: a sale counts on the day it was made, a return on
@@ -69,49 +42,6 @@ const piecesIn = (lines) => ({
     },
   },
 });
-
-/*
- * What customers paid that settles sales made on credit, dated when it counts: a payment on
- * its day, and money paid ahead on the day a later credit sale uses it. Paying back a debt
- * added by hand (money lent, or owed from before this system) is not money from sales, so
- * it does not count, and money paid ahead does not count until a sale uses it. Each
- * customer's account is replayed oldest first: payments settle the oldest open debts, and
- * a return settles its own invoice first.
- */
-async function collectedEvents(DebtEntry, end) {
-  const entries = await DebtEntry.find({ date: { $lt: end } }).sort({ customer: 1, date: 1, createdAt: 1 }).maxTimeMS(REPORT_MS).lean();
-  const events = [];
-  let customer = null;
-  let open = [];
-  let ahead = 0;
-  for (const e of entries) {
-    if (String(e.customer) !== customer) {
-      customer = String(e.customer);
-      open = [];
-      ahead = 0;
-    }
-    if (e.amount > 0) {
-      const used = Math.min(ahead, e.amount);
-      ahead = money(ahead - used);
-      if (used > 0 && e.kind === 'sale') events.push({ date: e.date, amount: used });
-      const left = money(e.amount - used);
-      if (left > 0) open.push({ kind: e.kind, sale: e.sale ? String(e.sale) : null, left });
-      continue;
-    }
-    let rest = -e.amount;
-    const ownFirst = e.kind === 'return' ? [...open].sort((a, b) => (b.sale === String(e.sale)) - (a.sale === String(e.sale))) : open;
-    for (const debt of ownFirst) {
-      if (rest <= 0) break;
-      const used = Math.min(debt.left, rest);
-      debt.left = money(debt.left - used);
-      rest = money(rest - used);
-      if (e.kind === 'payment' && debt.kind === 'sale') events.push({ date: e.date, amount: used });
-    }
-    open = open.filter((debt) => debt.left > 0);
-    ahead = money(ahead + rest);
-  }
-  return events;
-}
 
 // The figures of [start, end), in one row ('all') or one row per day or month of the shop's
 // time zone: invoices, pieces, sales, cost, profit, returns, credit, expenses, collected,
@@ -275,7 +205,7 @@ router.get('/products', allow('reports'), async (req, res) => {
           },
           quantity: { $sum: baseQty('$items') },
           total: { $sum: '$items.lineTotal' },
-          cost: { $sum: { $multiply: ['$items.unitCost', '$items.quantity'] } },
+          cost: { $sum: { $ifNull: ['$items.lineCost', { $multiply: ['$items.unitCost', '$items.quantity'] }] } },
         },
       },
     ]).option({ maxTimeMS: REPORT_MS }),
@@ -294,8 +224,8 @@ router.get('/products', allow('reports'), async (req, res) => {
           // At the cost of the invoice line it came back from
           cost: {
             $sum: {
-              $multiply: [
-                '$returns.items.quantity',
+              $ifNull: [
+                '$returns.items.cost',
                 {
                   $let: {
                     vars: {
@@ -317,7 +247,7 @@ router.get('/products', allow('reports'), async (req, res) => {
                         ],
                       },
                     },
-                    in: { $ifNull: ['$$line.unitCost', 0] },
+                    in: { $multiply: ['$returns.items.quantity', { $ifNull: ['$$line.unitCost', 0] }] },
                   },
                 },
               ],
@@ -404,7 +334,7 @@ function checkDiscount(user, { name, discount, amount, cost, step }) {
 // Every account sells for cash; selling on a customer's account needs `credit`, and taking
 // money off a line needs `discount`. The sale records who made it (and so who gave its
 // discounts), from the session.
-router.post('/', allow('selling'), async (req, res) => {
+router.post('/', allow('selling'), inventoryWrite(async (req, res) => {
   const { Product, Sale, Customer, DebtEntry, Counter, Setting } = req.models;
   // Sent again after an answer that never arrived: the invoice as it was recorded, and
   // nothing else happens (no second number, no stock taken again)
@@ -448,6 +378,7 @@ router.post('/', allow('selling'), async (req, res) => {
     throw httpError(400, 'بعض منتجات الفاتورة لم تعد موجودة. حدّث الصفحة وأعد المحاولة');
   }
   const byId = new Map(products.map((p) => [String(p._id), p]));
+  const inventories = new Map(products.filter((p) => p.trackStock).map((p) => [String(p._id), inventoryOf(p)]));
 
   const items = [...merged.values()].map(({ id, mode, quantity, discount }) => {
     const p = byId.get(id);
@@ -460,11 +391,19 @@ router.post('/', allow('selling'), async (req, res) => {
     }
     const packSize = wholesale ? p.wholesaleQty : 1;
     const unitPrice = wholesale ? p.wholesalePrice : p.salePrice;
-    const unitCost = precise(p.purchasePrice * packSize);
+    const inventory = inventories.get(id);
+    const baseQuantity = roundQty(quantity * packSize);
+    if (inventory && p.blockWhenOut && baseQuantity > inventory.stock) {
+      const left = Math.max(inventory.stock, 0);
+      throw httpError(409, left ? `المتوفر من «${p.name}» ${left} فقط` : `نفدت كمية «${p.name}» من المخزن`);
+    }
+    const costLots = inventory && baseQuantity > 0 ? takeStock(inventory, baseQuantity, p.purchasePrice) : undefined;
+    const unroundedCost = costLots ? lotCost(costLots) : precise(p.purchasePrice * packSize) * quantity;
+    const lineCost = money(unroundedCost);
     // The line, not each piece, goes up to the step: 3 x 600 is 2,000 at 250, not 2,250
     const amount = lineAmount(unitPrice, quantity, step);
     // Its discount comes off the whole line, at its cost as the sale records it
-    if (discount > 0) checkDiscount(req.user, { name: p.name, discount, amount, cost: money(unitCost * quantity), step });
+    if (discount > 0) checkDiscount(req.user, { name: p.name, discount, amount, cost: lineCost, step });
     return {
       product: p._id,
       name: p.name,
@@ -474,22 +413,16 @@ router.post('/', allow('selling'), async (req, res) => {
       packSize,
       quantity,
       unitPrice,
-      unitCost,
+      unitCost: precise(unroundedCost / quantity),
+      lineCost,
+      costLots,
       lineTotal: discount > 0 ? money(amount - discount) : amount,
       ...(discount > 0 ? { discount } : {}),
     };
   });
 
-  // What leaves the shelf, per product, in pieces or kg
-  const baseQuantities = new Map();
-  for (const item of items) {
-    const id = String(item.product);
-    baseQuantities.set(id, roundQty((baseQuantities.get(id) ?? 0) + item.quantity * item.packSize));
-  }
-
   const total = money(items.reduce((sum, i) => sum + i.lineTotal, 0));
-  // Line by line, like the totals, so a return of a whole line takes back exactly its cost
-  const cost = money(items.reduce((sum, i) => sum + money(i.unitCost * i.quantity), 0));
+  const cost = money(items.reduce((sum, i) => sum + i.lineCost, 0));
   // Cash: an empty paid means the exact amount. Credit: paid is the part paid now (often
   // nothing) and the rest goes on the customer's account.
   const paymentType = req.body.paymentType === 'credit' ? 'credit' : 'cash';
@@ -516,7 +449,7 @@ router.post('/', allow('selling'), async (req, res) => {
     change = money(paid - total);
   }
 
-  const taken = await takeFromStock(Product, products, baseQuantities);
+  const undoStock = await commitInventory(Product, [...inventories].map(([id, set]) => ({ product: byId.get(id), set })));
   let sale;
   try {
     sale = await Sale.create({
@@ -548,7 +481,7 @@ router.post('/', allow('selling'), async (req, res) => {
   } catch (err) {
     // No invoice without its debt record, and no stock taken for nothing
     if (sale) await Sale.deleteOne({ _id: sale._id });
-    await putBackInStock(Product, taken);
+    await undoStock();
     // The same sale sent twice at once: the other request recorded it, this one gave its
     // stock back and answers with that invoice
     if (clientId && isDuplicateOf(err, 'clientId')) {
@@ -558,14 +491,14 @@ router.post('/', allow('selling'), async (req, res) => {
     throw err;
   }
   res.status(201).json(await withBalance(req, sale.toObject()));
-});
+}));
 
 /* Returns */
 
 // Body { items: [{ line, quantity }] } returns quantities of invoice lines (by index, in
 // each line's sold unit). Without items, everything not yet returned comes back: the
 // whole sale is cancelled. Needs `returns`; the return records who made it, from the session.
-router.post('/:id/returns', allow('returns'), async (req, res) => {
+router.post('/:id/returns', allow('returns'), inventoryWrite(async (req, res) => {
   const { Product, Sale, DebtEntry } = req.models;
   const clientId = clientIdOf(req.body);
   const sale = await Sale.findById(req.params.id);
@@ -605,18 +538,31 @@ router.post('/:id/returns', allow('returns'), async (req, res) => {
   // sold, at the sale's own step (public/js/discount.js keptAmount): 3 x 600 sold for 2,000
   // at 250, one back leaves 2 = 1,250, so 750 comes back, and the other two then 1,250. A
   // discounted line keeps its discount's share off what is left (with 250 off, 1,750: 500
-  // back, then 1,250). Its cost still comes back by share.
+  // back, then 1,250).
   const step = sale.roundingStep ?? 0;
   const refundOf = (item, before, after) =>
     step
       ? money(keptAmount(item, roundQty(item.quantity - before), step) - keptAmount(item, roundQty(item.quantity - after), step))
       : money(share(item.lineTotal, item, after) - share(item.lineTotal, item, before));
-  let cost = 0;
+  const stockToReturn = new Map();
   const items = lines.map(({ item, quantity }) => {
     const before = item.returnedQuantity ?? 0;
     const after = roundQty(before + quantity);
-    const lineCost = item.unitCost * item.quantity;
-    cost += share(lineCost, item, after) - share(lineCost, item, before);
+    const packSize = item.packSize ?? 1;
+    const beforeQty = roundQty(before * packSize);
+    const afterQty = roundQty(after * packSize);
+    // Partial returns follow the lot order recorded on the sale. Cumulative rounding
+    // keeps all the partial costs equal to the original line cost when added together.
+    const allocated = item.costLots?.length ? item.costLots.map((lot) => lot.toObject()) : null;
+    const restored = allocated
+      ? lotPortion(allocated, roundQty(afterQty - beforeQty), beforeQty)
+      : [{ quantity: roundQty(afterQty - beforeQty), unitCost: item.unitCost / packSize }];
+    const costThrough = (returned, stockQty) => allocated
+      ? money(lotCost(lotPortion(allocated, stockQty)))
+      : share(item.unitCost * item.quantity, item, returned);
+    const cost = money(costThrough(after, afterQty) - costThrough(before, beforeQty));
+    const id = String(item.product);
+    stockToReturn.set(id, [...(stockToReturn.get(id) ?? []), ...restored]);
     return {
       product: item.product,
       name: item.name,
@@ -625,13 +571,14 @@ router.post('/:id/returns', allow('returns'), async (req, res) => {
       packSize: item.packSize,
       quantity,
       amount: refundOf(item, before, after),
+      cost,
     };
   });
   const entry = {
     at: new Date(),
     items,
     amount: money(items.reduce((sum, i) => sum + i.amount, 0)),
-    cost: money(cost),
+    cost: money(items.reduce((sum, i) => sum + i.cost, 0)),
     ...(clientId ? { clientId } : {}),
     madeBy: madeByOf(req.user),
   };
@@ -646,7 +593,9 @@ router.post('/:id/returns', allow('returns'), async (req, res) => {
     const last = items[items.length - 1];
     last.amount = money(last.amount + rest - entry.amount);
     entry.amount = rest;
-    entry.cost = money(sale.cost - (sale.returnedCost ?? 0));
+    const cost = money(sale.cost - (sale.returnedCost ?? 0));
+    last.cost = money(last.cost + cost - entry.cost);
+    entry.cost = cost;
   }
 
   // On a credit sale the refund first comes off what the customer still owes, up to what
@@ -665,26 +614,33 @@ router.post('/:id/returns', allow('returns'), async (req, res) => {
   sale.returnedTotal = money((sale.returnedTotal ?? 0) + entry.amount);
   sale.returnedCost = money((sale.returnedCost ?? 0) + entry.cost);
   sale.returnStatus = sale.items.every((i) => i.returnedQuantity >= i.quantity) ? 'full' : 'partial';
+  const products = await Product.find({ _id: { $in: [...stockToReturn.keys()] }, trackStock: true }).lean();
+  const undoStock = await commitInventory(Product, products.map((product) => {
+    const set = inventoryOf(product);
+    for (const lot of stockToReturn.get(String(product._id))) {
+      if (lot.quantity > 0) addStock(set, lot.quantity, lot.unitCost, lot.order);
+    }
+    return { product, set };
+  }));
+  let debtEntry;
   try {
+    if (entry.toAccount > 0) {
+      debtEntry = await DebtEntry.create({
+        customer: sale.customer,
+        kind: 'return',
+        amount: -entry.toAccount,
+        sale: sale._id,
+        saleNumber: sale.number,
+      });
+    }
     await sale.save();
   } catch (err) {
-    // The same return sent twice at once: the first one saved, this one changed nothing
+    if (debtEntry) await DebtEntry.deleteOne({ _id: debtEntry._id });
+    await undoStock();
     if (clientId && (err instanceof mongoose.Error.VersionError || isDuplicateOf(err, 'returns.clientId'))) {
       if (replay(await Sale.findById(sale._id))) return;
     }
     throw err;
-  }
-
-  // Back on the shelf in pieces or kg: a returned box puts all its pieces back
-  await putBackInStock(Product, lines.map(({ item, quantity }) => [item.product, roundQty(quantity * (item.packSize ?? 1))]));
-  if (entry.toAccount > 0) {
-    await DebtEntry.create({
-      customer: sale.customer,
-      kind: 'return',
-      amount: -entry.toAccount,
-      sale: sale._id,
-      saleNumber: sale.number,
-    });
   }
   res.status(201).json({
     sale: saleFor(req.user, sale),
@@ -692,7 +648,7 @@ router.post('/:id/returns', allow('returns'), async (req, res) => {
     toAccount: entry.toAccount,
     customerName: sale.customerName,
   });
-});
+}));
 
 // The admin panel's and the owner's CSV exports use the same figures as the report
 // (services/exports.js), so a month's file adds up to the month on the sales page

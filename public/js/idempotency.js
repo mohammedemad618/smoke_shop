@@ -40,12 +40,23 @@ export const isSaleOf = (body, sale) =>
     tally((sale?.items ?? []).map((i) => ({ key: `${i.product}:${i.mode}`, quantity: i.quantity, discount: i.discount }))),
   );
 
-// The draft sent ({ items: [{ product, mode, quantity, price }] }) and the purchase that came back
-export const isPurchaseOf = (body, purchase) =>
-  same(
+// The purchase has the same lines and the same sale price changes as the draft.
+export function isPurchaseOf(body, purchase) {
+  const saved = purchase?.items ?? [];
+  const sameLines = same(
     tally(body.items.map((l) => ({ key: `${l.product}:${l.mode === 'pack' ? 'pack' : 'unit'}`, quantity: l.quantity, price: l.price }))),
-    tally((purchase?.items ?? []).map((i) => ({ key: `${i.product}:${i.mode}`, quantity: i.quantity, price: i.price }))),
+    tally(saved.map((i) => ({ key: `${i.product}:${i.mode}`, quantity: i.quantity, price: i.price }))),
   );
+  if (!sameLines) return false;
+
+  const byProduct = new Map(saved.map((item) => [String(item.product), item]));
+  return body.items.every(({ product, salePrice }) => {
+    const item = byProduct.get(String(product));
+    if (salePrice == null || salePrice === '') return item.salePrice == null;
+    // An explicitly entered price can equal the existing price at the time of purchase.
+    return roundTo(Number(salePrice), 2) === (item.salePrice ?? item.prevSalePrice);
+  });
+}
 
 // The return sent ({ items: [{ line, quantity }], clientId }, lines of the invoice) and the
 // invoice that came back, which holds the return recorded under that id

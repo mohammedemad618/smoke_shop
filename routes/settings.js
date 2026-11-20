@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { httpError } from '../lib/errors.js';
 import { logoProblem } from '../lib/logo.js';
 import { allow } from '../lib/permissions.js';
-import { LOW_STOCK_MAX, RECEIPT_PAPERS, ROUNDING_STEPS, settingsOf } from '../lib/shop-settings.js';
+import { LOW_STOCK_MAX, OPENING_CASH_BALANCE_ERROR, RECEIPT_PAPERS, ROUNDING_STEPS, settingsOf, validOpeningCashBalance } from '../lib/shop-settings.js';
 import { setShopNameCache } from '../services/tenants.js';
 import { logoVersion } from './shop.js';
 
@@ -51,6 +51,10 @@ function changesFrom(body) {
   if (body.roundingStep !== undefined) {
     if (!ROUNDING_STEPS.includes(body.roundingStep)) throw httpError(400, 'أصغر فئة نقدية غير صالحة');
     changes.roundingStep = body.roundingStep;
+  }
+  if (body.openingCashBalance !== undefined) {
+    if (!validOpeningCashBalance(body.openingCashBalance)) throw httpError(400, OPENING_CASH_BALANCE_ERROR);
+    changes.openingCashBalance = body.openingCashBalance;
   }
   // '' takes the logo away
   if (body.receiptLogo !== undefined) {

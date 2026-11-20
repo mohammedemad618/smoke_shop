@@ -14,6 +14,7 @@ import {
   can,
 } from './common.js';
 import { scanBarcode } from './scanner.js';
+import { estimatedStockCost } from './stock-cost.js';
 
 // On touch screens, refocusing the scan box would keep popping up the keyboard
 const finePointer = matchMedia('(pointer: fine)').matches;
@@ -70,6 +71,7 @@ const qtyIn = (qty, unit) => (unit === 'kg' ? formatWeight(qty) : formatQty(qty)
 const amount = (qty, unit) => (unit === 'kg' ? formatWeight(qty) : arCount(qty, PIECES));
 // Counted minus what the system had; null when its quantity was not tracked before
 const diffOf = (line) => (line.expected === null ? null : roundQty(line.counted - line.expected));
+const valueOf = (line) => line.adjustmentValue ?? diffOf(line) * (line.purchasePrice ?? 1);
 const recordedOf = (p) => (p.trackStock ? p.stock : null);
 
 /* Data */
@@ -105,10 +107,10 @@ function summarize(lines) {
     if (diff === null) s.fresh++;
     else if (diff < 0) {
       s.short++;
-      s.shortValue += -diff * line.purchasePrice;
+      s.shortValue -= valueOf(line);
     } else if (diff > 0) {
       s.over++;
-      s.overValue += diff * line.purchasePrice;
+      s.overValue += valueOf(line);
     }
   }
   return s;
@@ -278,7 +280,7 @@ function countRow(p) {
     else if (d === 0) diff = '<span class="diff is-same">مطابق</span>';
     else {
       diff = `<span class="diff ${d < 0 ? 'is-short' : 'is-over'} num">${d < 0 ? '−' : '+'}${qtyIn(Math.abs(d), unit)}</span>`;
-      value = `<span class="num${d < 0 ? ' loss' : ''}">${formatMoney(d * line.purchasePrice)}</span>`;
+      value = `<span class="num${d < 0 ? ' loss' : ''}">${formatMoney(valueOf(line))}</span>`;
     }
   }
   return `<tr class="${line ? 'is-counted' : ''}" data-row="${p._id}">
@@ -438,7 +440,7 @@ function updateCountDiff() {
     return;
   }
   // Its value at purchase price, for an account that sees costs (`reports`)
-  const value = can('reports') ? formatMoney(Math.abs(diff) * p.purchasePrice) : null;
+  const value = can('reports') ? formatMoney(diff < 0 ? estimatedStockCost(p, -diff) : diff * p.purchasePrice) : null;
   const worth = (word) => (value === null ? '' : `، ${word} ${value}`);
   note.textContent = diff < 0 ? `${lead}نقص ${amount(-diff, unit)}${worth('قيمته')}` : `${lead}زيادة ${amount(diff, unit)}${worth('قيمتها')}`;
   note.classList.add(diff < 0 ? 'is-loss' : 'is-gain');
@@ -597,7 +599,7 @@ async function showHistory(id) {
     if (d === null) return 1e15;
     if (d === 0) return 2e15;
     // Without costs (no `reports`) by quantity instead
-    return d * (l.purchasePrice ?? 1);
+    return valueOf(l);
   };
   const lines = [...count.lines].sort((a, b) => weight(a) - weight(b));
   els.historyBody.innerHTML = `<h2 id="historyTitle">جرد ${formatDateTime(count.appliedAt)}</h2>
@@ -632,7 +634,7 @@ async function showHistory(id) {
             <td>${l.expected === null ? '<span class="muted">غير مسجّل</span>' : `<span class="num">${qtyIn(l.expected, l.unit)}</span>`}</td>
             <td><strong class="num">${qtyIn(l.counted, l.unit)}</strong></td>
             <td>${diff}</td>
-            <td class="end" data-need="reports">${d ? `<span class="num${d < 0 ? ' loss' : ''}">${formatMoney(d * l.purchasePrice)}</span>` : dash}</td>
+            <td class="end" data-need="reports">${d ? `<span class="num${d < 0 ? ' loss' : ''}">${formatMoney(valueOf(l))}</span>` : dash}</td>
           </tr>`;
         })
         .join('')}</tbody>

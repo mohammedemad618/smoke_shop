@@ -21,6 +21,7 @@ export function shopView(doc) {
   const version = logoVersion(shop.receiptLogo);
   delete shop.receiptLogo;
   delete shop.timeZone;
+  delete shop.openingCashBalance;
   if (!shop.roundingStep) delete shop.roundingStep;
   return { ...shop, logoVersion: version };
 }
