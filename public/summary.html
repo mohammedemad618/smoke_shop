@@ -50,13 +50,15 @@
     <table class="ptable" id="summaryPaymentsTable" hidden>
       <thead><tr>
         <th scope="col">الزبون والوقت</th>
-        <th scope="col" class="end">الدفعة</th>
-        <th scope="col" class="end">منها لديون المبيعات</th>
+        <th scope="col" class="end">مبلغ الدفعة كاملًا</th>
+        <th scope="col" class="end">لسداد فواتير البيع</th>
+        <th scope="col" class="end">لسداد دين سابق أُضيف يدويًا</th>
+        <th scope="col" class="end payment-advance">رصيد مقدّم للزبون</th>
         <th scope="col" class="end">الرصيد بعد الدفعة</th>
       </tr></thead>
       <tbody id="summaryPaymentsRows"></tbody>
     </table>
-    <p class="hint">تدخل الدفعة المقدّمة في تحصيل المبيعات عند استخدامها في فاتورة بيع بالدين.</p>
+    <p class="hint">يدخل مبلغ الدفعة كاملًا في الصندوق. ويُحتسب الرصيد المقدّم ضمن تحصيل المبيعات عند استخدامه لسداد فاتورة بيع.</p>
     <button class="btn" id="summaryPaymentsMore" type="button" hidden>عرض المزيد</button>
   </dialog>
 

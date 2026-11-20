@@ -439,6 +439,8 @@ button.ledger-row:focus-visible { outline-offset: -3px; }
 .summary-payments .section-head { padding: 0; }
 .summary-payments .hint:empty { display: none; }
 .summary-payments .ptable { margin-bottom: 12px; }
+.summary-payments .ptable th { white-space: normal; }
+.summary-payments .ptable:not(:has(.has-advance)) .payment-advance { display: none; }
 .summary-payments .pct { overflow-wrap: anywhere; }
 .attention { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
 .attention-row {
@@ -1171,6 +1173,9 @@ select.input { padding-block: 7px; }
 
   /* Summary */
   .summary-pair { grid-template-columns: minmax(0, 1fr); }
+  .summary-payments .ptable tr { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .summary-payments .payment-amount { grid-column: 1 / -1; }
+  .summary-payments .ptable tr:not(.has-advance) .payment-advance { display: none; }
   .summary-block { margin-bottom: 22px; }
   /* Today and the month stay side by side, so both fit on the first screen */
   .sales-pair { gap: 8px; }

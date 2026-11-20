@@ -156,7 +156,7 @@ async function loadCash() {
     const rows = [
       ledgerRow({ label: 'رصيد بداية الفترة', value: cash.openingBalance }),
       ledgerRow({ sign: '+', label: 'النقد المقبوض عند البيع', value: cash.salesReceived }),
-      ledgerRow({ sign: '+', label: 'تسديدات الزبائن', value: cash.customerPayments, showPayments }),
+      ledgerRow({ sign: '+', label: 'إجمالي تسديدات الزبائن', value: cash.customerPayments, showPayments }),
       ledgerRow({ sign: '−', label: 'المرتجعات النقدية', value: cash.refunds }),
       ledgerRow({ sign: '−', label: 'مدفوعات الموردين', value: cash.supplierPayments }),
       ledgerRow({ sign: '−', label: 'المصاريف', value: cash.expenses }),
@@ -173,19 +173,21 @@ async function loadCash() {
 function paymentRow(payment) {
   const customer = escapeHtml(payment.customerName || 'زبون');
   const note = payment.note ? `<small class="pct">${escapeHtml(payment.note)}</small>` : '';
-  const other = [
-    payment.appliedToOtherDebt > 0 ? `دين مضاف ${formatMoney(payment.appliedToOtherDebt)}` : '',
-    payment.advance > 0 ? `مقدّم ${formatMoney(payment.advance)}` : '',
-  ].filter(Boolean).join('، ');
   const balance = payment.balanceAfter;
   const balanceText = balance === undefined ? '—' : balance === 0 ? 'مسدّد' : `${balance > 0 ? 'عليه' : 'له'} ${formatMoney(Math.abs(balance))}`;
-  return `<tr>
+  return `<tr${payment.advance > 0 ? ' class="has-advance"' : ''}>
     <td class="cell-title"><a class="z-link" href="/debts.html?customer=${encodeURIComponent(payment.customer)}">${customer}</a>
       <small class="pct">${formatDateTime(payment.date)}</small>${note}</td>
-    <td class="end" data-label="الدفعة"><strong class="num">${formatMoney(payment.amount)}</strong>${other ? `<small class="pct">${other}</small>` : ''}</td>
-    <td class="end num" data-label="منها لديون المبيعات">${formatMoney(payment.appliedToSales)}</td>
+    <td class="end payment-amount" data-label="مبلغ الدفعة كاملًا"><strong class="num">${formatMoney(payment.amount)}</strong></td>
+    <td class="end" data-label="لسداد فواتير البيع"><span class="num">${formatPaymentPart(payment.appliedToSales)}</span></td>
+    <td class="end" data-label="لسداد دين سابق أُضيف يدويًا"><span class="num">${formatPaymentPart(payment.appliedToOtherDebt)}</span></td>
+    <td class="end payment-advance" data-label="رصيد مقدّم للزبون"><span class="num">${formatPaymentPart(payment.advance)}</span></td>
     <td class="end" data-label="الرصيد بعد الدفعة">${balanceText}</td>
   </tr>`;
+}
+
+function formatPaymentPart(amount) {
+  return Number.isFinite(amount) ? formatMoney(amount) : '—';
 }
 
 async function loadPayments() {
@@ -253,7 +255,7 @@ els.view.addEventListener('click', (event) => {
 function ledgerRow({ sign = '', label, note, value, href, tone = '', showPayments = false }) {
   const tag = href ? 'a' : showPayments ? 'button' : 'div';
   const attributes = href ? ` href="${href}"` : showPayments ? ' type="button" data-cash-payments aria-haspopup="dialog"' : '';
-  const detail = showPayments ? 'عرض التفاصيل' : note;
+  const detail = showPayments ? 'عرض الدفعات وتوزيعها' : note;
   return `<${tag} class="ledger-row ${tone}"${attributes}>
     <span class="ledger-sign" aria-hidden="true">${sign}</span>
     <span class="ledger-label">${label}${detail ? `<small>${detail}</small>` : ''}</span>
