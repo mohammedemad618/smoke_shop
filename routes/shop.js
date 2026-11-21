@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { Router } from 'express';
 import { allow } from '../lib/permissions.js';
-import { settingsOf } from '../lib/shop-settings.js';
+import { settingsOf, SETTING_DEFAULTS } from '../lib/shop-settings.js';
 
 const router = Router();
 
@@ -14,13 +14,12 @@ export const logoVersion = (logo) => (logo ? createHash('sha256').update(logo).d
 // starts with in the product form, and the step sale lines are rounded up to (roundingStep)
 // when the owner turned that on: left out while it is off, so a shop that does not round
 // reads exactly as before (the pages read a missing one as 0). The logo itself is left out
-// (up to 64 KB, and every page loads this): GET /logo below has it. Not the time zone,
-// which only the settings page shows.
+// (up to 64 KB, and every page loads this): GET /logo below has it. Reports use the shop's time zone.
 export function shopView(doc) {
   const shop = settingsOf(doc);
   const version = logoVersion(shop.receiptLogo);
   delete shop.receiptLogo;
-  delete shop.timeZone;
+  if (shop.timeZone === SETTING_DEFAULTS.timeZone) delete shop.timeZone;
   delete shop.openingCashBalance;
   if (!shop.roundingStep) delete shop.roundingStep;
   return { ...shop, logoVersion: version };

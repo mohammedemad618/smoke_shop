@@ -83,7 +83,7 @@ test("a month's sales by day: the total line is the sales report of the same mon
   assert.strictEqual(res.status, 200);
   assert.match(res.headers['content-disposition'], /filename="sales-csv-shop-2026-11\.csv"/);
   const [head, ...lines] = rows(res.text);
-  assert.deepStrictEqual(head, ['اليوم', 'عدد الفواتير', 'القطع', 'المبيعات', 'التكلفة', 'الربح', 'المرتجعات', 'البيع بالدين', 'المصاريف', 'المسدد من ديون المبيعات', 'صافي الربح']);
+  assert.deepStrictEqual(head, ['اليوم', 'عدد الفواتير', 'القطع', 'المبيعات', 'التكلفة', 'الربح', 'المرتجعات', 'البيع بالدين', 'المصاريف', 'إجمالي تسديدات الزبائن', 'صافي ربح النشاط']);
   const total = lines.at(-1);
   assert.strictEqual(total[0], 'المجموع');
   const s = report.summary;

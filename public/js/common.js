@@ -409,6 +409,7 @@ const SHOP_DEFAULTS = Object.freeze({
   phone: '',
   address: '',
   currency: 'د.ع',
+  timeZone: 'Asia/Baghdad',
   receiptPaper: '80',
   receiptShowPhone: true,
   receiptShowAddress: true,

@@ -52,6 +52,7 @@ const EXPECTED = {
   'GET /api/sales/report': ['reports'],
   'GET /api/sales/products': ['reports'],
   'GET /api/summary/cash': ['reports'],
+  'GET /api/summary/debts': ['reports'],
   'POST /api/sales': ['selling'],
   'POST /api/sales/:id/returns': ['returns'],
   'GET /api/expenses': ['purchases'],

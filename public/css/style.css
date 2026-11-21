@@ -398,7 +398,7 @@ h1, h2, h3 { line-height: 1.25; }
 /* Summary: the shop's figures in one place */
 .summary-date { font-size: 14px; color: var(--ink-2); }
 .summary-block { margin-bottom: 28px; }
-.sales-pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; gap: 12px; margin-bottom: 8px; }
+.sales-pair { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: start; gap: 12px; margin-bottom: 8px; }
 .sale-card {
   display: grid; gap: 2px; padding: 16px 20px;
   background: var(--paper); border: 1px solid var(--line); border-radius: var(--r-m);
@@ -435,6 +435,10 @@ button.ledger-row:focus-visible { outline-offset: -3px; }
 .ledger-total { background: var(--paper-2); border-top: 2px solid var(--ink); }
 .ledger-total .ledger-label { font-weight: 600; }
 .ledger-total .num { font-size: 22px; }
+.ledger-subtotal { background: var(--paper-2); }
+.debt-movement { margin: 12px 0; }
+.debt-movement th { white-space: normal; }
+.debt-movement tfoot { font-weight: 600; }
 .summary-payments { padding: 18px 20px; }
 .summary-payments .section-head { padding: 0; }
 .summary-payments .hint:empty { display: none; }
@@ -1178,7 +1182,8 @@ select.input { padding-block: 7px; }
   .summary-payments .ptable tr:not(.has-advance) .payment-advance { display: none; }
   .summary-block { margin-bottom: 22px; }
   /* Today and the month stay side by side, so both fit on the first screen */
-  .sales-pair { gap: 8px; }
+  .sales-pair { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .cash-now { grid-column: 1 / -1; }
   .sale-card { padding: 12px; }
   .sale-total { font-size: 20px; }
   .sale-lines { margin-top: 8px; padding-top: 8px; }

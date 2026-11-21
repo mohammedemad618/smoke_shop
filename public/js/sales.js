@@ -7,7 +7,6 @@ import {
   priceAddsUp,
   formatQty,
   formatWeight,
-  formatTime,
   escapeHtml,
   arCount,
   qtyLabel,
@@ -21,12 +20,17 @@ import {
   newClientId,
   withSignIn,
   session,
+  shopInfo,
   can,
 } from './common.js';
 import { isReturnOf } from './idempotency.js';
 import { keptAmount } from './discount.js';
+import { reportCalendar } from './report-calendar.js';
 
-const TIME_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
+const { timeZone } = await shopInfo;
+const calendar = reportCalendar(timeZone);
+const reportTime = new Intl.DateTimeFormat('ar-u-nu-latn', { timeZone, timeStyle: 'short' });
+const formatTime = (date) => reportTime.format(new Date(date));
 const DAY_MS = 24 * 60 * 60 * 1000;
 // Periods longer than this are broken down by month instead of by day
 const MAX_DAILY_ROWS = 62;
@@ -78,10 +82,10 @@ let returning = null;
 let returningId = null;
 const productView = { rows: [], sort: 'profit', showAll: false };
 
-/* Dates (all in the browser's time zone) */
+/* Date inputs hold calendar labels. Only the API needs their instants in the shop's zone. */
 
 const daysBetween = (a, b) => Math.round((b - a) / DAY_MS);
-const todayStart = () => parseKey(dayKey(new Date()));
+const todayStart = () => parseKey(calendar.dayKey(new Date()));
 
 function currentPeriod() {
   if (mode === 'day') {
@@ -103,7 +107,7 @@ function currentPeriod() {
 }
 
 const rangeQuery = (period, extra = {}) =>
-  new URLSearchParams({ from: period.from.toISOString(), to: period.to.toISOString(), ...extra }).toString();
+  new URLSearchParams({ ...calendar.range(dayKey(period.from), dayKey(period.to)), ...extra }).toString();
 
 /* Loading */
 
@@ -136,7 +140,7 @@ async function load() {
       showProducts(products);
     } else {
       const [data, products] = await Promise.all([
-        api(`/sales/report?${rangeQuery(period, { groupBy: period.groupBy, tz: TIME_ZONE })}`),
+        api(`/sales/report?${rangeQuery(period, { groupBy: period.groupBy, tz: timeZone })}`),
         productsRequest,
       ]);
       if (current !== request) return;
@@ -150,8 +154,8 @@ async function load() {
 }
 
 function syncLimits() {
-  const today = dayKey(new Date());
-  const thisMonth = monthKey(new Date());
+  const today = calendar.dayKey(new Date());
+  const thisMonth = today.slice(0, 7);
   els.day.max = today;
   els.from.max = today;
   els.to.max = today;
@@ -172,14 +176,14 @@ function renderSummary(s, period) {
   els.summary.innerHTML = `
     <div><div class="z-label">عدد الفواتير</div><div class="z-value num">${formatMoney(s.count)}</div></div>
     <div>
-      <div class="z-label">المبيعات</div>
+      <div class="z-label">صافي المبيعات</div>
       <div class="z-value num">${formatMoney(s.total)}</div>
       ${s.returns ? `<div class="z-note">بعد خصم مرتجعات <span class="num">${formatMoney(s.returns)}</span></div>` : ''}
       ${s.discounts ? `<div class="z-note">بعد خصومات الأصناف <span class="num">${formatMoney(s.discounts)}</span></div>` : ''}
     </div>
     <div><div class="z-label">تكلفة البضاعة المباعة</div><div class="z-value num">${formatMoney(s.cost)}</div></div>
     <div>
-      <div class="z-label">ربح المبيعات</div>
+      <div class="z-label">مجمل ربح المبيعات</div>
       <div class="z-value num ${s.profit < 0 ? 'is-loss' : 'is-profit'}">${formatMoney(s.profit)}</div>
       ${margin ? `<div class="z-note">نسبة الربح من المبيعات <span class="num">${margin}</span></div>` : ''}
     </div>
@@ -195,14 +199,14 @@ function renderSummary(s, period) {
       <a class="z-link" href="/debts.html" data-need="credit">حسابات الزبائن</a>
     </div>
     <div>
-      <div class="z-label">محصَّل من الديون</div>
-      <div class="z-value num ${s.collected > 0 ? 'is-profit' : ''}">${formatMoney(s.collected)}</div>
-      <div class="z-note">تسديدات الزبائن في هذه الفترة</div>
+      <div class="z-label">المحصّل من الديون</div>
+      <div class="z-value num">${formatMoney(s.collected)}</div>
+      <div class="z-note">كامل دفعات الزبائن المقبوضة خلال الفترة</div>
     </div>
     <div class="z-net">
-      <div class="z-label">صافي الربح</div>
+      <div class="z-label">صافي ربح النشاط</div>
       <div class="z-value num ${s.netProfit < 0 ? 'is-loss' : 'is-profit'}">${formatMoney(s.netProfit)}</div>
-      <div class="z-note">ربح المبيعات − المصاريف − البيع بالدين + المحصَّل</div>
+      <div class="z-note">مجمل ربح المبيعات − المصاريف المسجّلة</div>
     </div>`;
 }
 
@@ -317,7 +321,7 @@ function renderBreakdown(period, { groupBy, summary, periods }) {
   // A day with only a refund (of an older invoice) still has figures to show
   const hasFigures = (row) => row.count || row.returns || row.expenses || row.credit || row.collected;
   if (!hasFigures(summary)) {
-    emptyState('لا توجد مبيعات أو مصاريف في هذه الفترة');
+    emptyState('لا توجد مبيعات أو مصاريف أو تسديدات في هذه الفترة');
     return;
   }
   const byKey = new Map(periods.map((p) => [p.key, p]));
@@ -368,8 +372,8 @@ function renderBreakdown(period, { groupBy, summary, periods }) {
       <th scope="col" class="end">ربح المبيعات</th>
       <th scope="col" class="end">المصاريف</th>
       <th scope="col" class="end">دين جديد</th>
-      <th scope="col" class="end">تحصيل</th>
-      <th scope="col" class="end">صافي الربح</th>
+      <th scope="col" class="end">تسديدات الزبائن</th>
+      <th scope="col" class="end">صافي ربح النشاط</th>
     </tr></thead>
     <tbody>${rows.join('')}</tbody>
     <tfoot><tr>
@@ -472,7 +476,7 @@ els.nextDay.addEventListener('click', () => {
   load();
 });
 els.today.addEventListener('click', () => {
-  els.day.value = dayKey(new Date());
+  els.day.value = dayKey(todayStart());
   load();
 });
 
@@ -486,7 +490,7 @@ els.nextMonth.addEventListener('click', () => {
   load();
 });
 els.thisMonth.addEventListener('click', () => {
-  els.month.value = monthKey(new Date());
+  els.month.value = monthKey(todayStart());
   load();
 });
 

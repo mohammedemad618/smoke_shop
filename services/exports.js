@@ -35,7 +35,7 @@ export async function productsCsv(models) {
 export async function salesCsv(models, { start, end, timeZone }) {
   const periods = await periodFigures(models, start, end, 'day', timeZone);
   const sum = sumFigures(periods);
-  const headers = ['اليوم', 'عدد الفواتير', 'القطع', 'المبيعات', 'التكلفة', 'الربح', 'المرتجعات', 'البيع بالدين', 'المصاريف', 'المسدد من ديون المبيعات', 'صافي الربح'];
+  const headers = ['اليوم', 'عدد الفواتير', 'القطع', 'المبيعات', 'التكلفة', 'الربح', 'المرتجعات', 'البيع بالدين', 'المصاريف', 'إجمالي تسديدات الزبائن', 'صافي ربح النشاط'];
   const line = (label, f) => [label, f.count, f.pieces, f.total, f.cost, f.profit, f.returns, f.credit, f.expenses, f.collected, f.netProfit];
   return toCsv(headers, [...periods.map((p) => line(p.key, p)), line('المجموع', sum)]);
 }

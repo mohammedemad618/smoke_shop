@@ -126,7 +126,7 @@ router.delete('/:id', allow('owner'), async (req, res) => {
 // A payment (takes off the debt) or a debt added by hand. Taking a payment is part of selling
 // on credit; a debt added by hand (money lent, or owed from before) is the owner's. The entry
 // records who made it, from the session. Only the owner dates it: a payment counts as money
-// collected on its day (the net profit), so a staff account's is dated now, never on a day
+// collected in the drawer on its day, so a staff account's is dated now, never on a day
 // already closed.
 router.post('/:id/entries', allow('credit'), async (req, res) => {
   const { Customer, DebtEntry } = req.models;

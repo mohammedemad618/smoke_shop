@@ -3,6 +3,7 @@ import { SETTING_DEFAULTS } from '../lib/shop-settings.js';
 import { money } from '../lib/util.js';
 
 export const saleCash = { $subtract: ['$total', { $ifNull: ['$debt', 0] }] };
+export const paymentReceived = { $multiply: ['$amount', -1] };
 export const refundCash = (amount, credit) => ({ $subtract: [amount, { $ifNull: [credit, 0] }] });
 
 export const cashAfter = (balance, { salesReceived, customerPayments, refunds, supplierPayments, expenses }) =>
@@ -36,7 +37,7 @@ export async function cashMovement({ Sale, DebtEntry, Purchase, Expense, Setting
 
   const [sales, customers, refunds, suppliers, expenses, settings] = await Promise.all([
     amounts(Sale, 'createdAt', saleCash),
-    amounts(DebtEntry, 'date', { $multiply: ['$amount', -1] }, [{ $match: { kind: 'payment' } }]),
+    amounts(DebtEntry, 'date', paymentReceived, [{ $match: { kind: 'payment' } }]),
     amounts(Sale, 'returns.at', refundCash('$returns.amount', '$returns.toAccount'), [
       { $match: { 'returns.at': throughEnd } },
       { $unwind: '$returns' },

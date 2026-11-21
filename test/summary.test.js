@@ -1,6 +1,7 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { startTestEnv } from './support/harness.js';
+import { reportCalendar } from '../public/js/report-calendar.js';
 
 let env;
 before(async () => { env = await startTestEnv(); });
@@ -23,7 +24,7 @@ async function shopOf(slug) {
   return { db, request };
 }
 
-test('cash movements reconcile to the drawer, and only the sales portion of collections enters profit', async () => {
+test('daily and monthly operating profit, cash and receivables reconcile independently', async () => {
   const { db, request } = await shopOf('summary-cash');
   const [category] = await request('GET', '/categories');
   await request('PUT', '/settings', { openingCashBalance: 1000 });
@@ -103,8 +104,24 @@ test('cash movements reconcile to the drawer, and only the sales portion of coll
   query.set('tz', 'Asia/Baghdad');
   const { periods, summary } = await request('GET', `/sales/report?${query}`);
   const breakdown = periods.find((p) => p.key === '2025-02-13');
-  assert.deepEqual([breakdown.total, breakdown.cost, breakdown.profit, breakdown.credit, breakdown.collected, breakdown.netProfit], [600, 240, 360, 350, 390, 330]);
-  assert.deepEqual([summary.collected, summary.netProfit], [390, 290]);
+  assert.deepEqual([breakdown.total, breakdown.cost, breakdown.profit, breakdown.credit, breakdown.collected, breakdown.netProfit], [600, 240, 360, 350, 440, 290]);
+  assert.deepEqual([summary.collected, summary.netProfit], [480, 250]);
+  assert.deepEqual([breakdown.returnedCost, summary.returnedCost], [160, 160]);
+  const dayReport = await request('GET', `/sales?${range(day, nextDay)}`);
+  assert.deepEqual([dayReport.summary.netProfit, dayReport.summary.collected], [290, daily.customerPayments]);
+  assert.equal(periods.reduce((total, row) => total + row.netProfit, 0), summary.netProfit);
+  const debts = await request('GET', `/summary/debts?${range(month, nextMonth)}`);
+  assert.deepEqual(debts, {
+    sales: { opening: 200, added: 500, paid: 350, returns: 150, advanceUsed: 40, closing: 160 },
+    manual: { opening: 50, added: 0, paid: 50, returns: 0, advanceUsed: 0, closing: 0 },
+    advances: { opening: 0, received: 80, returns: 0, used: 40, closing: 40 },
+    received: 480,
+  });
+  const debtDay = await request('GET', `/summary/debts?${range(day, nextDay)}`);
+  assert.deepEqual([debtDay.advances.opening, debtDay.advances.used, debtDay.advances.received, debtDay.received], [40, 40, 40, 440]);
+  const balances = (await request('GET', '/products/valuation')).debts;
+  assert.equal(debts.sales.closing + debts.manual.closing, balances.owedToShop);
+  assert.equal(debts.advances.closing, balances.owedByShop);
 });
 
 test('payment pages move past a shared timestamp without repeating records', async () => {
@@ -124,4 +141,36 @@ test('payment pages move past a shared timestamp without repeating records', asy
   assert.equal(second.next, null);
   assert.deepEqual(second.payments.map((p) => p.balanceAfter), [-1]);
   assert.equal(new Set([...first.payments, ...second.payments].map((p) => p.note)).size, 26);
+  const monthDebts = await request('GET', `/summary/debts?${range(month, nextMonth)}`);
+  assert.equal(monthDebts.received, 26);
+  assert.equal(monthDebts.advances.received, 26);
+});
+
+test('shop-calendar cutoffs include midnight receipts once, including advances used in another month', async () => {
+  const baghdad = reportCalendar('Asia/Baghdad');
+  assert.equal(baghdad.dayKey(new Date('2025-01-31T21:00:00Z')), '2025-02-01');
+  const february = new URLSearchParams(baghdad.range('2025-02-01', '2025-03-01'));
+  assert.deepEqual(Object.fromEntries(february), { from: month.toISOString(), to: nextMonth.toISOString() });
+  assert.deepEqual(reportCalendar('America/New_York').range('2025-03-09', '2025-03-10'), {
+    from: '2025-03-09T05:00:00.000Z', to: '2025-03-10T04:00:00.000Z',
+  });
+  const { request } = await shopOf('summary-boundaries');
+  await request('PUT', '/settings', { timeZone: 'America/New_York' });
+  assert.equal((await request('GET', '/shop')).timeZone, 'America/New_York');
+  await request('PUT', '/settings', { timeZone: 'Asia/Baghdad' });
+  const customer = await request('POST', '/customers', { name: 'رصيد افتتاحي' });
+  const entry = (kind, amount, date) => request('POST', `/customers/${customer._id}/entries`, { kind, amount, date });
+  await entry('payment', 25.75, new Date(+month - 1));
+  await entry('manual', 100, month);
+  await entry('payment', 60, new Date(+nextMonth - 1));
+  await entry('payment', 14.25, nextMonth);
+  const debts = await request('GET', `/summary/debts?${february}`);
+  assert.deepEqual(debts.manual, { opening: 0, added: 100, paid: 60, returns: 0, advanceUsed: 25.75, closing: 14.25 });
+  assert.deepEqual(debts.advances, { opening: 25.75, received: 0, returns: 0, used: 25.75, closing: 0 });
+  const cash = await request('GET', `/summary/cash?${february}`);
+  const report = await request('GET', `/sales/report?${february}&groupBy=day&tz=Asia%2FBaghdad`);
+  assert.deepEqual([debts.received, cash.customerPayments, report.summary.collected, report.summary.netProfit], [60, 60, 60, 0]);
+  assert.deepEqual(report.periods.map(p => [p.key, p.collected]), [['2025-02-28', 60]]);
+  const march = await request('GET', `/summary/debts?${range(nextMonth, at('2025-04-01'))}`);
+  assert.deepEqual([march.manual.opening, march.received, march.manual.closing], [14.25, 14.25, 0]);
 });

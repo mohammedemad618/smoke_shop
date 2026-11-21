@@ -6,7 +6,7 @@ import { REPORT_MS, runReport } from '../lib/limits.js';
 import { lineAmount, money, precise, roundQty } from '../lib/util.js';
 import { addStock, commitInventory, inventoryOf, inventoryWrite, takeStock } from '../lib/inventory.js';
 import { lotCost, lotPortion } from '../public/js/stock-cost.js';
-import { collectedEvents } from '../lib/debt-ledger.js';
+import { paymentReceived } from '../services/cash.js';
 import { roundingStepOf } from '../lib/shop-settings.js';
 import { DAY_MS, requestedRange, timeZoneParam } from '../lib/range.js';
 import { madeByOf } from '../lib/auth.js';
@@ -20,11 +20,6 @@ const moneyText = new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 });
 const MAX_LIST_RANGE_MS = 31 * DAY_MS;
 const MAX_REPORT_RANGE_MS = 3 * 366 * DAY_MS;
 const GROUP_FORMATS = { day: '%Y-%m-%d', month: '%Y-%m' };
-
-// Net profit counts only money that came in: profit on sales, minus expenses, minus what
-// was sold on credit (less what returns took off the account), plus what customers paid
-// towards credit sales. Over time it adds up to the profit on sales minus expenses.
-const netProfitOf = ({ profit, credit }, expenses, collected) => money(profit - expenses - credit + collected);
 
 /* Reports */
 
@@ -54,7 +49,7 @@ async function periodFigures(m, start, end, groupBy = null, timezone = 'UTC') {
   const keyOf = (date) => (format ? { $dateToString: { format, date, timezone } } : 'all');
   const inRange = { $gte: start, $lt: end };
   const lastReturn = { $max: '$returns.at' };
-  const [sold, returned, expenses, events] = await Promise.all([
+  const [sold, returned, expenses, payments] = await Promise.all([
     Sale.aggregate([
       { $match: { createdAt: inRange } },
       {
@@ -79,7 +74,6 @@ async function periodFigures(m, start, end, groupBy = null, timezone = 'UTC') {
           pieces: { $sum: piecesIn('$items') },
           total: { $sum: '$total' },
           cost: { $sum: '$cost' },
-          profit: { $sum: '$profit' },
           credit: { $sum: { $ifNull: ['$debt', 0] } },
           // Each invoice's lines added up first ($sum of an array), then the invoices
           discounts: { $sum: { $sum: '$items.discount' } },
@@ -101,7 +95,10 @@ async function periodFigures(m, start, end, groupBy = null, timezone = 'UTC') {
       },
     ]).option({ maxTimeMS: REPORT_MS }),
     Expense.aggregate([{ $match: { date: inRange } }, { $group: { _id: keyOf('$date'), total: { $sum: '$amount' } } }]).option({ maxTimeMS: REPORT_MS }),
-    collectedEvents(DebtEntry, end),
+    DebtEntry.aggregate([
+      { $match: { kind: 'payment', date: inRange } },
+      { $group: { _id: keyOf('$date'), total: { $sum: paymentReceived } } },
+    ]).option({ maxTimeMS: REPORT_MS }),
   ]);
 
   const rows = new Map();
@@ -112,7 +109,7 @@ async function periodFigures(m, start, end, groupBy = null, timezone = 'UTC') {
     return rows.get(key);
   };
   for (const s of sold) {
-    Object.assign(rowFor(s._id), { count: s.count, pieces: s.pieces, total: s.total, cost: s.cost, profit: s.profit, credit: s.credit });
+    Object.assign(rowFor(s._id), { count: s.count, pieces: s.pieces, total: s.total, cost: s.cost, credit: s.credit });
     if (s.discounts) rowFor(s._id).discounts = s.discounts;
   }
   for (const r of returned) {
@@ -120,24 +117,20 @@ async function periodFigures(m, start, end, groupBy = null, timezone = 'UTC') {
     row.pieces -= r.pieces;
     row.total -= r.amount;
     row.cost -= r.cost;
-    row.profit -= r.amount - r.cost;
+    if (r.cost) row.returnedCost = money(r.cost);
     row.returns += r.amount;
     row.credit -= r.toAccount;
   }
   for (const e of expenses) rowFor(e._id).expenses = e.total;
-  const keyFormat = format && new Intl.DateTimeFormat('en-CA', { timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit' });
-  for (const ev of events) {
-    if (ev.date < start || ev.date >= end) continue;
-    const key = format ? keyFormat.format(ev.date).slice(0, groupBy === 'month' ? 7 : 10) : 'all';
-    rowFor(key).collected += ev.amount;
-  }
+  for (const p of payments) rowFor(p._id).collected = p.total;
   return [...rows.values()]
     .sort((a, b) => a.key.localeCompare(b.key))
     .map((row) => {
       const figures = { ...row, pieces: roundQty(row.pieces) };
-      for (const field of ['total', 'cost', 'profit', 'returns', 'credit', 'expenses', 'collected']) figures[field] = money(row[field]);
+      for (const field of ['total', 'cost', 'returns', 'credit', 'expenses', 'collected']) figures[field] = money(row[field]);
       if (row.discounts) figures.discounts = money(row.discounts);
-      return { ...figures, netProfit: netProfitOf(figures, figures.expenses, figures.collected) };
+      figures.profit = money(figures.total - figures.cost);
+      return { ...figures, netProfit: money(figures.profit - figures.expenses) };
     });
 }
 
@@ -147,6 +140,8 @@ const sumFigures = (rows) => {
   for (const row of rows) for (const field of Object.keys(EMPTY_FIGURES)) sum[field] += row[field];
   for (const field of ['total', 'cost', 'profit', 'returns', 'credit', 'expenses', 'collected', 'netProfit']) sum[field] = money(sum[field]);
   sum.pieces = roundQty(sum.pieces);
+  const returnedCost = money(rows.reduce((total, row) => total + (row.returnedCost ?? 0), 0));
+  if (returnedCost) sum.returnedCost = returnedCost;
   // Like a row: only when some line of the period had a discount
   const discounts = money(rows.reduce((total, row) => total + (row.discounts ?? 0), 0));
   if (discounts) sum.discounts = discounts;
@@ -160,7 +155,7 @@ router.get('/', allow('reports', 'returns'), async (req, res) => {
   const { Sale } = req.models;
   const { start, end } = requestedRange(req.query, MAX_LIST_RANGE_MS);
   const reports = seesCosts(req.user);
-  // The day's figures replay the customers' accounts: a report, one at a time per shop
+  // The day's figures share the same report limit as the monthly breakdown.
   const [sales, rows] = await Promise.all([
     Sale.find({ createdAt: { $gte: start, $lt: end } }).sort({ createdAt: -1 }).lean(),
     reports ? runReport(req.tenant._id, () => periodFigures(req.models, start, end)) : null,

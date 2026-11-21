@@ -3,6 +3,7 @@ import { PASSWORD_MIN, passwordLength } from './auth.js';
 import { initStaffCard } from './staff.js';
 import { initReceiptCard, fillReceipt, renderPreview } from './receipt-settings.js';
 import { initStockCard, fillStock } from './stock-settings.js';
+import { reportCalendar } from './report-calendar.js';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -69,6 +70,9 @@ function fillShop(settings) {
   els.phone.value = settings.phone;
   els.address.value = settings.address;
   fillZones(settings.timeZone || 'Asia/Baghdad');
+  exportZone = settings.timeZone || 'Asia/Baghdad';
+  if (!exportMonth.value) exportMonth.value = reportCalendar(exportZone).dayKey(new Date()).slice(0, 7);
+  salesLink();
 }
 
 // The owner's cards, from one read of the settings; each card saves its own fields
@@ -157,26 +161,23 @@ els.logoutAll.addEventListener('click', async () => {
   location.assign('/login.html');
 });
 
-// The sales file covers the chosen month of this browser's calendar, cut at its own
-// midnight like the sales page, so its total line is that month on the sales page
+// Use the same shop-calendar boundaries as the sales report.
 const exportMonth = $('exportMonth');
 const exportSales = $('exportSales');
+let exportZone;
 const pad = (n) => String(n).padStart(2, '0');
 function salesLink() {
   const [year, month] = (exportMonth.value || '').split('-').map(Number);
-  if (!year || !month) return;
+  if (!year || !month || !exportZone) return;
+  const next = new Date(Date.UTC(year, month, 1)).toISOString().slice(0, 10);
   const query = new URLSearchParams({
-    from: new Date(year, month - 1, 1).toISOString(),
-    to: new Date(year, month, 1).toISOString(),
-    tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    ...reportCalendar(exportZone).range(`${exportMonth.value}-01`, next),
+    tz: exportZone,
     label: `${year}-${pad(month)}`,
   });
   exportSales.href = `/api/export/sales.csv?${query}`;
 }
-const today = new Date();
-exportMonth.value = `${today.getFullYear()}-${pad(today.getMonth() + 1)}`;
 exportMonth.addEventListener('change', salesLink);
-salesLink();
 
 // For password managers: the account the new password belongs to. The shop's settings and
 // its staff are the owner's: a staff account has «حسابك» only, and asks for nothing else.

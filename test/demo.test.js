@@ -138,39 +138,6 @@ test('create makes and fills the shop without a password ever shown or logged', 
 
 /* The figures, rebuilt from the raw records */
 
-// What customers paid towards credit sales, dated when it counts, replayed oldest first per
-// customer: payments settle the oldest debts, a return its own invoice first, and money paid
-// ahead counts when a later credit sale uses it
-function collectedFrom(entries) {
-  const events = [];
-  const byCustomer = Map.groupBy(entries, (e) => String(e.customer));
-  for (const list of byCustomer.values()) {
-    list.sort((a, b) => a.date - b.date || a.createdAt - b.createdAt);
-    let open = [];
-    let ahead = 0;
-    for (const e of list) {
-      if (e.amount > 0) {
-        const used = Math.min(ahead, e.amount);
-        ahead = money(ahead - used);
-        if (used > 0 && e.kind === 'sale') events.push({ date: e.date, amount: used });
-        if (e.amount - used > 0) open.push({ kind: e.kind, sale: String(e.sale ?? ''), left: money(e.amount - used) });
-        continue;
-      }
-      let rest = -e.amount;
-      const order = e.kind === 'return' ? [...open.filter((d) => d.sale === String(e.sale)), ...open.filter((d) => d.sale !== String(e.sale))] : open;
-      for (const debt of order) {
-        const used = Math.min(debt.left, rest);
-        debt.left = money(debt.left - used);
-        rest = money(rest - used);
-        if (used > 0 && e.kind === 'payment' && debt.kind === 'sale') events.push({ date: e.date, amount: used });
-      }
-      open = open.filter((d) => d.left > 0);
-      ahead = money(ahead + rest);
-    }
-  }
-  return events;
-}
-
 // A period's figures by keyOf(date) (a day, a month or 'all'): an invoice on the day it was
 // made, a return on the day it was made, an invoice cancelled within its own period not counted
 function figures({ sales, entries, expenses }, keyOf, start, end) {
@@ -199,19 +166,22 @@ function figures({ sales, entries, expenses }, keyOf, start, end) {
       r.pieces -= pieces(x.items);
       r.total -= x.amount;
       r.cost -= x.cost;
+      if (x.cost) r.returnedCost = money((r.returnedCost ?? 0) + x.cost);
       r.profit -= x.amount - x.cost;
       r.returns += x.amount;
       r.credit -= x.toAccount ?? 0;
     }
   }
   for (const e of expenses) if (inRange(e.date)) row(keyOf(e.date)).expenses += e.amount;
-  for (const ev of collectedFrom(entries)) if (inRange(ev.date)) row(keyOf(ev.date)).collected += ev.amount;
+  for (const entry of entries) {
+    if (entry.kind === 'payment' && inRange(entry.date)) row(keyOf(entry.date)).collected -= entry.amount;
+  }
   return [...rows.values()]
     .sort((a, b) => a.key.localeCompare(b.key))
     .map((r) => {
       const f = { ...r, pieces: qty(r.pieces) };
       for (const k of ['total', 'cost', 'profit', 'returns', 'credit', 'expenses', 'collected']) f[k] = money(r[k]);
-      return { ...f, netProfit: money(f.profit - f.expenses - f.credit + f.collected) };
+      return { ...f, netProfit: money(f.profit - f.expenses) };
     });
 }
 

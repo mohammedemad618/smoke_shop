@@ -237,7 +237,7 @@ async function everyCalculation(t, app, db) {
      count 3, total 3300, cost 2300, profit 1000
      returns 48250 + 443.89 + 3000 + 1000 + 4000 = 56693.89
      credit 1500 + 1000 + 0 = 2500, expenses 700, collected 1500 + 1000 = 2500
-     net = 1000 - 700 - 2500 + 2500 = 300
+     operating profit = 1000 - 700 = 300
      Cash check: in 300 + (1000 - 500) + 0 + (1000 - 1000) + 2500 payments - 700 = 2600; cost of goods kept 2300;
      2600 - 2300 = 300, and nobody owes anything: net profit 300 is right. */
   const now = new Date();
@@ -353,18 +353,15 @@ async function everyCalculation(t, app, db) {
   await check('products report takes the refund too', pick(todayProducts.find((p) => p.name === 'P1'), ['quantity', 'total', 'cost']), { quantity: 2, total: 2000, cost: 1400 });
   await Sale.deleteOne({ number: 910001 });
 
-  /* Only payments towards credit sales count as collected.
-     C2: a debt added by hand (1000, money lent) and paid back: collected unchanged.
-     C3: pays 500 in advance, then buys 1 x P1 on credit (1000, cost 700): the 500 settles the
-         sale the day it is made, so collected +500 and credit +1000 today, net -200
-         (cash 500 in, goods costing 700 out). */
+  /* Cash receipts include manual repayments and advances on the payment date.
+     C3 uses the advance against a later sale: only that sale earns its margin. */
   const s0 = await todaySummary();
   const C2 = await ok('POST', '/customers', { name: 'زبون سلفة' });
   await ok('POST', `/customers/${C2._id}/entries`, { kind: 'manual', amount: 1000 });
   const beforeManualPayment = await valuation();
   await ok('POST', `/customers/${C2._id}/entries`, { kind: 'payment', amount: 1000 });
   const s1 = await todaySummary();
-  await check('repaying money lent is not profit', [s1.collected - s0.collected, s1.netProfit - s0.netProfit], [0, 0]);
+  await check('repaying money lent is a receipt', [s1.collected - s0.collected, s1.netProfit - s0.netProfit], [1000, 0]);
   const afterManualPayment = await valuation();
   await check(
     'repaying a manual debt adds cash and leaves capital unchanged',
@@ -374,7 +371,7 @@ async function everyCalculation(t, app, db) {
   const C3 = await ok('POST', '/customers', { name: 'زبون دفع مقدمًا' });
   await ok('POST', `/customers/${C3._id}/entries`, { kind: 'payment', amount: 500 });
   const s2 = await todaySummary();
-  await check('money paid ahead is not profit yet', [s2.collected - s1.collected, s2.netProfit - s1.netProfit], [0, 0]);
+  await check('an advance is received on its payment date', [s2.collected - s1.collected, s2.netProfit - s1.netProfit], [500, 0]);
   const afterAdvance = await valuation();
   await check(
     'an advance adds cash and an equal liability',
@@ -383,18 +380,18 @@ async function everyCalculation(t, app, db) {
   );
   await ok('POST', '/sales', { paymentType: 'credit', customerId: C3._id, items: [{ productId: P1._id, quantity: 1 }] });
   const s3 = await todaySummary();
-  // FIFO still uses the opening lot at 700. Profit is 300 and net is 300 - 1000 + 500.
-  await check('advance used by a credit sale', [s3.credit - s2.credit, s3.collected - s2.collected, s3.profit - s2.profit, s3.netProfit - s2.netProfit], [1000, 500, 300, -200]);
+  // FIFO uses the opening lot at 700. Using the advance earns no second receipt.
+  await check('advance used by a credit sale', [s3.credit - s2.credit, s3.collected - s2.collected, s3.profit - s2.profit, s3.netProfit - s2.netProfit], [1000, 0, 300, 300]);
   await check('C3 owes 500', await balance(C3), 500);
   // Paying a debt partly made by hand: C4 owes 300 by hand (older) and 1000 on a sale; pays 800:
-  // the hand debt is settled first, so only 500 counts as collected
+  // the ledger allocates 300 to the manual debt and 500 to the sale, with one 800 receipt
   const C4 = await ok('POST', '/customers', { name: 'زبون مختلط' });
   await ok('POST', `/customers/${C4._id}/entries`, { kind: 'manual', amount: 300, date: new Date(Date.now() - 60000).toISOString() });
   await ok('POST', '/sales', { paymentType: 'credit', customerId: C4._id, items: [{ productId: P1._id, quantity: 1 }] });
   const s4 = await todaySummary();
   await ok('POST', `/customers/${C4._id}/entries`, { kind: 'payment', amount: 800 });
   const s5 = await todaySummary();
-  await check('payment settles the oldest debt first', s5.collected - s4.collected, 500);
+  await check('mixed payment counts once at full value', [s5.collected - s4.collected, s5.netProfit - s4.netProfit], [800, 0]);
 
   /* A refund larger than what is still owed: C5 buys 1 x P1 on credit (1000), pays 1000, then
      returns it: all 1000 back in cash, nothing to the account */
