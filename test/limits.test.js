@@ -4,8 +4,9 @@
 // in the whole process, each turn given back whatever the report did.
 import { test, before, after, mock } from 'node:test';
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { createTurns, runReport, reportTurns, SHOP_REQUESTS, SHOP_WAIT_MS } from '../lib/limits.js';
+import { createTurns, shopRequests, runReport, reportTurns, SHOP_REQUESTS, SHOP_WAIT_MS } from '../lib/limits.js';
 import { startTestEnv } from './support/harness.js';
 
 let env;
@@ -42,6 +43,54 @@ test('turns: per key and in all, the next waiting one served first, none after t
   for (const key of ['a', 'a', 'b']) turns.release(key);
   assert.deepStrictEqual(turns.state(), { held: 0, waiting: 0 });
   assert.strictEqual(await turns.acquire('c'), true);
+});
+
+test('a cancelled waiter makes room immediately and leaves the next waiter in order', async () => {
+  const turns = createTurns({ perKey: 1, maxWaiting: 1, waitMs: 500 });
+  assert.equal(await turns.acquire('a'), true);
+  const waiting = new AbortController();
+  const cancelled = turns.acquire('a', waiting.signal);
+  waiting.abort();
+  assert.deepEqual(turns.state(), { held: 1, waiting: 0 });
+  const next = turns.acquire('a');
+  turns.release('a');
+  assert.equal(await cancelled, false);
+  assert.equal(await next, true);
+  turns.release('a');
+  assert.deepEqual(turns.state(), { held: 0, waiting: 0 });
+});
+
+test('shop middleware skips closed responses and hands each grant back exactly once', async () => {
+  const limit = shopRequests({ perShop: 1, waitMs: 500 });
+  const req = { tenant: { _id: 'test' } };
+  const gone = Object.assign(new EventEmitter(), { destroyed: true });
+  await limit(req, gone, () => assert.fail('response already closed'));
+
+  const first = new EventEmitter();
+  await limit(req, first, assert.ifError);
+  const cancelled = new EventEmitter();
+  const whileWaiting = limit(req, cancelled, () => assert.fail('cancelled while waiting'));
+  cancelled.emit('close');
+  await whileWaiting;
+
+  const leaving = new EventEmitter();
+  const atGrant = limit(req, leaving, () => assert.fail('closed at handoff'));
+  first.emit('finish');
+  leaving.emit('close');
+  await atGrant;
+
+  const active = new EventEmitter();
+  await limit(req, active, assert.ifError);
+  const last = new EventEmitter();
+  const admitted = mock.fn(assert.ifError);
+  const lastRequest = limit(req, last, admitted);
+  first.emit('close'); // finish already returned this turn
+  await Promise.resolve();
+  assert.equal(admitted.mock.callCount(), 0);
+  active.emit('close');
+  await lastRequest;
+  assert.equal(admitted.mock.callCount(), 1);
+  last.emit('finish');
 });
 
 test("a shop's fifth request at once waits for a turn, then is refused 503 with Retry-After; other shops go on", async () => {
